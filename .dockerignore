@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Django
+db.sqlite3
+staticfiles/
+
+# Secrets & local env (provided at runtime via compose)
+.env
+
+# VCS & tooling
+.git/
+.gitignore
+.DS_Store
+
+# Docs / editor
+docs/
+*.md
+.vscode/
+.idea/
