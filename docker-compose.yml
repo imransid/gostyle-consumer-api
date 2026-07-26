@@ -1,40 +1,82 @@
 services:
   db:
     image: postgres:16-alpine
+    container_name: gostyle_consumer_db
     environment:
+      # Bootstrap superuser. Django does NOT use this account.
       POSTGRES_DB: ${DB_NAME:-gostyle}
-      POSTGRES_USER: ${DB_USER:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:-postgres}
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # Creates the `consumer` schema the app's search_path expects, on first init.
-      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      # Runs in filename order, ONLY when pgdata is empty.
+      # 01: consumer schema + restricted role that mirrors production.
+      # 02: Prisma's public schema dump (structure only).
+      - ./docker/postgres:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-gostyle}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_SUPERUSER:-postgres} -d ${DB_NAME:-gostyle}"]
       interval: 5s
       timeout: 5s
       retries: 10
     ports:
-      - "5432:5432"
+      # 5433 on the host so it never clashes with another local Postgres.
+      # Containers still reach it on 5432 via DB_HOST=db.
+      - "127.0.0.1:5433:5432"
+
+  redis:
+    image: redis:7-alpine
+    container_name: gostyle_consumer_redis
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "127.0.0.1:6380:6379"
 
   web:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gostyle_consumer_web
+    command: python manage.py runserver 0.0.0.0:8000
     environment:
       DJANGO_SETTINGS_MODULE: config.settings.local
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-insecure-secret-key-change-me}
+      DJANGO_DEBUG: "1"
+      DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1,0.0.0.0"
+
+      # Restricted role, same one production uses.
+      # Owns `consumer`, SELECT-only on `public`.
       DB_NAME: ${DB_NAME:-gostyle}
-      DB_USER: ${DB_USER:-postgres}
-      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_USER: ${DB_USER:-consumer_app}
+      DB_PASSWORD: ${DB_PASSWORD:-consumer}
       DB_HOST: db
       DB_PORT: 5432
       DB_SCHEMA: ${DB_SCHEMA:-consumer}
+
+      REDIS_URL: redis://redis:6379/0
+
+      # WhatsApp OTP. Console sender locally, no real sends.
+      OTP_SENDER: ${OTP_SENDER:-console}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_TEMPLATE_NAME: ${WHATSAPP_TEMPLATE_NAME:-}
     volumes:
-      # Live-reload: mount source over the image so runserver picks up edits.
+      # Live reload: your source shadows the image copy.
       - .:/app
+      # Anonymous volumes below block host folders from leaking into Linux.
+      # .venv holds macOS arm64 binaries and would break the container.
+      - /app/.venv
+      - /app/.git
+      - /app/__pycache__
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
 volumes:
