@@ -1,58 +1,62 @@
-import re
+import phonenumbers
+from phonenumbers import PhoneNumberFormat, PhoneNumberType, number_type
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email
 
-PHONE_RE = re.compile(r"^\+?[1-9]\d{7,14}$")
-
 PHONE = "phone"
 EMAIL = "email"
 
+# Region used to interpret national-format phone numbers (e.g. "01712345678").
+# Numbers already in E.164 ("+8801712345678") parse regardless of this.
+DEFAULT_REGION = "BD"
 
-class InvalidIdentifier(ValueError):
-    """Raised when a value is neither a valid phone number nor email."""
-
-
-def normalize_phone(value):
-    cleaned = re.sub(r"[\s\-()]", "", value or "")
-    if not PHONE_RE.match(cleaned):
-        raise InvalidIdentifier("Enter a valid phone number.")
-    return cleaned if cleaned.startswith("+") else f"+{cleaned}"
+# A registerable phone must be reachable on a mobile handset. libphonenumber
+# reports FIXED_LINE_OR_MOBILE for ranges it cannot split into fixed vs mobile,
+# so we accept it alongside a definite MOBILE.
+_MOBILE_TYPES = frozenset({PhoneNumberType.MOBILE, PhoneNumberType.FIXED_LINE_OR_MOBILE})
 
 
-def normalize_email(value):
-    cleaned = (value or "").strip().lower()
+class InvalidDestination(ValueError):
+    """Raised when a value is not valid for its destination type."""
+
+
+def _normalize_phone(raw, region):
+    # Parse against a region so a plus-less national number resolves to the
+    # right country. We never prepend "+" ourselves: "1712345678" with region
+    # BD must become "+8801712345678", not "+1712345678".
+    try:
+        parsed = phonenumbers.parse(raw or "", region)
+    except phonenumbers.NumberParseException:
+        raise InvalidDestination("Enter a valid phone number.")
+
+    if not phonenumbers.is_valid_number(parsed):
+        raise InvalidDestination("Enter a valid phone number.")
+
+    if number_type(parsed) not in _MOBILE_TYPES:
+        raise InvalidDestination("Enter a valid mobile phone number.")
+
+    return phonenumbers.format_number(parsed, PhoneNumberFormat.E164)
+
+
+def _normalize_email(raw):
+    cleaned = (raw or "").strip().lower()
     try:
         validate_email(cleaned)
     except DjangoValidationError:
-        raise InvalidIdentifier("Enter a valid email address.")
+        raise InvalidDestination("Enter a valid email address.")
     return cleaned
 
 
-def resolve_identifier(value):
-    """Return (kind, normalized_value) for an email-or-phone identifier.
+def normalize_destination(raw, destination_type, region=DEFAULT_REGION):
+    """Normalize a phone/email destination to its canonical stored form.
 
-    Login and registration accept a single "Email/Phone Number" field, so this
-    is the one place that decides which channel a value belongs to.
+    Phone -> E.164 via libphonenumber (validated, mobile-capable).
+    Email -> trimmed, lowercased, validated.
+    Raises InvalidDestination on anything that does not pass.
     """
-    raw = (value or "").strip()
-    if "@" in raw:
-        return EMAIL, normalize_email(raw)
-    return PHONE, normalize_phone(raw)
-
-
-def channel_for_kind(kind):
-    """Delivery channel for an identifier kind. Phone defaults to SMS."""
-    return "email" if kind == EMAIL else "sms"
-
-
-def mask_destination(kind, value):
-    """Mask a destination for display, e.g. k***@gmail.com / +8801***678."""
-    if kind == EMAIL:
-        local, _, domain = value.partition("@")
-        head = local[0] if local else ""
-        return f"{head}***@{domain}"
-    # phone: keep the first 3 chars (e.g. "+88") and last 3 digits, mask the rest.
-    if len(value) <= 6:
-        return value
-    return f"{value[:3]}{'*' * (len(value) - 6)}{value[-3:]}"
+    if destination_type == PHONE:
+        return _normalize_phone(raw, region)
+    if destination_type == EMAIL:
+        return _normalize_email(raw)
+    raise InvalidDestination("Unknown destination type.")

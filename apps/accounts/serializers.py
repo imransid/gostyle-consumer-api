@@ -2,43 +2,46 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
-from .identifiers import InvalidIdentifier, resolve_identifier
-from .models import ConsumerAccount
+from .identifiers import InvalidDestination, normalize_destination
+from .models import ConsumerAccount, DestinationType, Purpose
 
 
-def validate_new_password(password, confirm):
-    """Shared rule for register + reset: passwords match and pass the policy."""
-    if password != confirm:
-        raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
-    try:
-        validate_password(password)
-    except DjangoValidationError as exc:
-        raise serializers.ValidationError({"password": list(exc.messages)})
-
-
-class IdentifierSerializer(serializers.Serializer):
-    """Base for any endpoint whose input is a single email-or-phone field.
-
-    On success, validated_data gains `kind` ("email"/"phone") and the
-    normalized `destination`.
+class DestinationMixin:
+    """Normalizes `destination` against `destination_type` for every serializer
+    that accepts a contact. Runs in validate() so both fields are present.
     """
 
-    identifier = serializers.CharField()
-
-    def validate_identifier(self, value):
+    def _normalize(self, attrs):
         try:
-            self._kind, self._destination = resolve_identifier(value)
-        except InvalidIdentifier as exc:
-            raise serializers.ValidationError(str(exc))
-        return value
-
-    def validate(self, attrs):
-        attrs["kind"] = self._kind
-        attrs["destination"] = self._destination
+            attrs["destination"] = normalize_destination(
+                attrs["destination"], attrs["destination_type"]
+            )
+        except InvalidDestination as exc:
+            raise serializers.ValidationError({"destination": str(exc)})
         return attrs
 
 
-class RegisterSerializer(IdentifierSerializer):
+class OtpRequestSerializer(DestinationMixin, serializers.Serializer):
+    destination_type = serializers.ChoiceField(choices=DestinationType.choices)
+    destination = serializers.CharField(max_length=254)
+    purpose = serializers.ChoiceField(choices=Purpose.choices)
+
+    def validate(self, attrs):
+        return self._normalize(attrs)
+
+
+class OtpVerifySerializer(DestinationMixin, serializers.Serializer):
+    destination_type = serializers.ChoiceField(choices=DestinationType.choices)
+    destination = serializers.CharField(max_length=254)
+    purpose = serializers.ChoiceField(choices=Purpose.choices)
+    code = serializers.RegexField(r"^[0-9]{6}\Z")
+
+    def validate(self, attrs):
+        return self._normalize(attrs)
+
+
+class RegisterSerializer(serializers.Serializer):
+    verification_token = serializers.CharField()
     full_name = serializers.CharField(max_length=120)
     password = serializers.CharField(write_only=True)
     confirm_password = serializers.CharField(write_only=True)
@@ -52,36 +55,24 @@ class RegisterSerializer(IdentifierSerializer):
         return value
 
     def validate(self, attrs):
-        attrs = super().validate(attrs)
-        validate_new_password(attrs["password"], attrs["confirm_password"])
+        if attrs["password"] != attrs["confirm_password"]:
+            raise serializers.ValidationError(
+                {"confirm_password": "Passwords do not match."}
+            )
+        try:
+            validate_password(attrs["password"])
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"password": list(exc.messages)})
         return attrs
 
 
-class VerifySerializer(IdentifierSerializer):
-    code = serializers.CharField(min_length=6, max_length=6)
-
-
-class ResendSerializer(IdentifierSerializer):
-    pass
-
-
-class LoginSerializer(IdentifierSerializer):
+class LoginSerializer(DestinationMixin, serializers.Serializer):
+    destination_type = serializers.ChoiceField(choices=DestinationType.choices)
+    destination = serializers.CharField(max_length=254)
     password = serializers.CharField(write_only=True)
 
-
-class ForgotPasswordSerializer(IdentifierSerializer):
-    pass
-
-
-class ResetPasswordSerializer(IdentifierSerializer):
-    code = serializers.CharField(min_length=6, max_length=6)
-    new_password = serializers.CharField(write_only=True)
-    confirm_password = serializers.CharField(write_only=True)
-
     def validate(self, attrs):
-        attrs = super().validate(attrs)
-        validate_new_password(attrs["new_password"], attrs["confirm_password"])
-        return attrs
+        return self._normalize(attrs)
 
 
 class ProfileSerializer(serializers.ModelSerializer):
@@ -122,9 +113,11 @@ class DetailSerializer(serializers.Serializer):
     detail = serializers.CharField()
 
 
-class OtpSentSerializer(serializers.Serializer):
+class OtpRequestedSerializer(serializers.Serializer):
     detail = serializers.CharField()
-    destination = serializers.CharField()
-    channel = serializers.CharField(required=False)
     retry_after = serializers.IntegerField()
-    expires_in = serializers.IntegerField(required=False)
+
+
+class OtpVerifiedSerializer(serializers.Serializer):
+    verification_token = serializers.CharField()
+    account_exists = serializers.BooleanField()
