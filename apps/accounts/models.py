@@ -1,11 +1,26 @@
+import hashlib
 import uuid
+from datetime import timedelta
 
+from django.contrib.auth.hashers import check_password, make_password
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
 from django.db import models
-from datetime import timedelta
-from django.contrib.auth.hashers import check_password, make_password
+from django.db.models import Q
 from django.utils import timezone
+from django.utils.crypto import constant_time_compare
+
 from .managers import ConsumerAccountManager
+
+
+class Channel(models.TextChoices):
+    PHONE = "phone", "phone"
+    EMAIL = "email", "email"
+
+
+class Purpose(models.TextChoices):
+    REGISTER = "register", "register"
+    LOGIN = "login", "login"
+    PASSWORD_RESET = "password_reset", "password_reset"
 
 
 class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
@@ -39,25 +54,22 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
         db_table = "consumer_account"
 
     def __str__(self):
-        return self.phone
+        return self.phone or self.email or str(self.id)
+
 
 class OtpCode(models.Model):
     MAX_ATTEMPTS = 5
 
-    class Channel(models.TextChoices):
-        SMS = "sms", "SMS"
-        WHATSAPP = "whatsapp", "WhatsApp"
-        EMAIL = "email", "Email"
-
-    class Purpose(models.TextChoices):
-        VERIFY = "verify", "Verify contact"
-        RESET = "reset", "Password reset"
+    # Kept as class attributes for backwards-compatible references; the choices
+    # themselves live on the module-level Channel / Purpose enums.
+    Channel = Channel
+    Purpose = Purpose
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    # Destination is the phone number or email address the code was sent to.
-    destination = models.CharField(max_length=254, db_index=True)
-    channel = models.CharField(max_length=10, choices=Channel.choices, default=Channel.SMS)
-    purpose = models.CharField(max_length=12, choices=Purpose.choices, default=Purpose.VERIFY)
+    # The phone number (E.164) or email address the code was sent to.
+    identifier = models.CharField(max_length=254, db_index=True)
+    channel = models.CharField(max_length=10, choices=Channel.choices)
+    purpose = models.CharField(max_length=20, choices=Purpose.choices)
     code_hash = models.CharField(max_length=128)
 
     attempts = models.PositiveSmallIntegerField(default=0)
@@ -68,10 +80,14 @@ class OtpCode(models.Model):
     class Meta:
         db_table = "otp_code"
         indexes = [
+            # Lookups only ever want the newest live code for an
+            # (identifier, purpose) pair, so index exactly that and skip the
+            # consumed rows entirely.
             models.Index(
-                fields=["destination", "purpose", "consumed_at"],
-                name="otp_code_dest_purpose_idx",
-            )
+                fields=["identifier", "purpose", "-created_at"],
+                name="otp_code_live_idx",
+                condition=Q(consumed_at__isnull=True),
+            ),
         ]
 
     def set_code(self, raw_code, ttl_seconds=300):
@@ -88,3 +104,44 @@ class OtpCode(models.Model):
             and self.expires_at > timezone.now()
             and self.attempts < self.MAX_ATTEMPTS
         )
+
+
+def _hash_token(raw):
+    # A verification token is a high-entropy random string, so a fast
+    # deterministic digest is both safe and, unlike a salted password hash,
+    # queryable: register receives only the raw token and must find its row.
+    return hashlib.sha256((raw or "").encode()).hexdigest()
+
+
+class VerificationToken(models.Model):
+    """Proof that an identifier was OTP-verified, redeemed once by register.
+
+    Issued by verify_otp on success and consumed by register. Storing only the
+    hash means a database leak does not hand out usable tokens.
+    """
+
+    TTL_SECONDS = 600  # 10 minutes
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    token_hash = models.CharField(max_length=64, unique=True)
+    identifier = models.CharField(max_length=254, db_index=True)
+    channel = models.CharField(max_length=10, choices=Channel.choices)
+    purpose = models.CharField(max_length=20, choices=Purpose.choices)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    consumed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "verification_token"
+
+    def set_token(self, raw):
+        self.token_hash = _hash_token(raw)
+        self.expires_at = timezone.now() + timedelta(seconds=self.TTL_SECONDS)
+
+    def check_token(self, raw):
+        return constant_time_compare(self.token_hash, _hash_token(raw))
+
+    @property
+    def is_usable(self):
+        return self.consumed_at is None and self.expires_at > timezone.now()

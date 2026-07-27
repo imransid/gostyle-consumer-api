@@ -1,116 +1,166 @@
 import secrets
 
 from django.db import transaction
+from django.db.models import F
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from rest_framework_simplejwt.token_blacklist.models import (
-    BlacklistedToken,
-    OutstandingToken,
-)
+from rest_framework_simplejwt.tokens import RefreshToken
 
+from . import ratelimit
 from .identifiers import EMAIL
-from .models import ConsumerAccount, OtpCode
+from .models import ConsumerAccount, OtpCode, Purpose, VerificationToken, _hash_token
 from .notifications import get_sender
 
-RESEND_COOLDOWN_SECONDS = 60
 OTP_TTL_SECONDS = 300
+VERIFICATION_TOKEN_TTL_SECONDS = VerificationToken.TTL_SECONDS
 
 
-def find_account(kind, destination):
+def find_account(identifier, channel):
     """Look up an account by the identifier used to reach it."""
-    if kind == EMAIL:
-        return ConsumerAccount.objects.filter(email=destination).first()
-    return ConsumerAccount.objects.filter(phone=destination).first()
+    field = "email" if channel == EMAIL else "phone"
+    return ConsumerAccount.objects.filter(**{field: identifier}).first()
 
 
-def contact_verified(user, kind):
-    """Whether the contact matching `kind` has been OTP-verified."""
-    stamp = user.email_verified_at if kind == EMAIL else user.phone_verified_at
+def account_exists(identifier, channel):
+    field = "email" if channel == EMAIL else "phone"
+    return ConsumerAccount.objects.filter(**{field: identifier}).exists()
+
+
+def contact_verified(user, channel):
+    """Whether the contact matching `channel` has been OTP-verified."""
+    stamp = user.email_verified_at if channel == EMAIL else user.phone_verified_at
     return stamp is not None
 
 
-def revoke_refresh_tokens(user):
-    """Blacklist every outstanding refresh token for a user (kills all sessions)."""
-    for token in OutstandingToken.objects.filter(user=user):
-        BlacklistedToken.objects.get_or_create(token=token)
+def tokens_for(user):
+    refresh = RefreshToken.for_user(user)
+    return {"access": str(refresh.access_token), "refresh": str(refresh)}
 
 
-@transaction.atomic
-def reset_password(user, raw_password, kind):
-    """Set a new password after a verified reset code.
+def request_otp(identifier, channel, purpose, ip):
+    """Issue and deliver a one-time code for (identifier, purpose).
 
-    Passing the reset OTP also proves control of the contact, so mark it
-    verified, (re)activate the account, and revoke existing sessions.
+    Rate limits are enforced in Redis before any database work. The behaviour
+    and return value never depend on whether an account exists for the
+    identifier, so this cannot be used to enumerate accounts.
     """
-    user.set_password(raw_password)
-    field = "email_verified_at" if kind == EMAIL else "phone_verified_at"
-    if getattr(user, field) is None:
-        setattr(user, field, timezone.now())
-    user.is_active = True
-    user.save()
-    revoke_refresh_tokens(user)
+    ratelimit.enforce_request_otp(identifier, purpose, ip)
+
+    raw_code = f"{secrets.randbelow(1_000_000):06d}"
+
+    with transaction.atomic():
+        live = list(
+            OtpCode.objects.select_for_update()
+            .filter(identifier=identifier, purpose=purpose, consumed_at__isnull=True)
+            .order_by("-created_at")
+        )
+        if live:
+            OtpCode.objects.filter(pk__in=[c.pk for c in live]).update(
+                consumed_at=timezone.now()
+            )
+
+        otp = OtpCode(identifier=identifier, channel=channel, purpose=purpose)
+        otp.set_code(raw_code, ttl_seconds=OTP_TTL_SECONDS)
+        otp.save()
+
+        # Deliver only after the row is committed, and never while holding the
+        # row lock: a provider call inside the transaction would keep the lock
+        # for the length of a network round trip.
+        sender = get_sender(channel)
+        transaction.on_commit(
+            lambda: sender.send(identifier, raw_code, channel)
+        )
 
 
-@transaction.atomic
-def request_otp(destination, channel="sms", purpose=OtpCode.Purpose.VERIFY):
-    """Issue a one-time code for (destination, purpose) and deliver it.
+def verify_otp(identifier, channel, purpose, code, ip):
+    """Check a submitted code and, on success, issue a VerificationToken.
 
-    Codes are scoped by purpose so an in-flight "verify" code and a
-    "reset" code for the same address never invalidate each other.
+    Returns (raw_token, account_exists). Raises ValidationError on any failure.
+
+    A wrong code must advance the attempts counter durably. A write followed by
+    a raise inside one atomic block is rolled back, so the counter would never
+    move. We therefore compute `matched` and do the increment inside the block,
+    let the block commit, then raise afterwards.
     """
-    active = OtpCode.objects.filter(
-        destination=destination, purpose=purpose, consumed_at__isnull=True
-    )
+    ratelimit.enforce_verify_otp(ip)
 
-    latest = active.order_by("-created_at").first()
-    if latest:
-        age = (timezone.now() - latest.created_at).total_seconds()
-        if age < RESEND_COOLDOWN_SECONDS:
-            wait = int(RESEND_COOLDOWN_SECONDS - age)
-            raise ValidationError({"detail": f"Wait {wait}s before requesting again."})
-
-    active.update(consumed_at=timezone.now())
-
-    code = f"{secrets.randbelow(1_000_000):06d}"
-    otp = OtpCode(destination=destination, channel=channel, purpose=purpose)
-    otp.set_code(code, ttl_seconds=OTP_TTL_SECONDS)
-    otp.save()
-
-    get_sender(channel).send(destination, code)
-
-
-def verify_otp(destination, code, purpose=OtpCode.Purpose.VERIFY):
-    """Consume the latest usable code for (destination, purpose).
-
-    Returns None on success. Raises ValidationError on any failure. Account
-    creation / password changes are the caller's responsibility so this stays
-    reusable for both contact verification and password reset.
-    """
+    matched = False
     with transaction.atomic():
         otp = (
             OtpCode.objects.select_for_update()
-            .filter(destination=destination, purpose=purpose, consumed_at__isnull=True)
+            .filter(identifier=identifier, purpose=purpose, consumed_at__isnull=True)
             .order_by("-created_at")
             .first()
         )
+        # These guards write nothing, so raising inside the block is safe.
         if otp is None:
             raise ValidationError({"detail": "No active code. Request a new one."})
-
         if not otp.is_usable:
             raise ValidationError({"detail": "Code expired or too many attempts."})
 
-        if otp.check_code(code):
+        matched = otp.check_code(code)
+        if matched:
             otp.consumed_at = timezone.now()
             otp.save(update_fields=["consumed_at"])
-            return
+        else:
+            OtpCode.objects.filter(pk=otp.pk).update(attempts=F("attempts") + 1)
 
-        # Wrong code: record the attempt so the lockout counter advances. We
-        # must not raise inside the atomic block here — a ValidationError would
-        # propagate out and roll the increment back, so `attempts` would never
-        # grow and the account could never lock. Let the block commit the
-        # increment, then reject below.
-        otp.attempts += 1
-        otp.save(update_fields=["attempts"])
+    # Outside the atomic block: the increment above is now committed.
+    if not matched:
+        raise ValidationError({"detail": "Invalid code."})
 
-    raise ValidationError({"detail": "Invalid code."})
+    raw_token = secrets.token_urlsafe(32)
+    token = VerificationToken(identifier=identifier, channel=channel, purpose=purpose)
+    token.set_token(raw_token)
+    token.save()
+
+    return raw_token, account_exists(identifier, channel)
+
+
+def register(verification_token, full_name, password, accept_terms):
+    """Create an account from a verified-register token and return JWTs.
+
+    The token is looked up under a row lock, checked, and consumed inside the
+    same transaction that creates the account, so a token can back at most one
+    account and a failed create never burns the token.
+    """
+    with transaction.atomic():
+        token = (
+            VerificationToken.objects.select_for_update()
+            .filter(token_hash=_hash_token(verification_token))
+            .first()
+        )
+        if token is None or not token.is_usable:
+            raise ValidationError(
+                {"verification_token": "Invalid or expired verification token."}
+            )
+        if token.purpose != Purpose.REGISTER:
+            raise ValidationError(
+                {"verification_token": "This token cannot be used to register."}
+            )
+
+        token.consumed_at = timezone.now()
+        token.save(update_fields=["consumed_at"])
+
+        field = "email" if token.channel == EMAIL else "phone"
+        if ConsumerAccount.objects.filter(**{field: token.identifier}).exists():
+            raise ValidationError(
+                {"detail": "An account already exists for this contact. Please log in."}
+            )
+
+        now = timezone.now()
+        account = ConsumerAccount(
+            full_name=full_name,
+            accepted_terms_at=now,
+            is_active=True,
+        )
+        setattr(account, field, token.identifier)
+        if token.channel == EMAIL:
+            account.email_verified_at = now
+        else:
+            account.phone_verified_at = now
+        account.set_password(password)
+        account.save()
+
+    return tokens_for(account)
