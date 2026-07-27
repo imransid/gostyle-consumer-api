@@ -59,9 +59,9 @@ class Migration(migrations.Migration):
                 name="otp_code_live_idx",
             ),
         ),
-        # --- VerificationToken -------------------------------------------------
+        # --- Verification ------------------------------------------------------
         migrations.CreateModel(
-            name="VerificationToken",
+            name="Verification",
             fields=[
                 (
                     "id",
@@ -72,7 +72,6 @@ class Migration(migrations.Migration):
                         serialize=False,
                     ),
                 ),
-                ("token_hash", models.CharField(max_length=64, unique=True)),
                 ("destination", models.CharField(db_index=True, max_length=254)),
                 (
                     "destination_type",
@@ -96,7 +95,15 @@ class Migration(migrations.Migration):
                 ("consumed_at", models.DateTimeField(blank=True, null=True)),
             ],
             options={
-                "db_table": "verification_token",
+                "db_table": "verification",
             },
+        ),
+        migrations.AddIndex(
+            model_name="verification",
+            index=models.Index(
+                condition=models.Q(consumed_at__isnull=True),
+                fields=["destination", "destination_type", "purpose", "-created_at"],
+                name="verification_live_idx",
+            ),
         ),
     ]

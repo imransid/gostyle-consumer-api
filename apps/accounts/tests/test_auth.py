@@ -6,7 +6,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.identifiers import InvalidDestination, normalize_destination
-from apps.accounts.models import ConsumerAccount, OtpCode, VerificationToken
+from apps.accounts.models import ConsumerAccount, OtpCode, Verification
 
 PASSWORD = "Str0ng!Pass"
 
@@ -61,9 +61,16 @@ class AuthFlowTests(TestCase):
             format="json",
         )
 
+    def _verify_ok(self, destination_type, destination, code="654321", purpose="register"):
+        """Run request + verify with a known code and assert success."""
+        self._request(destination_type, destination, purpose)
+        self._set_code(destination, code, purpose)
+        resp = self._verify(destination_type, destination, code, purpose)
+        assert resp.status_code == 200, resp.data
+        return resp
+
     def _register(
         self,
-        token,
         destination_type="phone",
         destination=None,
         purpose="register",
@@ -76,7 +83,6 @@ class AuthFlowTests(TestCase):
         return self.client.post(
             "/api/v1/auth/register",
             {
-                "verification_token": token,
                 "destination_type": destination_type,
                 "destination": destination,
                 "purpose": purpose,
@@ -88,17 +94,9 @@ class AuthFlowTests(TestCase):
             format="json",
         )
 
-    def _issue_token(self, destination_type, destination, code="654321", purpose="register"):
-        """Run request + verify and return the raw verification token."""
-        self._request(destination_type, destination, purpose)
-        self._set_code(destination, code, purpose)
-        resp = self._verify(destination_type, destination, code, purpose)
-        assert resp.status_code == 200, resp.data
-        return resp.data["verification_token"]
-
     def _full_register(self, destination_type, destination):
-        token = self._issue_token(destination_type, destination)
-        return self._register(token, destination_type=destination_type, destination=destination)
+        self._verify_ok(destination_type, destination)
+        return self._register(destination_type=destination_type, destination=destination)
 
     # --- required: attempts + lockout ------------------------------------
     def test_attempts_persist_after_wrong_code_and_lockout(self):
@@ -134,48 +132,54 @@ class AuthFlowTests(TestCase):
         # The real code no longer works: the code is locked, not just wrong.
         resp = self._verify("phone", self.phone, "654321")
         self.assertEqual(resp.status_code, 400)
-        self.assertFalse(VerificationToken.objects.filter(destination=self.phone).exists())
+        self.assertFalse(Verification.objects.filter(destination=self.phone).exists())
 
-    # --- required: verification token semantics --------------------------
-    def test_verification_token_is_single_use(self):
-        token = self._issue_token("phone", self.phone)
+    # --- required: verification semantics --------------------------------
+    def test_verification_is_single_use(self):
+        self._verify_ok("phone", self.phone)
 
-        first = self._register(token)
+        first = self._register()
         self.assertEqual(first.status_code, 201)
 
-        second = self._register(token)
+        second = self._register()
         self.assertEqual(second.status_code, 400)
         self.assertEqual(ConsumerAccount.objects.filter(phone=self.phone).count(), 1)
 
+    def test_register_rejects_unverified_destination(self):
+        # No verify step at all: register must refuse to create the account.
+        resp = self._register()
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(ConsumerAccount.objects.filter(phone=self.phone).exists())
+
     def test_register_rejects_destination_mismatch(self):
-        # A token issued for one contact cannot register a different one.
-        token = self._issue_token("phone", self.phone)
+        # A verify for one contact cannot register a different one.
+        self._verify_ok("phone", self.phone)
         other = "+8801722222222"
 
-        resp = self._register(token, destination_type="phone", destination=other)
+        resp = self._register(destination_type="phone", destination=other)
         self.assertEqual(resp.status_code, 400)
         self.assertFalse(ConsumerAccount.objects.filter(phone=other).exists())
         self.assertFalse(ConsumerAccount.objects.filter(phone=self.phone).exists())
 
-        # The mismatch did not burn the token: the real contact can still register.
-        ok = self._register(token, destination_type="phone", destination=self.phone)
+        # The mismatch did not consume the real verification.
+        ok = self._register(destination_type="phone", destination=self.phone)
         self.assertEqual(ok.status_code, 201)
 
-    def test_password_reset_token_cannot_register(self):
-        token = self._issue_token("phone", self.phone, purpose="password_reset")
+    def test_password_reset_verification_cannot_register(self):
+        self._verify_ok("phone", self.phone, purpose="password_reset")
 
-        resp = self._register(token)
+        resp = self._register(destination_type="phone", destination=self.phone)
         self.assertEqual(resp.status_code, 400)
         self.assertFalse(ConsumerAccount.objects.filter(phone=self.phone).exists())
 
-    def test_register_with_expired_token_fails(self):
-        token = self._issue_token("phone", self.phone)
+    def test_register_with_expired_verification_fails(self):
+        self._verify_ok("phone", self.phone)
 
-        vt = VerificationToken.objects.get(destination=self.phone)
-        vt.expires_at = timezone.now() - timedelta(seconds=1)
-        vt.save(update_fields=["expires_at"])
+        v = Verification.objects.get(destination=self.phone)
+        v.expires_at = timezone.now() - timedelta(seconds=1)
+        v.save(update_fields=["expires_at"])
 
-        resp = self._register(token)
+        resp = self._register(destination_type="phone", destination=self.phone)
         self.assertEqual(resp.status_code, 400)
         self.assertFalse(ConsumerAccount.objects.filter(phone=self.phone).exists())
 
@@ -256,18 +260,19 @@ class AuthFlowTests(TestCase):
         self._set_code(self.phone, "654321")
         resp = self._verify("phone", self.phone, "654321")
         self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.data["verified"])
         self.assertTrue(resp.data["account_exists"])
 
     def test_register_rejects_weak_password(self):
-        token = self._issue_token("phone", self.phone)
-        resp = self._register(token, password="weak")
+        self._verify_ok("phone", self.phone)
+        resp = self._register(password="weak")
         self.assertEqual(resp.status_code, 400)
         self.assertIn("password", resp.data)
         self.assertFalse(ConsumerAccount.objects.filter(phone=self.phone).exists())
 
     def test_register_requires_accepted_terms(self):
-        token = self._issue_token("phone", self.phone)
-        resp = self._register(token, accept_terms=False)
+        self._verify_ok("phone", self.phone)
+        resp = self._register(accept_terms=False)
         self.assertEqual(resp.status_code, 400)
         self.assertFalse(ConsumerAccount.objects.filter(phone=self.phone).exists())
 

@@ -1,4 +1,3 @@
-import hashlib
 import uuid
 from datetime import timedelta
 
@@ -7,7 +6,6 @@ from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
-from django.utils.crypto import constant_time_compare
 
 from .managers import ConsumerAccountManager
 
@@ -106,24 +104,18 @@ class OtpCode(models.Model):
         )
 
 
-def _hash_token(raw):
-    # A verification token is a high-entropy random string, so a fast
-    # deterministic digest is both safe and, unlike a salted password hash,
-    # queryable: register receives only the raw token and must find its row.
-    return hashlib.sha256((raw or "").encode()).hexdigest()
+class Verification(models.Model):
+    """A recent successful OTP verification for a destination.
 
-
-class VerificationToken(models.Model):
-    """Proof that a destination was OTP-verified, redeemed once by register.
-
-    Issued by verify_otp on success and consumed by register. Storing only the
-    hash means a database leak does not hand out usable tokens.
+    Issued by verify_otp and redeemed once by register. It is how the
+    verify-then-register flow proves the destination was verified without the
+    client carrying a token: register looks up the newest usable row for the
+    (destination, destination_type, purpose) it was asked to register.
     """
 
     TTL_SECONDS = 600  # 10 minutes
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    token_hash = models.CharField(max_length=64, unique=True)
     destination = models.CharField(max_length=254, db_index=True)
     destination_type = models.CharField(max_length=10, choices=DestinationType.choices)
     purpose = models.CharField(max_length=20, choices=Purpose.choices)
@@ -133,14 +125,23 @@ class VerificationToken(models.Model):
     consumed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        db_table = "verification_token"
+        db_table = "verification"
+        indexes = [
+            models.Index(
+                fields=["destination", "destination_type", "purpose", "-created_at"],
+                name="verification_live_idx",
+                condition=Q(consumed_at__isnull=True),
+            ),
+        ]
 
-    def set_token(self, raw):
-        self.token_hash = _hash_token(raw)
-        self.expires_at = timezone.now() + timedelta(seconds=self.TTL_SECONDS)
-
-    def check_token(self, raw):
-        return constant_time_compare(self.token_hash, _hash_token(raw))
+    @classmethod
+    def issue(cls, destination, destination_type, purpose):
+        return cls.objects.create(
+            destination=destination,
+            destination_type=destination_type,
+            purpose=purpose,
+            expires_at=timezone.now() + timedelta(seconds=cls.TTL_SECONDS),
+        )
 
     @property
     def is_usable(self):

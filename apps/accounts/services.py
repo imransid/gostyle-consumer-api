@@ -9,11 +9,11 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from . import ratelimit
 from .identifiers import EMAIL
-from .models import ConsumerAccount, OtpCode, Purpose, VerificationToken, _hash_token
+from .models import ConsumerAccount, OtpCode, Purpose, Verification
 from .notifications import get_sender
 
 OTP_TTL_SECONDS = 300
-VERIFICATION_TOKEN_TTL_SECONDS = VerificationToken.TTL_SECONDS
+VERIFICATION_TTL_SECONDS = Verification.TTL_SECONDS
 
 
 def _account_field(destination_type):
@@ -80,9 +80,9 @@ def request_otp(destination, destination_type, purpose, ip):
 
 
 def verify_otp(destination, destination_type, purpose, code, ip):
-    """Check a submitted code and, on success, issue a VerificationToken.
+    """Check a submitted code and, on success, record a Verification.
 
-    Returns (raw_token, account_exists). Raises ValidationError on any failure.
+    Returns account_exists. Raises ValidationError on any failure.
 
     A wrong code must advance the attempts counter durably. A write followed by
     a raise inside one atomic block is rolled back, so the counter would never
@@ -116,66 +116,48 @@ def verify_otp(destination, destination_type, purpose, code, ip):
     if not matched:
         raise ValidationError({"detail": "Invalid code."})
 
-    raw_token = secrets.token_urlsafe(32)
-    token = VerificationToken(
-        destination=destination, destination_type=destination_type, purpose=purpose
-    )
-    token.set_token(raw_token)
-    token.save()
+    Verification.issue(destination, destination_type, purpose)
 
-    return raw_token, account_exists(destination, destination_type)
+    return account_exists(destination, destination_type)
 
 
-def register(
-    verification_token,
-    destination,
-    destination_type,
-    purpose,
-    full_name,
-    password,
-    accept_terms,
-):
-    """Create an account from a verified-register token and return JWTs.
+def register(destination, destination_type, purpose, full_name, password, accept_terms):
+    """Create an account for a destination that was just OTP-verified.
 
-    The token is looked up under a row lock, checked, and consumed inside the
-    same transaction that creates the account, so a token can back at most one
-    account and a failed create never burns the token. The caller also re-states
-    the (destination, destination_type, purpose) it verified; these must match
-    the token, so a token can only ever register the contact it was issued for.
+    Instead of a client-held token, register looks up the newest usable
+    Verification for (destination, destination_type, register), locks and
+    consumes it in the same transaction that creates the account. So the
+    account cannot be created without a prior verify, the verification backs at
+    most one account, and a failed create never burns it.
     """
+    if purpose != Purpose.REGISTER:
+        raise ValidationError({"purpose": "Only register is valid at this endpoint."})
+
     with transaction.atomic():
-        token = (
-            VerificationToken.objects.select_for_update()
-            .filter(token_hash=_hash_token(verification_token))
+        verification = (
+            Verification.objects.select_for_update()
+            .filter(
+                destination=destination,
+                destination_type=destination_type,
+                purpose=Purpose.REGISTER,
+                consumed_at__isnull=True,
+            )
+            .order_by("-created_at")
             .first()
         )
-        if token is None or not token.is_usable:
+        if verification is None or not verification.is_usable:
             raise ValidationError(
-                {"verification_token": "Invalid or expired verification token."}
-            )
-        if token.purpose != Purpose.REGISTER:
-            raise ValidationError(
-                {"verification_token": "This token cannot be used to register."}
-            )
-        # Bind the token to the submitted contact. Checked before consuming so a
-        # simple mismatch (e.g. a typo) leaves the token usable for a retry.
-        if (
-            token.destination != destination
-            or token.destination_type != destination_type
-            or token.purpose != purpose
-        ):
-            raise ValidationError(
-                {"detail": "Verification token does not match the provided details."}
+                {"detail": "This contact has not been verified. Verify a code first."}
             )
 
-        token.consumed_at = timezone.now()
-        token.save(update_fields=["consumed_at"])
-
-        field = _account_field(token.destination_type)
-        if ConsumerAccount.objects.filter(**{field: token.destination}).exists():
+        field = _account_field(destination_type)
+        if ConsumerAccount.objects.filter(**{field: destination}).exists():
             raise ValidationError(
                 {"detail": "An account already exists for this contact. Please log in."}
             )
+
+        verification.consumed_at = timezone.now()
+        verification.save(update_fields=["consumed_at"])
 
         now = timezone.now()
         account = ConsumerAccount(
@@ -183,8 +165,8 @@ def register(
             accepted_terms_at=now,
             is_active=True,
         )
-        setattr(account, field, token.destination)
-        if token.destination_type == EMAIL:
+        setattr(account, field, destination)
+        if destination_type == EMAIL:
             account.email_verified_at = now
         else:
             account.phone_verified_at = now

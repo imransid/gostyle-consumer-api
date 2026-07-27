@@ -68,7 +68,7 @@ class OtpVerifyView(APIView):
         s.is_valid(raise_exception=True)
         data = s.validated_data
 
-        raw_token, account_exists = services.verify_otp(
+        account_exists = services.verify_otp(
             destination=data["destination"],
             destination_type=data["destination_type"],
             purpose=data["purpose"],
@@ -76,7 +76,7 @@ class OtpVerifyView(APIView):
             ip=_client_ip(request),
         )
         return Response(
-            {"verification_token": raw_token, "account_exists": account_exists},
+            {"verified": True, "account_exists": account_exists},
             status=status.HTTP_200_OK,
         )
 
@@ -92,7 +92,6 @@ class RegisterView(APIView):
         data = s.validated_data
 
         tokens = services.register(
-            verification_token=data["verification_token"],
             destination=data["destination"],
             destination_type=data["destination_type"],
             purpose=data["purpose"],

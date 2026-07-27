@@ -41,10 +41,8 @@ class OtpVerifySerializer(DestinationMixin, serializers.Serializer):
 
 
 class RegisterSerializer(DestinationMixin, serializers.Serializer):
-    verification_token = serializers.CharField()
-    # The caller re-states the contact it verified; the service checks these
-    # against the token so the token can only register the destination it was
-    # issued for.
+    # No token: register names the contact it verified, and the service checks
+    # there is a recent, unused Verification for it.
     destination_type = serializers.ChoiceField(choices=DestinationType.choices)
     destination = serializers.CharField(max_length=254)
     purpose = serializers.ChoiceField(choices=Purpose.choices, required=False, default=Purpose.REGISTER)
@@ -126,5 +124,5 @@ class OtpRequestedSerializer(serializers.Serializer):
 
 
 class OtpVerifiedSerializer(serializers.Serializer):
-    verification_token = serializers.CharField()
+    verified = serializers.BooleanField()
     account_exists = serializers.BooleanField()
