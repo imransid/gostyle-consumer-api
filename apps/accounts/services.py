@@ -126,12 +126,22 @@ def verify_otp(destination, destination_type, purpose, code, ip):
     return raw_token, account_exists(destination, destination_type)
 
 
-def register(verification_token, full_name, password, accept_terms):
+def register(
+    verification_token,
+    destination,
+    destination_type,
+    purpose,
+    full_name,
+    password,
+    accept_terms,
+):
     """Create an account from a verified-register token and return JWTs.
 
     The token is looked up under a row lock, checked, and consumed inside the
     same transaction that creates the account, so a token can back at most one
-    account and a failed create never burns the token.
+    account and a failed create never burns the token. The caller also re-states
+    the (destination, destination_type, purpose) it verified; these must match
+    the token, so a token can only ever register the contact it was issued for.
     """
     with transaction.atomic():
         token = (
@@ -146,6 +156,16 @@ def register(verification_token, full_name, password, accept_terms):
         if token.purpose != Purpose.REGISTER:
             raise ValidationError(
                 {"verification_token": "This token cannot be used to register."}
+            )
+        # Bind the token to the submitted contact. Checked before consuming so a
+        # simple mismatch (e.g. a typo) leaves the token usable for a retry.
+        if (
+            token.destination != destination
+            or token.destination_type != destination_type
+            or token.purpose != purpose
+        ):
+            raise ValidationError(
+                {"detail": "Verification token does not match the provided details."}
             )
 
         token.consumed_at = timezone.now()

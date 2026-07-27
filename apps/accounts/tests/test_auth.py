@@ -61,11 +61,25 @@ class AuthFlowTests(TestCase):
             format="json",
         )
 
-    def _register(self, token, full_name="Kevin Rogers", password=PASSWORD, accept_terms=True):
+    def _register(
+        self,
+        token,
+        destination_type="phone",
+        destination=None,
+        purpose="register",
+        full_name="Kevin Rogers",
+        password=PASSWORD,
+        accept_terms=True,
+    ):
+        if destination is None:
+            destination = self.phone
         return self.client.post(
             "/api/v1/auth/register",
             {
                 "verification_token": token,
+                "destination_type": destination_type,
+                "destination": destination,
+                "purpose": purpose,
                 "full_name": full_name,
                 "password": password,
                 "confirm_password": password,
@@ -84,7 +98,7 @@ class AuthFlowTests(TestCase):
 
     def _full_register(self, destination_type, destination):
         token = self._issue_token(destination_type, destination)
-        return self._register(token)
+        return self._register(token, destination_type=destination_type, destination=destination)
 
     # --- required: attempts + lockout ------------------------------------
     def test_attempts_persist_after_wrong_code_and_lockout(self):
@@ -132,6 +146,20 @@ class AuthFlowTests(TestCase):
         second = self._register(token)
         self.assertEqual(second.status_code, 400)
         self.assertEqual(ConsumerAccount.objects.filter(phone=self.phone).count(), 1)
+
+    def test_register_rejects_destination_mismatch(self):
+        # A token issued for one contact cannot register a different one.
+        token = self._issue_token("phone", self.phone)
+        other = "+8801722222222"
+
+        resp = self._register(token, destination_type="phone", destination=other)
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(ConsumerAccount.objects.filter(phone=other).exists())
+        self.assertFalse(ConsumerAccount.objects.filter(phone=self.phone).exists())
+
+        # The mismatch did not burn the token: the real contact can still register.
+        ok = self._register(token, destination_type="phone", destination=self.phone)
+        self.assertEqual(ok.status_code, 201)
 
     def test_password_reset_token_cannot_register(self):
         token = self._issue_token("phone", self.phone, purpose="password_reset")

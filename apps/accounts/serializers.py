@@ -40,8 +40,14 @@ class OtpVerifySerializer(DestinationMixin, serializers.Serializer):
         return self._normalize(attrs)
 
 
-class RegisterSerializer(serializers.Serializer):
+class RegisterSerializer(DestinationMixin, serializers.Serializer):
     verification_token = serializers.CharField()
+    # The caller re-states the contact it verified; the service checks these
+    # against the token so the token can only register the destination it was
+    # issued for.
+    destination_type = serializers.ChoiceField(choices=DestinationType.choices)
+    destination = serializers.CharField(max_length=254)
+    purpose = serializers.ChoiceField(choices=Purpose.choices, required=False, default=Purpose.REGISTER)
     full_name = serializers.CharField(max_length=120)
     password = serializers.CharField(write_only=True)
     confirm_password = serializers.CharField(write_only=True)
@@ -55,6 +61,7 @@ class RegisterSerializer(serializers.Serializer):
         return value
 
     def validate(self, attrs):
+        attrs = self._normalize(attrs)
         if attrs["password"] != attrs["confirm_password"]:
             raise serializers.ValidationError(
                 {"confirm_password": "Passwords do not match."}

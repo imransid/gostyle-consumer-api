@@ -93,6 +93,9 @@ class RegisterView(APIView):
 
         tokens = services.register(
             verification_token=data["verification_token"],
+            destination=data["destination"],
+            destination_type=data["destination_type"],
+            purpose=data["purpose"],
             full_name=data["full_name"],
             password=data["password"],
             accept_terms=data["accept_terms"],
