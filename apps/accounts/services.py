@@ -20,6 +20,10 @@ def _account_field(destination_type):
     return "email" if destination_type == EMAIL else "phone"
 
 
+def _verified_field(destination_type):
+    return "email_verified_at" if destination_type == EMAIL else "phone_verified_at"
+
+
 def find_account(destination, destination_type):
     """Look up an account by the destination used to reach it."""
     field = _account_field(destination_type)
@@ -79,16 +83,38 @@ def request_otp(destination, destination_type, purpose, ip):
         )
 
 
-def _verified_field(destination_type):
-    return "email_verified_at" if destination_type == EMAIL else "phone_verified_at"
+def request_otp_for_user(user, destination_type, purpose, ip):
+    """Like request_otp, but the destination is always the caller's own
+    contact on file — never a client-supplied value. Prevents an
+    authenticated user from spamming OTPs to someone else's email/phone.
+    """
+    field = _account_field(destination_type)
+    destination = getattr(user, field)
+    if not destination:
+        raise ValidationError(
+            {"detail": f"No {destination_type} on file for this account."}
+        )
+    request_otp(
+        destination=destination,
+        destination_type=destination_type,
+        purpose=purpose,
+        ip=ip,
+    )
 
-def verify_otp(destination, destination_type, purpose, code, ip):
 
-    """Check a submitted code and, on success, mark the matching account
-    verified (and active) for that contact.
+def verify_otp_for_user(user, destination_type, purpose, code, ip):
+    """Check a submitted code against the caller's own contact and, on
+    success, mark that user's row verified (and active).
 
-    Returns account_exists. Raises ValidationError on any failure.
-    """ 
+    Raises ValidationError on any failure.
+    """
+    field = _account_field(destination_type)
+    destination = getattr(user, field)
+    if not destination:
+        raise ValidationError(
+            {"detail": f"No {destination_type} on file for this account."}
+        )
+
     ratelimit.enforce_verify_otp(ip)
 
     matched = False
@@ -116,19 +142,17 @@ def verify_otp(destination, destination_type, purpose, code, ip):
     if not matched:
         raise ValidationError({"detail": "Invalid code."})
 
-    field = _account_field(destination_type)
-    updated = ConsumerAccount.objects.filter(**{field: destination}).update(
+    ConsumerAccount.objects.filter(pk=user.pk).update(
         **{_verified_field(destination_type): timezone.now()},
         account_verified=True,
         is_active=True,
     )
-    return account_exists(destination, destination_type)
 
 
 def register(destination, destination_type, full_name, password):
     """Create the account directly. No OTP/Verification required here —
-    verification happens later via request_otp/verify_otp against this
-    account.
+    verification happens later via request_otp_for_user/verify_otp_for_user
+    against this account.
     """
     field = _account_field(destination_type)
 
@@ -147,6 +171,9 @@ def register(destination, destination_type, full_name, password):
         setattr(account, field, destination)
         account.set_password(password)
         account.save()
+
+    tokens = tokens_for(account)
     return {
         "detail": "Registration successful. Please verify your account to continue.",
+        **tokens,
     }
