@@ -50,8 +50,8 @@ class OtpRequestView(APIView):
         data = s.validated_data
 
         services.request_otp(
-            identifier=data["identifier"],
-            channel=data["channel"],
+            destination=data["destination"],
+            destination_type=data["destination_type"],
             purpose=data["purpose"],
             ip=_client_ip(request),
         )
@@ -69,8 +69,8 @@ class OtpVerifyView(APIView):
         data = s.validated_data
 
         raw_token, account_exists = services.verify_otp(
-            identifier=data["identifier"],
-            channel=data["channel"],
+            destination=data["destination"],
+            destination_type=data["destination_type"],
             purpose=data["purpose"],
             code=data["code"],
             ip=_client_ip(request),
@@ -110,14 +110,14 @@ class LoginView(APIView):
         s = LoginSerializer(data=request.data)
         s.is_valid(raise_exception=True)
         data = s.validated_data
-        channel, identifier = data["channel"], data["identifier"]
+        destination_type, destination = data["destination_type"], data["destination"]
 
-        account = services.find_account(identifier, channel)
+        account = services.find_account(destination, destination_type)
         if account is None or not account.check_password(data["password"]):
             raise ValidationError({"detail": "Invalid credentials."})
         if not account.is_active:
             raise ValidationError({"detail": "Account disabled."})
-        if not services.contact_verified(account, channel):
+        if not services.contact_verified(account, destination_type):
             raise ValidationError({"detail": "Please verify your account before logging in."})
 
         return Response(services.tokens_for(account), status=status.HTTP_200_OK)

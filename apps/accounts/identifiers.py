@@ -17,8 +17,8 @@ DEFAULT_REGION = "BD"
 _MOBILE_TYPES = frozenset({PhoneNumberType.MOBILE, PhoneNumberType.FIXED_LINE_OR_MOBILE})
 
 
-class InvalidIdentifier(ValueError):
-    """Raised when a value is not a valid identifier for its channel."""
+class InvalidDestination(ValueError):
+    """Raised when a value is not valid for its destination type."""
 
 
 def _normalize_phone(raw, region):
@@ -28,13 +28,13 @@ def _normalize_phone(raw, region):
     try:
         parsed = phonenumbers.parse(raw or "", region)
     except phonenumbers.NumberParseException:
-        raise InvalidIdentifier("Enter a valid phone number.")
+        raise InvalidDestination("Enter a valid phone number.")
 
     if not phonenumbers.is_valid_number(parsed):
-        raise InvalidIdentifier("Enter a valid phone number.")
+        raise InvalidDestination("Enter a valid phone number.")
 
     if number_type(parsed) not in _MOBILE_TYPES:
-        raise InvalidIdentifier("Enter a valid mobile phone number.")
+        raise InvalidDestination("Enter a valid mobile phone number.")
 
     return phonenumbers.format_number(parsed, PhoneNumberFormat.E164)
 
@@ -44,19 +44,19 @@ def _normalize_email(raw):
     try:
         validate_email(cleaned)
     except DjangoValidationError:
-        raise InvalidIdentifier("Enter a valid email address.")
+        raise InvalidDestination("Enter a valid email address.")
     return cleaned
 
 
-def normalize_identifier(raw, channel, region=DEFAULT_REGION):
-    """Normalize a phone/email identifier to its canonical stored form.
+def normalize_destination(raw, destination_type, region=DEFAULT_REGION):
+    """Normalize a phone/email destination to its canonical stored form.
 
     Phone -> E.164 via libphonenumber (validated, mobile-capable).
     Email -> trimmed, lowercased, validated.
-    Raises InvalidIdentifier on anything that does not pass.
+    Raises InvalidDestination on anything that does not pass.
     """
-    if channel == PHONE:
+    if destination_type == PHONE:
         return _normalize_phone(raw, region)
-    if channel == EMAIL:
+    if destination_type == EMAIL:
         return _normalize_email(raw)
-    raise InvalidIdentifier("Unknown channel.")
+    raise InvalidDestination("Unknown destination type.")

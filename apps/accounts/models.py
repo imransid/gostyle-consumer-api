@@ -12,7 +12,7 @@ from django.utils.crypto import constant_time_compare
 from .managers import ConsumerAccountManager
 
 
-class Channel(models.TextChoices):
+class DestinationType(models.TextChoices):
     PHONE = "phone", "phone"
     EMAIL = "email", "email"
 
@@ -61,14 +61,14 @@ class OtpCode(models.Model):
     MAX_ATTEMPTS = 5
 
     # Kept as class attributes for backwards-compatible references; the choices
-    # themselves live on the module-level Channel / Purpose enums.
-    Channel = Channel
+    # live on the module-level DestinationType / Purpose enums.
+    DestinationType = DestinationType
     Purpose = Purpose
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     # The phone number (E.164) or email address the code was sent to.
-    identifier = models.CharField(max_length=254, db_index=True)
-    channel = models.CharField(max_length=10, choices=Channel.choices)
+    destination = models.CharField(max_length=254, db_index=True)
+    destination_type = models.CharField(max_length=10, choices=DestinationType.choices)
     purpose = models.CharField(max_length=20, choices=Purpose.choices)
     code_hash = models.CharField(max_length=128)
 
@@ -80,11 +80,11 @@ class OtpCode(models.Model):
     class Meta:
         db_table = "otp_code"
         indexes = [
-            # Lookups only ever want the newest live code for an
-            # (identifier, purpose) pair, so index exactly that and skip the
+            # Lookups only ever want the newest live code for a
+            # (destination, purpose) pair, so index exactly that and skip the
             # consumed rows entirely.
             models.Index(
-                fields=["identifier", "purpose", "-created_at"],
+                fields=["destination", "purpose", "-created_at"],
                 name="otp_code_live_idx",
                 condition=Q(consumed_at__isnull=True),
             ),
@@ -114,7 +114,7 @@ def _hash_token(raw):
 
 
 class VerificationToken(models.Model):
-    """Proof that an identifier was OTP-verified, redeemed once by register.
+    """Proof that a destination was OTP-verified, redeemed once by register.
 
     Issued by verify_otp on success and consumed by register. Storing only the
     hash means a database leak does not hand out usable tokens.
@@ -124,8 +124,8 @@ class VerificationToken(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     token_hash = models.CharField(max_length=64, unique=True)
-    identifier = models.CharField(max_length=254, db_index=True)
-    channel = models.CharField(max_length=10, choices=Channel.choices)
+    destination = models.CharField(max_length=254, db_index=True)
+    destination_type = models.CharField(max_length=10, choices=DestinationType.choices)
     purpose = models.CharField(max_length=20, choices=Purpose.choices)
 
     created_at = models.DateTimeField(auto_now_add=True)

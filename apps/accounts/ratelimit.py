@@ -12,9 +12,9 @@ HOUR = 3600
 DAY = 86400
 
 # request_otp limits.
-COOLDOWN_SECONDS = 60          # min gap between codes for one (identifier, purpose)
-PER_IDENTIFIER_HOURLY = 5
-PER_IDENTIFIER_DAILY = 10
+COOLDOWN_SECONDS = 60          # min gap between codes for one (destination, purpose)
+PER_DESTINATION_HOURLY = 5
+PER_DESTINATION_DAILY = 10
 PER_IP_HOURLY = 20
 
 # verify_otp limits.
@@ -22,8 +22,8 @@ VERIFY_PER_IP_HOURLY = 20
 
 
 def _too_generic():
-    # The wording never depends on the identifier or on account existence, so a
-    # rate-limit response cannot be used to probe for accounts.
+    # The wording never depends on the destination or on account existence, so
+    # a rate-limit response cannot be used to probe for accounts.
     return Throttled(detail="Too many requests. Please try again later.")
 
 
@@ -47,15 +47,15 @@ def _bump(key, limit, window):
         raise _too_generic()
 
 
-def enforce_request_otp(identifier, purpose, ip):
+def enforce_request_otp(destination, purpose, ip):
     # Cooldown first: it is the cheapest gate and the most common rejection.
-    if not cache.add(f"otp:cooldown:{purpose}:{identifier}", 1, COOLDOWN_SECONDS):
+    if not cache.add(f"otp:cooldown:{purpose}:{destination}", 1, COOLDOWN_SECONDS):
         raise Throttled(
             wait=COOLDOWN_SECONDS,
             detail="Please wait before requesting another code.",
         )
-    _bump(f"otp:id:hour:{identifier}", PER_IDENTIFIER_HOURLY, HOUR)
-    _bump(f"otp:id:day:{identifier}", PER_IDENTIFIER_DAILY, DAY)
+    _bump(f"otp:dest:hour:{destination}", PER_DESTINATION_HOURLY, HOUR)
+    _bump(f"otp:dest:day:{destination}", PER_DESTINATION_DAILY, DAY)
     if ip:
         _bump(f"otp:ip:hour:{ip}", PER_IP_HOURLY, HOUR)
 

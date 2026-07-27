@@ -16,20 +16,24 @@ OTP_TTL_SECONDS = 300
 VERIFICATION_TOKEN_TTL_SECONDS = VerificationToken.TTL_SECONDS
 
 
-def find_account(identifier, channel):
-    """Look up an account by the identifier used to reach it."""
-    field = "email" if channel == EMAIL else "phone"
-    return ConsumerAccount.objects.filter(**{field: identifier}).first()
+def _account_field(destination_type):
+    return "email" if destination_type == EMAIL else "phone"
 
 
-def account_exists(identifier, channel):
-    field = "email" if channel == EMAIL else "phone"
-    return ConsumerAccount.objects.filter(**{field: identifier}).exists()
+def find_account(destination, destination_type):
+    """Look up an account by the destination used to reach it."""
+    field = _account_field(destination_type)
+    return ConsumerAccount.objects.filter(**{field: destination}).first()
 
 
-def contact_verified(user, channel):
-    """Whether the contact matching `channel` has been OTP-verified."""
-    stamp = user.email_verified_at if channel == EMAIL else user.phone_verified_at
+def account_exists(destination, destination_type):
+    field = _account_field(destination_type)
+    return ConsumerAccount.objects.filter(**{field: destination}).exists()
+
+
+def contact_verified(user, destination_type):
+    """Whether the contact matching `destination_type` has been OTP-verified."""
+    stamp = user.email_verified_at if destination_type == EMAIL else user.phone_verified_at
     return stamp is not None
 
 
@@ -38,21 +42,21 @@ def tokens_for(user):
     return {"access": str(refresh.access_token), "refresh": str(refresh)}
 
 
-def request_otp(identifier, channel, purpose, ip):
-    """Issue and deliver a one-time code for (identifier, purpose).
+def request_otp(destination, destination_type, purpose, ip):
+    """Issue and deliver a one-time code for (destination, purpose).
 
     Rate limits are enforced in Redis before any database work. The behaviour
     and return value never depend on whether an account exists for the
-    identifier, so this cannot be used to enumerate accounts.
+    destination, so this cannot be used to enumerate accounts.
     """
-    ratelimit.enforce_request_otp(identifier, purpose, ip)
+    ratelimit.enforce_request_otp(destination, purpose, ip)
 
     raw_code = f"{secrets.randbelow(1_000_000):06d}"
 
     with transaction.atomic():
         live = list(
             OtpCode.objects.select_for_update()
-            .filter(identifier=identifier, purpose=purpose, consumed_at__isnull=True)
+            .filter(destination=destination, purpose=purpose, consumed_at__isnull=True)
             .order_by("-created_at")
         )
         if live:
@@ -60,20 +64,22 @@ def request_otp(identifier, channel, purpose, ip):
                 consumed_at=timezone.now()
             )
 
-        otp = OtpCode(identifier=identifier, channel=channel, purpose=purpose)
+        otp = OtpCode(
+            destination=destination, destination_type=destination_type, purpose=purpose
+        )
         otp.set_code(raw_code, ttl_seconds=OTP_TTL_SECONDS)
         otp.save()
 
         # Deliver only after the row is committed, and never while holding the
         # row lock: a provider call inside the transaction would keep the lock
         # for the length of a network round trip.
-        sender = get_sender(channel)
+        sender = get_sender(destination_type)
         transaction.on_commit(
-            lambda: sender.send(identifier, raw_code, channel)
+            lambda: sender.send(destination, raw_code, destination_type)
         )
 
 
-def verify_otp(identifier, channel, purpose, code, ip):
+def verify_otp(destination, destination_type, purpose, code, ip):
     """Check a submitted code and, on success, issue a VerificationToken.
 
     Returns (raw_token, account_exists). Raises ValidationError on any failure.
@@ -89,7 +95,7 @@ def verify_otp(identifier, channel, purpose, code, ip):
     with transaction.atomic():
         otp = (
             OtpCode.objects.select_for_update()
-            .filter(identifier=identifier, purpose=purpose, consumed_at__isnull=True)
+            .filter(destination=destination, purpose=purpose, consumed_at__isnull=True)
             .order_by("-created_at")
             .first()
         )
@@ -111,11 +117,13 @@ def verify_otp(identifier, channel, purpose, code, ip):
         raise ValidationError({"detail": "Invalid code."})
 
     raw_token = secrets.token_urlsafe(32)
-    token = VerificationToken(identifier=identifier, channel=channel, purpose=purpose)
+    token = VerificationToken(
+        destination=destination, destination_type=destination_type, purpose=purpose
+    )
     token.set_token(raw_token)
     token.save()
 
-    return raw_token, account_exists(identifier, channel)
+    return raw_token, account_exists(destination, destination_type)
 
 
 def register(verification_token, full_name, password, accept_terms):
@@ -143,8 +151,8 @@ def register(verification_token, full_name, password, accept_terms):
         token.consumed_at = timezone.now()
         token.save(update_fields=["consumed_at"])
 
-        field = "email" if token.channel == EMAIL else "phone"
-        if ConsumerAccount.objects.filter(**{field: token.identifier}).exists():
+        field = _account_field(token.destination_type)
+        if ConsumerAccount.objects.filter(**{field: token.destination}).exists():
             raise ValidationError(
                 {"detail": "An account already exists for this contact. Please log in."}
             )
@@ -155,8 +163,8 @@ def register(verification_token, full_name, password, accept_terms):
             accepted_terms_at=now,
             is_active=True,
         )
-        setattr(account, field, token.identifier)
-        if token.channel == EMAIL:
+        setattr(account, field, token.destination)
+        if token.destination_type == EMAIL:
             account.email_verified_at = now
         else:
             account.phone_verified_at = now

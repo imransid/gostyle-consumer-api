@@ -5,7 +5,7 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.accounts.identifiers import InvalidIdentifier, normalize_identifier
+from apps.accounts.identifiers import InvalidDestination, normalize_destination
 from apps.accounts.models import ConsumerAccount, OtpCode, VerificationToken
 
 PASSWORD = "Str0ng!Pass"
@@ -24,33 +24,37 @@ class AuthFlowTests(TestCase):
         self.addCleanup(cache.clear)
 
     # --- helpers ---------------------------------------------------------
-    def _request(self, channel, identifier, purpose="register"):
+    def _request(self, destination_type, destination, purpose="register"):
         return self.client.post(
             "/api/v1/auth/otp/request",
-            {"channel": channel, "identifier": identifier, "purpose": purpose},
+            {
+                "destination_type": destination_type,
+                "destination": destination,
+                "purpose": purpose,
+            },
             format="json",
         )
 
-    def _live_otp(self, identifier, purpose="register"):
+    def _live_otp(self, destination, purpose="register"):
         return (
             OtpCode.objects.filter(
-                identifier=identifier, purpose=purpose, consumed_at__isnull=True
+                destination=destination, purpose=purpose, consumed_at__isnull=True
             )
             .latest("created_at")
         )
 
-    def _set_code(self, identifier, code, purpose="register"):
-        otp = self._live_otp(identifier, purpose)
+    def _set_code(self, destination, code, purpose="register"):
+        otp = self._live_otp(destination, purpose)
         otp.set_code(code)
         otp.save()
         return otp
 
-    def _verify(self, channel, identifier, code, purpose="register"):
+    def _verify(self, destination_type, destination, code, purpose="register"):
         return self.client.post(
             "/api/v1/auth/otp/verify",
             {
-                "channel": channel,
-                "identifier": identifier,
+                "destination_type": destination_type,
+                "destination": destination,
                 "purpose": purpose,
                 "code": code,
             },
@@ -70,16 +74,16 @@ class AuthFlowTests(TestCase):
             format="json",
         )
 
-    def _issue_token(self, channel, identifier, code="654321", purpose="register"):
+    def _issue_token(self, destination_type, destination, code="654321", purpose="register"):
         """Run request + verify and return the raw verification token."""
-        self._request(channel, identifier, purpose)
-        self._set_code(identifier, code, purpose)
-        resp = self._verify(channel, identifier, code, purpose)
+        self._request(destination_type, destination, purpose)
+        self._set_code(destination, code, purpose)
+        resp = self._verify(destination_type, destination, code, purpose)
         assert resp.status_code == 200, resp.data
         return resp.data["verification_token"]
 
-    def _full_register(self, channel, identifier):
-        token = self._issue_token(channel, identifier)
+    def _full_register(self, destination_type, destination):
+        token = self._issue_token(destination_type, destination)
         return self._register(token)
 
     # --- required: attempts + lockout ------------------------------------
@@ -116,7 +120,7 @@ class AuthFlowTests(TestCase):
         # The real code no longer works: the code is locked, not just wrong.
         resp = self._verify("phone", self.phone, "654321")
         self.assertEqual(resp.status_code, 400)
-        self.assertFalse(VerificationToken.objects.filter(identifier=self.phone).exists())
+        self.assertFalse(VerificationToken.objects.filter(destination=self.phone).exists())
 
     # --- required: verification token semantics --------------------------
     def test_verification_token_is_single_use(self):
@@ -139,7 +143,7 @@ class AuthFlowTests(TestCase):
     def test_register_with_expired_token_fails(self):
         token = self._issue_token("phone", self.phone)
 
-        vt = VerificationToken.objects.get(identifier=self.phone)
+        vt = VerificationToken.objects.get(destination=self.phone)
         vt.expires_at = timezone.now() - timedelta(seconds=1)
         vt.save(update_fields=["expires_at"])
 
@@ -153,29 +157,29 @@ class AuthFlowTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(ConsumerAccount.objects.count(), 0)
         self.assertTrue(
-            OtpCode.objects.filter(identifier=self.phone, purpose="register").exists()
+            OtpCode.objects.filter(destination=self.phone, purpose="register").exists()
         )
 
-    # --- required: identifier normalization ------------------------------
-    def test_normalize_identifier_bd_phone(self):
+    # --- required: destination normalization -----------------------------
+    def test_normalize_destination_bd_phone(self):
         self.assertEqual(
-            normalize_identifier("01712345678", "phone", region="BD"),
+            normalize_destination("01712345678", "phone", region="BD"),
             "+8801712345678",
         )
         # A plus-less national number must resolve via the region, not by
         # prepending "+": it becomes +880..., never +1712345678.
         self.assertEqual(
-            normalize_identifier("1712345678", "phone", region="BD"),
+            normalize_destination("1712345678", "phone", region="BD"),
             "+8801712345678",
         )
 
-    def test_normalize_identifier_email(self):
+    def test_normalize_destination_email(self):
         self.assertEqual(
-            normalize_identifier("  Kevin@Example.COM ", "email"),
+            normalize_destination("  Kevin@Example.COM ", "email"),
             "kevin@example.com",
         )
-        with self.assertRaises(InvalidIdentifier):
-            normalize_identifier("not-an-email", "email")
+        with self.assertRaises(InvalidDestination):
+            normalize_destination("not-an-email", "email")
 
     # --- required: no user enumeration -----------------------------------
     def test_request_response_identical_for_known_and_unknown(self):
@@ -243,7 +247,7 @@ class AuthFlowTests(TestCase):
         resp = self._verify("phone", self.phone, "654321")
         self.assertEqual(resp.status_code, 400)
 
-    def test_request_rejects_invalid_identifier(self):
+    def test_request_rejects_invalid_destination(self):
         resp = self._request("phone", "not-a-number")
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(OtpCode.objects.count(), 0)
@@ -251,18 +255,22 @@ class AuthFlowTests(TestCase):
     def test_resend_alias_issues_a_code(self):
         resp = self.client.post(
             "/api/v1/auth/otp/resend",
-            {"channel": "phone", "identifier": self.phone, "purpose": "register"},
+            {
+                "destination_type": "phone",
+                "destination": self.phone,
+                "purpose": "register",
+            },
             format="json",
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertTrue(OtpCode.objects.filter(identifier=self.phone).exists())
+        self.assertTrue(OtpCode.objects.filter(destination=self.phone).exists())
 
     # --- login (password) kept -------------------------------------------
     def test_login_after_register_succeeds(self):
         self._full_register("phone", self.phone)
         resp = self.client.post(
             "/api/v1/auth/login",
-            {"channel": "phone", "identifier": self.phone, "password": PASSWORD},
+            {"destination_type": "phone", "destination": self.phone, "password": PASSWORD},
             format="json",
         )
         self.assertEqual(resp.status_code, 200)
@@ -272,7 +280,7 @@ class AuthFlowTests(TestCase):
         self._full_register("phone", self.phone)
         resp = self.client.post(
             "/api/v1/auth/login",
-            {"channel": "phone", "identifier": self.phone, "password": "Wr0ng!Pass"},
+            {"destination_type": "phone", "destination": self.phone, "password": "Wr0ng!Pass"},
             format="json",
         )
         self.assertEqual(resp.status_code, 400)

@@ -182,11 +182,11 @@ DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="Go Style <no-reply@gosty
 
 
 # OTP delivery. "console" logs codes to stdout (local dev); any other value
-# selects the real senders, and the channel then picks WhatsApp (phone) vs
-# email. Phone OTP is WhatsApp only, no SMS fallback.
+# selects the real senders, and the destination type then picks WhatsApp
+# (phone) vs email. Phone OTP is WhatsApp only, no SMS fallback.
 OTP_SENDER = env("OTP_SENDER", default="console")
 
-# WhatsApp Cloud API (Meta Graph API) for phone-channel OTP.
+# WhatsApp Cloud API (Meta Graph API) for phone OTP.
 WHATSAPP_PHONE_NUMBER_ID = env("WHATSAPP_PHONE_NUMBER_ID", default="")
 WHATSAPP_ACCESS_TOKEN = env("WHATSAPP_ACCESS_TOKEN", default="")
 WHATSAPP_TEMPLATE_NAME = env("WHATSAPP_TEMPLATE_NAME", default="")

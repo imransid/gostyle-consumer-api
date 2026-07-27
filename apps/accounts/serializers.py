@@ -2,37 +2,37 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
-from .identifiers import InvalidIdentifier, normalize_identifier
-from .models import Channel, ConsumerAccount, Purpose
+from .identifiers import InvalidDestination, normalize_destination
+from .models import ConsumerAccount, DestinationType, Purpose
 
 
-class IdentifierMixin:
-    """Normalizes `identifier` against `channel` for every serializer that
-    accepts a contact. Runs in validate() so both fields are already present.
+class DestinationMixin:
+    """Normalizes `destination` against `destination_type` for every serializer
+    that accepts a contact. Runs in validate() so both fields are present.
     """
 
     def _normalize(self, attrs):
         try:
-            attrs["identifier"] = normalize_identifier(
-                attrs["identifier"], attrs["channel"]
+            attrs["destination"] = normalize_destination(
+                attrs["destination"], attrs["destination_type"]
             )
-        except InvalidIdentifier as exc:
-            raise serializers.ValidationError({"identifier": str(exc)})
+        except InvalidDestination as exc:
+            raise serializers.ValidationError({"destination": str(exc)})
         return attrs
 
 
-class OtpRequestSerializer(IdentifierMixin, serializers.Serializer):
-    channel = serializers.ChoiceField(choices=Channel.choices)
-    identifier = serializers.CharField(max_length=254)
+class OtpRequestSerializer(DestinationMixin, serializers.Serializer):
+    destination_type = serializers.ChoiceField(choices=DestinationType.choices)
+    destination = serializers.CharField(max_length=254)
     purpose = serializers.ChoiceField(choices=Purpose.choices)
 
     def validate(self, attrs):
         return self._normalize(attrs)
 
 
-class OtpVerifySerializer(IdentifierMixin, serializers.Serializer):
-    channel = serializers.ChoiceField(choices=Channel.choices)
-    identifier = serializers.CharField(max_length=254)
+class OtpVerifySerializer(DestinationMixin, serializers.Serializer):
+    destination_type = serializers.ChoiceField(choices=DestinationType.choices)
+    destination = serializers.CharField(max_length=254)
     purpose = serializers.ChoiceField(choices=Purpose.choices)
     code = serializers.RegexField(r"^[0-9]{6}\Z")
 
@@ -66,9 +66,9 @@ class RegisterSerializer(serializers.Serializer):
         return attrs
 
 
-class LoginSerializer(IdentifierMixin, serializers.Serializer):
-    channel = serializers.ChoiceField(choices=Channel.choices)
-    identifier = serializers.CharField(max_length=254)
+class LoginSerializer(DestinationMixin, serializers.Serializer):
+    destination_type = serializers.ChoiceField(choices=DestinationType.choices)
+    destination = serializers.CharField(max_length=254)
     password = serializers.CharField(write_only=True)
 
     def validate(self, attrs):

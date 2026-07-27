@@ -3,18 +3,15 @@ import uuid
 from django.db import migrations, models
 
 
-def copy_destination_to_identifier(apps, schema_editor):
-    """Carry existing OTP rows over to the generalized identifier column.
-
-    Pre-refactor rows only ever held phone destinations for the sign-up flow,
-    so they map cleanly to channel="phone", purpose="register".
+def relabel_existing_rows(apps, schema_editor):
+    """Carry pre-refactor OTP rows onto the new destination_type / purpose
+    vocabulary. Those rows only ever backed the phone sign-up flow, so anything
+    that is not already an email maps to phone, and every purpose maps to
+    register.
     """
     OtpCode = apps.get_model("accounts", "OtpCode")
-    OtpCode.objects.update(
-        identifier=models.F("destination"),
-        channel="phone",
-        purpose="register",
-    )
+    OtpCode.objects.exclude(destination_type="email").update(destination_type="phone")
+    OtpCode.objects.update(purpose="register")
 
 
 class Migration(migrations.Migration):
@@ -24,27 +21,19 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        # --- OtpCode: destination -> identifier, new channel/purpose vocab -----
+        # --- OtpCode: channel -> destination_type, new destination_type/purpose vocab ---
         migrations.RemoveIndex(
             model_name="otpcode",
             name="otp_code_dest_purpose_idx",
         ),
-        migrations.AddField(
+        migrations.RenameField(
             model_name="otpcode",
-            name="identifier",
-            field=models.CharField(db_index=True, default="", max_length=254),
-            preserve_default=False,
-        ),
-        migrations.RunPython(
-            copy_destination_to_identifier, migrations.RunPython.noop
-        ),
-        migrations.RemoveField(
-            model_name="otpcode",
-            name="destination",
+            old_name="channel",
+            new_name="destination_type",
         ),
         migrations.AlterField(
             model_name="otpcode",
-            name="channel",
+            name="destination_type",
             field=models.CharField(
                 choices=[("phone", "phone"), ("email", "email")], max_length=10
             ),
@@ -61,11 +50,12 @@ class Migration(migrations.Migration):
                 max_length=20,
             ),
         ),
+        migrations.RunPython(relabel_existing_rows, migrations.RunPython.noop),
         migrations.AddIndex(
             model_name="otpcode",
             index=models.Index(
                 condition=models.Q(consumed_at__isnull=True),
-                fields=["identifier", "purpose", "-created_at"],
+                fields=["destination", "purpose", "-created_at"],
                 name="otp_code_live_idx",
             ),
         ),
@@ -83,9 +73,9 @@ class Migration(migrations.Migration):
                     ),
                 ),
                 ("token_hash", models.CharField(max_length=64, unique=True)),
-                ("identifier", models.CharField(db_index=True, max_length=254)),
+                ("destination", models.CharField(db_index=True, max_length=254)),
                 (
-                    "channel",
+                    "destination_type",
                     models.CharField(
                         choices=[("phone", "phone"), ("email", "email")], max_length=10
                     ),
