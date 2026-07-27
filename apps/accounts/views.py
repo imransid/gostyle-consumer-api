@@ -20,6 +20,7 @@ from .serializers import (
     ProfileSerializer,
     RegisterSerializer,
     TokenPairSerializer,
+    RegisterResponseSerializer
 )
 
 # Constant OTP-request response. It carries nothing derived from the request or
@@ -85,21 +86,19 @@ class RegisterView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = []
 
-    @extend_schema(request=RegisterSerializer, responses={201: TokenPairSerializer})
+    @extend_schema(request=RegisterSerializer, responses={201: RegisterResponseSerializer})
     def post(self, request):
         s = RegisterSerializer(data=request.data)
         s.is_valid(raise_exception=True)
         data = s.validated_data
 
-        tokens = services.register(
+        result = services.register(
             destination=data["destination"],
             destination_type=data["destination_type"],
-            purpose=data["purpose"],
             full_name=data["full_name"],
             password=data["password"],
-            accept_terms=data["accept_terms"],
         )
-        return Response(tokens, status=status.HTTP_201_CREATED)
+        return Response(result, status=status.HTTP_201_CREATED)
 
 
 class LoginView(APIView):

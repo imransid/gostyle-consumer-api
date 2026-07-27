@@ -27,9 +27,7 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
     # Phone is optional: a member can register with email only. It stays unique
     # (multiple NULLs are allowed) and remains the USERNAME_FIELD for staff.
     phone = models.CharField(max_length=20, unique=True, null=True, blank=True, db_index=True)
-    # Email is now a login identifier, so it must be unique. NULL (not "") is
-    # used for "no email" so multiple account can stay email-less without
-    # colliding on the unique constraint.
+   
     email = models.EmailField(unique=True, null=True, blank=True)
     full_name = models.CharField(max_length=120, blank=True)
 
@@ -39,6 +37,8 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
     email_verified_at = models.DateTimeField(null=True, blank=True)
     # When the user accepted Terms & Conditions / Privacy Policy at sign-up.
     accepted_terms_at = models.DateTimeField(null=True, blank=True)
+
+    account_verified = models.BooleanField(default=False,  blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
