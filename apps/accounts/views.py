@@ -1,13 +1,14 @@
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.generics import RetrieveUpdateAPIView
-from rest_framework.permissions import AllowAny
+# from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 from drf_spectacular.utils import extend_schema
+from rest_framework.permissions import AllowAny, IsAuthenticated
 
 from . import ratelimit, services
 from .serializers import (
@@ -39,9 +40,11 @@ def _client_ip(request):
 
 
 class OtpRequestView(APIView):
-    """Send a verification code. Also serves the /auth/otp/resend alias."""
+    """Send a verification code for the authenticated user's own contact.
+    Also serves the /auth/otp/resend alias.
+    """
 
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     throttle_classes = []  # rate-limited in the service via Redis
 
     @extend_schema(request=OtpRequestSerializer, responses={200: OtpRequestedSerializer})
@@ -50,8 +53,8 @@ class OtpRequestView(APIView):
         s.is_valid(raise_exception=True)
         data = s.validated_data
 
-        services.request_otp(
-            destination=data["destination"],
+        services.request_otp_for_user(
+            user=request.user,
             destination_type=data["destination_type"],
             purpose=data["purpose"],
             ip=_client_ip(request),
@@ -60,7 +63,7 @@ class OtpRequestView(APIView):
 
 
 class OtpVerifyView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     throttle_classes = []  # rate-limited in the service via Redis
 
     @extend_schema(request=OtpVerifySerializer, responses={200: OtpVerifiedSerializer})
@@ -69,18 +72,17 @@ class OtpVerifyView(APIView):
         s.is_valid(raise_exception=True)
         data = s.validated_data
 
-        account_exists = services.verify_otp(
-            destination=data["destination"],
+        services.verify_otp_for_user(
+            user=request.user,
             destination_type=data["destination_type"],
             purpose=data["purpose"],
             code=data["code"],
             ip=_client_ip(request),
         )
         return Response(
-            {"verified": True, "account_exists": account_exists},
+            {"detail": "Account verified successfully.", "account_exists": True},
             status=status.HTTP_200_OK,
         )
-
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
