@@ -39,24 +39,19 @@ class OtpVerifySerializer(DestinationMixin, serializers.Serializer):
     def validate(self, attrs):
         return self._normalize(attrs)
 
+class RegisterResponseSerializer(serializers.Serializer):
+    detail = serializers.CharField()
+    access = serializers.CharField()
+    refresh = serializers.CharField()
 
 class RegisterSerializer(DestinationMixin, serializers.Serializer):
     # No token: register names the contact it verified, and the service checks
     # there is a recent, unused Verification for it.
     destination_type = serializers.ChoiceField(choices=DestinationType.choices)
     destination = serializers.CharField(max_length=254)
-    purpose = serializers.ChoiceField(choices=Purpose.choices, required=False, default=Purpose.REGISTER)
     full_name = serializers.CharField(max_length=120)
     password = serializers.CharField(write_only=True)
     confirm_password = serializers.CharField(write_only=True)
-    accept_terms = serializers.BooleanField()
-
-    def validate_accept_terms(self, value):
-        if not value:
-            raise serializers.ValidationError(
-                "You must accept the Terms & Conditions and Privacy Policy."
-            )
-        return value
 
     def validate(self, attrs):
         attrs = self._normalize(attrs)
