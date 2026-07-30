@@ -15,6 +15,10 @@ class DestinationType(models.TextChoices):
     EMAIL = "email", "email"
 
 
+class Gender(models.TextChoices):
+    MALE = 'male', 'male'
+    FEMALE = 'female', 'female'
+
 class Purpose(models.TextChoices):
     REGISTER = "register", "register"
     LOGIN = "login", "login"
@@ -44,6 +48,14 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
     updated_at = models.DateTimeField(auto_now=True)
 
     objects = ConsumerAccountManager()
+
+
+    image = models.URLField(blank=True)
+    gender = models.CharField(max_length=30, choices=Gender.choices, blank=True, default="")
+    location = models.CharField(max_length=255, blank=True)
+    language = models.CharField(max_length=10, default="en")
+    currency = models.CharField(max_length=3, default="AED")
+    is_hijab_mode = models.BooleanField(default=False)
 
     USERNAME_FIELD = "phone"
     REQUIRED_FIELDS = []
@@ -146,3 +158,46 @@ class Verification(models.Model):
     @property
     def is_usable(self):
         return self.consumed_at is None and self.expires_at > timezone.now()
+
+
+
+class Device(models.Model):
+    """A push-notification target. One row per device, per member.
+
+    A member can be logged in on several devices, so push tokens live here
+    rather than as a single column on ConsumerAccount, which would silently
+    drop every device but the last.
+    """
+
+    class Platform(models.TextChoices):
+        IOS = "ios", "ios"
+        ANDROID = "android", "android"
+        WEB = "web", "web"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    account = models.ForeignKey(
+        ConsumerAccount,
+        related_name="devices",
+        on_delete=models.CASCADE,
+    )
+    push_token = models.CharField(max_length=255, unique=True)
+    platform = models.CharField(max_length=10, choices=Platform.choices)
+    device_id = models.CharField(max_length=128, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    last_seen_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "device"
+        indexes = [
+            models.Index(
+                fields=["account", "-last_seen_at"],
+                name="device_active_idx",
+                condition=Q(is_active=True),
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.platform} device for {self.account_id}"
