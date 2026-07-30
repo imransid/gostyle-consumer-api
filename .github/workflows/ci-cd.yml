@@ -1,0 +1,195 @@
+name: CI/CD
+
+# Pull requests run the test job only. Pushes to main run the whole pipeline:
+# test -> build & push image -> migrate & deploy to Swarm.
+# workflow_dispatch with `tag` redeploys an image that already exists (rollback).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing image tag to (re)deploy, e.g. sha-1a2b3c4. Leave empty to build from this ref."
+        required: false
+        default: ""
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: entity-tech-solutions/gostyle-platform/gostyle-consumer-api
+  PYTHON_VERSION: "3.13"
+
+# Supersede in-flight PR runs, but never cancel a deploy midway.
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: gostyle
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DJANGO_SETTINGS_MODULE: config.settings.local
+      DJANGO_SECRET_KEY: ci-only-not-a-real-secret
+      DB_NAME: gostyle
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      DB_SCHEMA: consumer
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create the consumer schema in template1
+        # Django builds test_gostyle from template1, so putting the schema here
+        # makes the test database exercise the same search_path as production.
+        run: |
+          PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d template1 \
+            -c 'CREATE SCHEMA IF NOT EXISTS consumer;'
+
+      - name: Django system checks
+        run: python manage.py check
+
+      - name: Fail on unapplied model changes
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Deployment checks (production settings)
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.production
+          DJANGO_ALLOWED_HOSTS: example.com
+        run: python manage.py check --deploy
+
+      - name: Run tests
+        run: python manage.py test --verbosity 2 --shuffle
+
+  build:
+    name: Build & push image
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: ${{ github.event.inputs.tag == '' }}
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.vars.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image tag
+        id: vars
+        run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Pull requests build the image to prove the Dockerfile still works,
+      # but only main publishes it.
+      - name: Log in to GHCR
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.GHCR_USERNAME || github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          provenance: false
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to Swarm
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: >-
+      ${{ !cancelled()
+          && github.event_name != 'pull_request'
+          && needs.test.result == 'success'
+          && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    environment:
+      name: production
+    # Serialize deploys regardless of which ref triggered them.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+
+    env:
+      TAG: ${{ github.event.inputs.tag || needs.build.outputs.tag }}
+      SSH_HOST: ${{ secrets.SWARM_HOST }}
+      SSH_USER: ${{ secrets.SWARM_USER }}
+      SSH_PORT: ${{ vars.SWARM_PORT || '22' }}
+      DEPLOY_DIR: ${{ vars.DEPLOY_DIR || '/opt/gostyle-consumer' }}
+      STACK: ${{ vars.STACK_NAME || 'gostyle-consumer' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.SWARM_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "${{ secrets.SWARM_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Ship compose file and deploy script
+        run: |
+          scp -i ~/.ssh/id_deploy -P "$SSH_PORT" \
+            docker-compose.yml scripts/deploy.sh \
+            "$SSH_USER@$SSH_HOST:$DEPLOY_DIR/"
+
+      - name: Migrate and deploy
+        run: |
+          ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" \
+            "TAG='$TAG' STACK='$STACK' DEPLOY_DIR='$DEPLOY_DIR' bash '$DEPLOY_DIR/deploy.sh'"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Deploy \`$TAG\`"
+            echo ""
+            echo "- stack: \`$STACK\` on \`$SSH_HOST\`"
+            echo "- image: \`$REGISTRY/$IMAGE_NAME:$TAG\`"
+            echo "- result: **${{ job.status }}**"
+          } >> "$GITHUB_STEP_SUMMARY"

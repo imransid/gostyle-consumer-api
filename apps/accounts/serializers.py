@@ -3,7 +3,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from .identifiers import InvalidDestination, normalize_destination
-from .models import ConsumerAccount, DestinationType, Purpose
+from .models import ConsumerAccount, DestinationType, Purpose, Gender
 
 
 class DestinationMixin:
@@ -52,6 +52,7 @@ class RegisterSerializer(DestinationMixin, serializers.Serializer):
     full_name = serializers.CharField(max_length=120)
     password = serializers.CharField(write_only=True)
     confirm_password = serializers.CharField(write_only=True)
+    gender = serializers.ChoiceField(choices=Gender.choices)
 
     def validate(self, attrs):
         attrs = self._normalize(attrs)
@@ -76,6 +77,11 @@ class LoginSerializer(DestinationMixin, serializers.Serializer):
 
 
 class ProfileSerializer(serializers.ModelSerializer):
+    # Live/derived values — NOT stored on the profile, exposed read-only.
+    points = serializers.SerializerMethodField()
+    tier_level = serializers.SerializerMethodField()
+    push_token = serializers.SerializerMethodField()
+
     class Meta:
         model = ConsumerAccount
         fields = [
@@ -86,9 +92,17 @@ class ProfileSerializer(serializers.ModelSerializer):
             "phone_verified_at",
             "email_verified_at",
             "created_at",
+            # preferences (editable via PATCH)
+            "image",
+            "location",
+            "language",
+            "currency",
+            "is_hijab_mode",
+            # live / derived (read-only)
+            "points",
+            "tier_level",
+            "push_token",
         ]
-        # Only the display name is editable here; changing email/phone must go
-        # through a verification flow, not a plain profile PATCH.
         read_only_fields = [
             "id",
             "email",
@@ -96,8 +110,26 @@ class ProfileSerializer(serializers.ModelSerializer):
             "phone_verified_at",
             "email_verified_at",
             "created_at",
+            "points",
+            "tier_level",
+            "push_token",
         ]
 
+    def get_points(self, obj):
+        # TODO: wire to the loyalty app when it exists. No loyalty system yet.
+        return 0
+
+    def get_tier_level(self, obj):
+        # TODO: derive from points once the loyalty app exists.
+        return "BRONZE"
+
+    def get_push_token(self, obj):
+        device = (
+            obj.devices.filter(is_active=True)
+            .order_by("-last_seen_at")
+            .first()
+        )
+        return device.push_token if device else None
 
 class LogoutSerializer(serializers.Serializer):
     refresh = serializers.CharField()
