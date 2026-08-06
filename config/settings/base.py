@@ -27,6 +27,7 @@ INSTALLED_APPS = [
     "apps.accounts",
     "drf_spectacular",
     "apps.salons", 
+    "apps.platform_data",
 ]
 
 MIDDLEWARE = [
