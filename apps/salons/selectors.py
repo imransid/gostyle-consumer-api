@@ -1,6 +1,6 @@
-from django.db.models import Avg, Count, OuterRef, Subquery
+from django.db.models import Avg, Count, FloatField, OuterRef, Subquery, TextField
 
-from apps.platform_data.models import Storefront, StorefrontReview
+from apps.platform_data.models import Branch, Storefront, StorefrontReview
 
 
 def discoverable_salons():
@@ -8,6 +8,8 @@ def discoverable_salons():
         storefront_id=OuterRef("pk"),
         state="PUBLISHED",
     )
+
+    branch = Branch.objects.filter(id=OuterRef("branch_id"))
 
     return (
         Storefront.objects.filter(
@@ -26,5 +28,13 @@ def discoverable_salons():
                 .annotate(c=Count("id"))
                 .values("c")[:1]
             ),
+            branch_name=Subquery(
+                branch.values("name")[:1], output_field=TextField()
+            ),
+            branch_city=Subquery(
+                branch.values("city")[:1], output_field=TextField()
+            ),
+            lat=Subquery(branch.values("lat")[:1], output_field=FloatField()),
+            lng=Subquery(branch.values("lng")[:1], output_field=FloatField()),
         )
     )
