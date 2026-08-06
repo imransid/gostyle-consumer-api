@@ -2,4 +2,5 @@ from django.apps import AppConfig
 
 
 class PlatformDataConfig(AppConfig):
-    name = 'platform_data'
+    default_auto_field = 'django.db.models.BigAutoField'
+    name = 'apps.platform_data'
