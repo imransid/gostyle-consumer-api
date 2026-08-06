@@ -24,7 +24,8 @@ INSTALLED_APPS = [
     "rest_framework",
     "rest_framework_simplejwt.token_blacklist",
     "apps.accounts",
-    "drf_spectacular"
+    "drf_spectacular",
+    "apps.salons", 
 ]
 
 MIDDLEWARE = [
