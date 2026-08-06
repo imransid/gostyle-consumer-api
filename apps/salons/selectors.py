@@ -36,5 +36,9 @@ def discoverable_salons():
             ),
             lat=Subquery(branch.values("lat")[:1], output_field=FloatField()),
             lng=Subquery(branch.values("lng")[:1], output_field=FloatField()),
+            opening_hours=Subquery(branch.values("opening_hours")[:1]),
+            branch_timezone=Subquery(
+                branch.values("timezone")[:1], output_field=TextField()
+            ),
         )
     )

@@ -1,5 +1,9 @@
 from rest_framework import serializers
 from .models import Salon
+import zoneinfo
+from datetime import datetime
+
+DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 
 class SalonSerializer(serializers.ModelSerializer):
@@ -25,6 +29,8 @@ class SalonCardSerializer(serializers.Serializer):
     rating = serializers.SerializerMethodField()
     review_count = serializers.IntegerField(allow_null=True)
     coordinate = serializers.SerializerMethodField()
+    is_open_now = serializers.SerializerMethodField()
+    hours_today = serializers.SerializerMethodField()
 
     def get_rating(self, obj):
         if obj.avg_rating is None:
@@ -35,3 +41,30 @@ class SalonCardSerializer(serializers.Serializer):
         if obj.lat is None or obj.lng is None:
             return None
         return {"latitude": obj.lat, "longitude": obj.lng}
+
+    def _today_window(self, obj):
+        hours = obj.opening_hours
+        if not hours:
+            return None
+        tz = zoneinfo.ZoneInfo(obj.branch_timezone or "Asia/Dubai")
+        now = datetime.now(tz)
+        day = DAY_KEYS[now.weekday()]
+        window = hours.get(day)
+        if not window or not window.get("open") or not window.get("close"):
+            return None
+        return now, window
+
+    def get_is_open_now(self, obj):
+        result = self._today_window(obj)
+        if result is None:
+            return None
+        now, window = result
+        current = now.strftime("%H:%M")
+        return window["open"] <= current < window["close"]
+
+    def get_hours_today(self, obj):
+        result = self._today_window(obj)
+        if result is None:
+            return None
+        _, window = result
+        return f'{window["open"]} - {window["close"]}'
