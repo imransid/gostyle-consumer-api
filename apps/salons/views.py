@@ -3,6 +3,11 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from .models import Salon
 from .serializers import SalonSerializer
+from rest_framework.generics import ListAPIView, RetrieveAPIView
+from rest_framework.permissions import AllowAny
+
+from .selectors import discoverable_salons
+from .serializers import SalonCardSerializer
 
 
 def haversine_km(lat1, lng1, lat2, lng2):
@@ -32,3 +37,33 @@ class SalonListView(APIView):
             salons.sort(key=lambda s: s.distance_km)
 
         return Response(SalonSerializer(salons, many=True).data)
+
+class SalonDiscoveryListView(ListAPIView):
+    """Figma discovery list + map screen. Public platform salons."""
+
+    serializer_class = SalonCardSerializer
+    permission_classes = [AllowAny]
+
+    def get_queryset(self):
+        qs = discoverable_salons()
+
+        rating_min = self.request.query_params.get("rating_min")
+        if rating_min:
+            qs = qs.filter(avg_rating__gte=float(rating_min))
+
+        city = self.request.query_params.get("city")
+        if city:
+            qs = qs.filter(branch_city__iexact=city)
+
+        return qs.order_by("-avg_rating")
+
+
+class SalonDiscoveryDetailView(RetrieveAPIView):
+    """Single salon card by id (map pin tap / card tap)."""
+
+    serializer_class = SalonCardSerializer
+    permission_classes = [AllowAny]
+    lookup_field = "pk"
+
+    def get_queryset(self):
+        return discoverable_salons()
