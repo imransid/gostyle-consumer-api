@@ -24,3 +24,5 @@ sqlparse==0.5.5
 uritemplate==4.2.0
 gunicorn==23.0.0
 whitenoise==6.11.0
+
+

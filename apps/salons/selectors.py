@@ -1,6 +1,5 @@
 from django.db.models import Avg, Count, FloatField, OuterRef, Subquery, TextField
-
-from apps.platform_data.models import Branch, Storefront, StorefrontReview
+from apps.platform_data.models import Branch, Storefront, StorefrontMedia, StorefrontReview
 
 
 def discoverable_salons():
@@ -39,6 +38,16 @@ def discoverable_salons():
             opening_hours=Subquery(branch.values("opening_hours")[:1]),
             branch_timezone=Subquery(
                 branch.values("timezone")[:1], output_field=TextField()
+            ),
+            photo_url=Subquery(
+                StorefrontMedia.objects.filter(
+                    storefront_id=OuterRef("pk"),
+                    deleted_at__isnull=True,
+                    is_public=True,
+                )
+                .order_by("-is_featured", "sort_order")
+                .values("url")[:1],
+                output_field=TextField(),
             ),
         )
     )
