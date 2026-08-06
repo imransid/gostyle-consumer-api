@@ -1,6 +1,12 @@
-from django.db.models import Avg, Count, FloatField, OuterRef, Subquery, TextField
-from apps.platform_data.models import Branch, Storefront, StorefrontMedia, StorefrontReview
+from django.db.models import Avg, Count, Exists, FloatField, OuterRef, Subquery, TextField
 
+from apps.platform_data.models import (
+    Branch,
+    Storefront,
+    StorefrontCertification,
+    StorefrontMedia,
+    StorefrontReview,
+)
 
 def discoverable_salons():
     published_reviews = StorefrontReview.objects.filter(
@@ -48,6 +54,14 @@ def discoverable_salons():
                 .order_by("-is_featured", "sort_order")
                 .values("url")[:1],
                 output_field=TextField(),
+            ),
+            hijab_certified=Exists(
+                StorefrontCertification.objects.filter(
+                    storefront_id=OuterRef("pk"),
+                    state="CERTIFIED",
+                    revoked_at__isnull=True,
+                    deleted_at__isnull=True,
+                )
             ),
         )
     )

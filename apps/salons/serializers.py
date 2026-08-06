@@ -32,6 +32,7 @@ class SalonCardSerializer(serializers.Serializer):
     is_open_now = serializers.SerializerMethodField()
     hours_today = serializers.SerializerMethodField()
     photo_url = serializers.CharField(allow_null=True)
+    hijab_certified = serializers.BooleanField()
 
     def get_rating(self, obj):
         if obj.avg_rating is None:
