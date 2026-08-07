@@ -9,6 +9,7 @@ from rest_framework.permissions import AllowAny
 from .selectors import discoverable_salons
 from .serializers import SalonCardSerializer
 from .selectors import discoverable_salons, with_distance
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 
 def haversine_km(lat1, lng1, lat2, lng2):
     r = 6371  # earth radius km
@@ -38,6 +39,18 @@ class SalonListView(APIView):
 
         return Response(SalonSerializer(salons, many=True).data)
 
+
+@extend_schema(
+    parameters=[
+        OpenApiParameter("lat", float, description="User latitude, e.g. 25.19"),
+        OpenApiParameter("lng", float, description="User longitude, e.g. 55.26"),
+        OpenApiParameter("sort", str, description="Sort order", enum=["distance", "rating"]),
+        OpenApiParameter("rating_min", float, description="Minimum average rating, e.g. 4.5"),
+        OpenApiParameter("city", str, description="Filter by city name, e.g. Dubai"),
+        OpenApiParameter("hijab_mode", str, description="1 to show only hijab-certified salons", enum=["1"]),
+        OpenApiParameter("open_now", str, description="1 to show only currently open salons", enum=["1"]),
+    ]
+)
 class SalonDiscoveryListView(ListAPIView):
     """Figma discovery list + map screen. Public platform salons."""
 
