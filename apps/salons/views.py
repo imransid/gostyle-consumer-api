@@ -4,11 +4,10 @@ from rest_framework.response import Response
 from .models import Salon
 from .serializers import SalonSerializer
 from rest_framework.generics import ListAPIView, RetrieveAPIView
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 
-from .selectors import discoverable_salons
-from .serializers import SalonCardSerializer
-from .selectors import discoverable_salons, with_distance
+from .selectors import discoverable_salons, map_venues, with_distance
+from .serializers import MapVenueSerializer, SalonCardSerializer
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 
 def haversine_km(lat1, lng1, lat2, lng2):
@@ -104,3 +103,69 @@ class SalonDiscoveryDetailView(RetrieveAPIView):
 
     def get_queryset(self):
         return discoverable_salons()
+
+
+class DiscoverMapView(APIView):
+    """Map viewport endpoint — returns lightweight venue markers.
+
+    ``GET /api/v1/discover/map?sw_lat=…&sw_lng=…&ne_lat=…&ne_lng=…&zoom=…[&category=…]``
+
+    All parameters are optional. Bounding-box filtering replaces pagination.
+    A hard ``LIMIT`` inside the selector acts as a safety valve.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter("sw_lat", float, required=False,
+                             description="Bounding-box south-west latitude"),
+            OpenApiParameter("sw_lng", float, required=False,
+                             description="Bounding-box south-west longitude"),
+            OpenApiParameter("ne_lat", float, required=False,
+                             description="Bounding-box north-east latitude"),
+            OpenApiParameter("ne_lng", float, required=False,
+                             description="Bounding-box north-east longitude"),
+            OpenApiParameter("zoom", int, required=False,
+                             description="Current map zoom level"),
+            OpenApiParameter("category", str, required=False,
+                             description="Venue category filter",
+                             enum=["all", "gents", "ladies"]),
+        ],
+        responses={200: MapVenueSerializer(many=True)},
+    )
+    def get(self, request):
+        params = request.query_params
+
+        def parse_float(param_name: str) -> float | None:
+            val = params.get(param_name)
+            if val is not None and val != "":
+                try:
+                    return float(val)
+                except ValueError:
+                    pass
+            return None
+
+        sw_lat = parse_float("sw_lat")
+        sw_lng = parse_float("sw_lng")
+        ne_lat = parse_float("ne_lat")
+        ne_lng = parse_float("ne_lng")
+
+        category = params.get("category", "all")
+
+        venues_qs = map_venues(
+            sw_lat=sw_lat,
+            sw_lng=sw_lng,
+            ne_lat=ne_lat,
+            ne_lng=ne_lng,
+            category=category,
+        )
+
+        serializer = MapVenueSerializer(venues_qs, many=True)
+        venues = serializer.data
+
+        return Response({
+            "mode": "markers",
+            "count": len(venues),
+            "venues": venues,
+        })
