@@ -1,5 +1,4 @@
 from django.db.models import Avg, Count, Exists, FloatField, OuterRef, Subquery, TextField
-
 from apps.platform_data.models import (
     Branch,
     Storefront,
@@ -8,6 +7,19 @@ from apps.platform_data.models import (
     StorefrontPolicy,
     StorefrontReview,
 )
+from django.db.models import F, Func, Value
+from django.db.models.functions import ACos, Cos, Radians, Sin
+
+def with_distance(qs, user_lat, user_lng):
+    """Annotate distance_km from the user's location using the haversine formula."""
+    return qs.annotate(
+        distance_km=Value(6371.0) * ACos(
+            Cos(Radians(Value(user_lat)))
+            * Cos(Radians(F("lat")))
+            * Cos(Radians(F("lng")) - Radians(Value(user_lng)))
+            + Sin(Radians(Value(user_lat))) * Sin(Radians(F("lat")))
+        )
+    )
 
 def discoverable_salons():
     published_reviews = StorefrontReview.objects.filter(

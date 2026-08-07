@@ -8,7 +8,7 @@ from rest_framework.permissions import AllowAny
 
 from .selectors import discoverable_salons
 from .serializers import SalonCardSerializer
-
+from .selectors import discoverable_salons, with_distance
 
 def haversine_km(lat1, lng1, lat2, lng2):
     r = 6371  # earth radius km
@@ -44,17 +44,25 @@ class SalonDiscoveryListView(ListAPIView):
     serializer_class = SalonCardSerializer
     permission_classes = [AllowAny]
 
-    def get_queryset(self):
+    def get_queryset(self):          # ← purano get_queryset er JAYGAY ei notun ta
         qs = discoverable_salons()
-
+        lat = self.request.query_params.get("lat")
+        lng = self.request.query_params.get("lng")
+        if lat and lng:
+            try:
+                qs = with_distance(qs, float(lat), float(lng))
+                qs = qs.filter(lat__isnull=False, lng__isnull=False)
+            except ValueError:
+                pass
         rating_min = self.request.query_params.get("rating_min")
         if rating_min:
             qs = qs.filter(avg_rating__gte=float(rating_min))
-
         city = self.request.query_params.get("city")
         if city:
             qs = qs.filter(branch_city__iexact=city)
-
+        sort = self.request.query_params.get("sort")
+        if sort == "distance" and lat and lng:
+            return qs.order_by("distance_km")
         return qs.order_by("-avg_rating")
 
 

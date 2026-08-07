@@ -35,6 +35,13 @@ class SalonCardSerializer(serializers.Serializer):
     hijab_certified = serializers.BooleanField()
     deposit = serializers.SerializerMethodField()
     closes_at = serializers.SerializerMethodField()
+    distance_km = serializers.SerializerMethodField()
+
+    def get_distance_km(self, obj):
+        d = getattr(obj, "distance_km", None)
+        if d is None:
+            return None
+        return round(d, 1)
 
     def get_rating(self, obj):
         if obj.avg_rating is None:
