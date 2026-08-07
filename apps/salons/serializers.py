@@ -33,6 +33,8 @@ class SalonCardSerializer(serializers.Serializer):
     hours_today = serializers.SerializerMethodField()
     photo_url = serializers.CharField(allow_null=True)
     hijab_certified = serializers.BooleanField()
+    deposit = serializers.SerializerMethodField()
+    closes_at = serializers.SerializerMethodField()
 
     def get_rating(self, obj):
         if obj.avg_rating is None:
@@ -70,3 +72,29 @@ class SalonCardSerializer(serializers.Serializer):
             return None
         _, window = result
         return f'{window["open"]} - {window["close"]}'
+
+    def get_deposit(self, obj):
+        mode = getattr(obj, "deposit_mode", None)
+        if mode is None:
+            return None
+        if mode == "NONE":
+            return {"required": False, "label": "No Deposit"}
+        pct = (obj.deposit_bps or 0) // 100
+        return {"required": True, "label": f"{pct}% Deposit", "percent": pct}
+
+    def get_closes_at(self, obj):
+        result = self._today_window(obj)
+        if result is None:
+            return None
+        now, window = result
+        close = window["close"]  # "22:00"
+        hh, mm = int(close[:2]), int(close[3:])
+        suffix = "PM" if hh >= 12 else "AM"
+        hh12 = hh % 12 or 12
+        if self.get_is_open_now(obj):
+            return f"Closes at {hh12}:{mm:02d} {suffix}"
+        opens = window["open"]
+        ohh, omm = int(opens[:2]), int(opens[3:])
+        osuffix = "PM" if ohh >= 12 else "AM"
+        ohh12 = ohh % 12 or 12
+        return f"Opens at {ohh12}:{omm:02d} {osuffix}"

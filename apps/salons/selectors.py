@@ -5,6 +5,7 @@ from apps.platform_data.models import (
     Storefront,
     StorefrontCertification,
     StorefrontMedia,
+    StorefrontPolicy,
     StorefrontReview,
 )
 
@@ -62,6 +63,17 @@ def discoverable_salons():
                     revoked_at__isnull=True,
                     deleted_at__isnull=True,
                 )
+            ),
+            deposit_mode=Subquery(
+                StorefrontPolicy.objects.filter(
+                    storefront_id=OuterRef("pk")
+                ).values("deposit_mode")[:1],
+                output_field=TextField(),
+            ),
+            deposit_bps=Subquery(
+                StorefrontPolicy.objects.filter(
+                    storefront_id=OuterRef("pk")
+                ).values("deposit_bps")[:1],
             ),
         )
     )
