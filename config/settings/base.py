@@ -84,35 +84,35 @@ PASSWORD_HASHERS = [
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
-# DATABASES = {
-#     "default": {
-#         "ENGINE": "django.db.backends.postgresql",
-#         "NAME": env("DB_NAME"),
-#         "USER": env("DB_USER"),
-#         "PASSWORD": env("DB_PASSWORD"),
-#         "HOST": env("DB_HOST", default="127.0.0.1"),
-#         "PORT": env("DB_PORT", default="5432"),
-#         "CONN_MAX_AGE": 60,
-#         "OPTIONS": {
-#             "options": f"-c search_path={env('DB_SCHEMA', default='consumer')},public"
-#         },
-#     }
-# }
-
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
         "NAME": env("DB_NAME"),
         "USER": env("DB_USER"),
         "PASSWORD": env("DB_PASSWORD"),
-        "HOST": env("DB_HOST"),
+        "HOST": env("DB_HOST", default="127.0.0.1"),
         "PORT": env("DB_PORT", default="5432"),
         "CONN_MAX_AGE": 60,
         "OPTIONS": {
-            "sslmode": "require",
+            "options": f"-c search_path={env('DB_SCHEMA', default='consumer')},public"
         },
     }
 }
+
+# DATABASES = {
+#     "default": {
+#         "ENGINE": "django.db.backends.postgresql",
+#         "NAME": env("DB_NAME"),
+#         "USER": env("DB_USER"),
+#         "PASSWORD": env("DB_PASSWORD"),
+#         "HOST": env("DB_HOST"),
+#         "PORT": env("DB_PORT", default="5432"),
+#         "CONN_MAX_AGE": 60,
+#         "OPTIONS": {
+#             "sslmode": "require",
+#         },
+#     }
+# }
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "GoStyle Customer API",
