@@ -1,3 +1,4 @@
+from django.db.models import QuerySet
 from django.db.models import Avg, Count, Exists, FloatField, OuterRef, Subquery, TextField
 from apps.platform_data.models import (
     Branch,
@@ -89,3 +90,116 @@ def discoverable_salons():
             ),
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Map viewport query
+# ---------------------------------------------------------------------------
+
+# Hard cap on venues returned per viewport request (safety valve).
+MAP_VENUE_LIMIT: int = 500
+
+# Valid category filter values; anything else falls back to "all".
+_VALID_CATEGORIES = frozenset({"gents", "ladies"})
+
+
+def map_venues(
+    sw_lat: float | None = None,
+    sw_lng: float | None = None,
+    ne_lat: float | None = None,
+    ne_lng: float | None = None,
+    category: str = "all",
+) -> "QuerySet[Storefront]":
+    """Return discoverable storefronts inside the viewport bounding box (if specified).
+
+    Only the columns needed for map markers are annotated (lat, lng,
+    avg_rating, photo_url) to keep the query lightweight. A hard LIMIT is
+    enforced as a safety valve.
+
+    Args:
+        sw_lat: Optional South-west latitude of the bounding box.
+        sw_lng: Optional South-west longitude of the bounding box.
+        ne_lat: Optional North-east latitude of the bounding box.
+        ne_lng: Optional North-east longitude of the bounding box.
+        category: ``"all"`` | ``"gents"`` | ``"ladies"``. Default ``"all"``.
+
+    Returns:
+        A lightweight queryset of ``Storefront`` instances annotated with
+        ``lat``, ``lng``, ``avg_rating``, and ``photo_url``.
+    """
+    published_reviews = StorefrontReview.objects.filter(
+        storefront_id=OuterRef("pk"),
+        state="PUBLISHED",
+    )
+
+    branch = Branch.objects.filter(id=OuterRef("branch_id"))
+
+    qs = (
+        Storefront.objects.filter(
+            visibility="PUBLIC",
+            link_enabled=True,
+            deleted_at__isnull=True,
+        )
+        .annotate(
+            lat=Subquery(branch.values("lat")[:1], output_field=FloatField()),
+            lng=Subquery(branch.values("lng")[:1], output_field=FloatField()),
+            avg_rating=Subquery(
+                published_reviews.values("storefront_id")
+                .annotate(avg=Avg("rating"))
+                .values("avg")[:1]
+            ),
+            photo_url=Subquery(
+                StorefrontMedia.objects.filter(
+                    storefront_id=OuterRef("pk"),
+                    deleted_at__isnull=True,
+                    is_public=True,
+                )
+                .order_by("-is_featured", "sort_order")
+                .values("url")[:1],
+                output_field=TextField(),
+            ),
+        )
+        .filter(
+            lat__isnull=False,
+            lng__isnull=False,
+        )
+    )
+
+    if None not in (sw_lat, sw_lng, ne_lat, ne_lng):
+        qs = qs.filter(
+            lat__gte=sw_lat,
+            lat__lte=ne_lat,
+            lng__gte=sw_lng,
+            lng__lte=ne_lng,
+        )
+
+    if category in _VALID_CATEGORIES and any(f.name == "category" for f in Storefront._meta.fields):
+        qs = qs.filter(category=category)
+
+    try:
+        results = list(qs[:MAP_VENUE_LIMIT])
+        return results
+    except Exception:
+        # Fallback to Salon model if Storefront table does not exist or query fails
+        from .models import Salon
+
+        salon_qs = Salon.objects.all()
+        if None not in (sw_lat, sw_lng, ne_lat, ne_lng):
+            salon_qs = salon_qs.filter(
+                latitude__gte=sw_lat,
+                latitude__lte=ne_lat,
+                longitude__gte=sw_lng,
+                longitude__lte=ne_lng,
+            )
+        if category in ("gents", "ladies"):
+            salon_qs = salon_qs.filter(category=category)
+
+        items = []
+        for s in salon_qs[:MAP_VENUE_LIMIT]:
+            s.lat = s.latitude
+            s.lng = s.longitude
+            s.avg_rating = s.rating
+            s.photo_url = s.logo
+            items.append(s)
+        return items
+

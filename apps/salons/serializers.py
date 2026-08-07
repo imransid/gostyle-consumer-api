@@ -105,3 +105,18 @@ class SalonCardSerializer(serializers.Serializer):
         osuffix = "PM" if ohh >= 12 else "AM"
         ohh12 = ohh % 12 or 12
         return f"Opens at {ohh12}:{omm:02d} {osuffix}"
+
+
+class MapVenueSerializer(serializers.Serializer):
+    """Minimal marker shape for the map viewport endpoint."""
+
+    id = serializers.UUIDField()
+    lat = serializers.FloatField()
+    lng = serializers.FloatField()
+    rating = serializers.SerializerMethodField()
+    salon_profile_image = serializers.CharField(source="photo_url", allow_null=True)
+
+    def get_rating(self, obj) -> float | None:
+        if obj.avg_rating is None:
+            return None
+        return round(float(obj.avg_rating), 1)
