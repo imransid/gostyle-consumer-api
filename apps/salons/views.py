@@ -68,6 +68,11 @@ class SalonDiscoveryListView(ListAPIView):
             except ValueError:
                 pass
         rating_min = self.request.query_params.get("rating_min")
+        hijab_mode = self.request.query_params.get("hijab_mode")
+        if hijab_mode in ("1", "true"):
+            qs = qs.filter(hijab_certified=True)
+
+        self._filter_open_now = self.request.query_params.get("open_now") in ("1", "true")
         if rating_min:
             qs = qs.filter(avg_rating__gte=float(rating_min))
         city = self.request.query_params.get("city")
@@ -77,6 +82,17 @@ class SalonDiscoveryListView(ListAPIView):
         if sort == "distance" and lat and lng:
             return qs.order_by("distance_km")
         return qs.order_by("-avg_rating")
+    
+    def filter_queryset(self, queryset):
+        queryset = super().filter_queryset(queryset)
+        if getattr(self, "_filter_open_now", False):
+            serializer = SalonCardSerializer()
+            open_ids = [
+                obj.pk for obj in queryset
+                if serializer.get_is_open_now(obj)
+            ]
+            return queryset.filter(pk__in=open_ids)
+        return queryset
 
 
 class SalonDiscoveryDetailView(RetrieveAPIView):
