@@ -1,5 +1,9 @@
 from django.db.models import QuerySet
-from django.db.models import Avg, Count, Exists, FloatField, OuterRef, Subquery, TextField
+from django.db.models import Avg, Count, Exists, F, FloatField, Func, OuterRef, Subquery, TextField, Value
+from django.db.models.functions import ACos, Cos, Radians, Sin
+from django.contrib.postgres.aggregates import ArrayAgg
+from django.contrib.postgres.fields import ArrayField
+
 from apps.platform_data.models import (
     Branch,
     Storefront,
@@ -8,8 +12,7 @@ from apps.platform_data.models import (
     StorefrontPolicy,
     StorefrontReview,
 )
-from django.db.models import F, Func, Value
-from django.db.models.functions import ACos, Cos, Radians, Sin
+
 
 def with_distance(qs, user_lat, user_lng):
     """Annotate distance_km from the user's location using the haversine formula."""
@@ -21,6 +24,7 @@ def with_distance(qs, user_lat, user_lng):
             + Sin(Radians(Value(user_lat))) * Sin(Radians(F("lat")))
         )
     )
+
 
 def discoverable_salons():
     published_reviews = StorefrontReview.objects.filter(
@@ -64,6 +68,8 @@ def discoverable_salons():
                     storefront_id=OuterRef("pk"),
                     deleted_at__isnull=True,
                     is_public=True,
+                    moderation_status="APPROVED",
+                    kind="COVER",
                 )
                 .order_by("-is_featured", "sort_order")
                 .values("url")[:1],
@@ -87,6 +93,19 @@ def discoverable_salons():
                 StorefrontPolicy.objects.filter(
                     storefront_id=OuterRef("pk")
                 ).values("deposit_bps")[:1],
+            ),
+            gallery_urls=Subquery(
+                StorefrontMedia.objects.filter(
+                    storefront_id=OuterRef("pk"),
+                    deleted_at__isnull=True,
+                    is_public=True,
+                    moderation_status="APPROVED",
+                    kind="GALLERY",
+                )
+                .values("storefront_id")
+                .annotate(urls=ArrayAgg("url", ordering="sort_order"))
+                .values("urls")[:1],
+                output_field=ArrayField(TextField()),
             ),
         )
     )
@@ -153,6 +172,8 @@ def map_venues(
                     storefront_id=OuterRef("pk"),
                     deleted_at__isnull=True,
                     is_public=True,
+                    moderation_status="APPROVED",
+                    kind="COVER",
                 )
                 .order_by("-is_featured", "sort_order")
                 .values("url")[:1],
@@ -202,4 +223,3 @@ def map_venues(
             s.photo_url = s.logo
             items.append(s)
         return items
-
