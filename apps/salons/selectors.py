@@ -135,29 +135,37 @@ _VALID_CATEGORIES = frozenset({"gents", "ladies"})
 
 
 def map_venues(
-    sw_lat: float | None = None,
-    sw_lng: float | None = None,
-    ne_lat: float | None = None,
-    ne_lng: float | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    latitude_delta: float | None = None,
+    longitude_delta: float | None = None,
     category: str = "all",
 ) -> "QuerySet[Storefront]":
-    """Return discoverable storefronts inside the viewport bounding box (if specified).
+    """Return discoverable storefronts inside the viewport bounding box.
 
+    The bounding box is computed from the map region (center + delta).
     Only the columns needed for map markers are annotated (lat, lng,
     avg_rating, photo_url) to keep the query lightweight. A hard LIMIT is
     enforced as a safety valve.
 
     Args:
-        sw_lat: Optional South-west latitude of the bounding box.
-        sw_lng: Optional South-west longitude of the bounding box.
-        ne_lat: Optional North-east latitude of the bounding box.
-        ne_lng: Optional North-east longitude of the bounding box.
+        latitude: Center latitude of the map region.
+        longitude: Center longitude of the map region.
+        latitude_delta: Latitude span of the visible region.
+        longitude_delta: Longitude span of the visible region.
         category: ``"all"`` | ``"gents"`` | ``"ladies"``. Default ``"all"``.
 
     Returns:
         A lightweight queryset of ``Storefront`` instances annotated with
         ``lat``, ``lng``, ``avg_rating``, and ``photo_url``.
     """
+    sw_lat = sw_lng = ne_lat = ne_lng = None
+    if None not in (latitude, longitude, latitude_delta, longitude_delta):
+        sw_lat = latitude - (latitude_delta / 2.0)
+        ne_lat = latitude + (latitude_delta / 2.0)
+        sw_lng = longitude - (longitude_delta / 2.0)
+        ne_lng = longitude + (longitude_delta / 2.0)
+
     published_reviews = StorefrontReview.objects.filter(
         storefront_id=OuterRef("pk"),
         state="PUBLISHED",
@@ -210,8 +218,10 @@ def map_venues(
         qs = qs.filter(category=category)
 
     try:
-        results = list(qs[:MAP_VENUE_LIMIT])
-        return results
+        from django.db import transaction
+        with transaction.atomic():
+            results = list(qs[:MAP_VENUE_LIMIT])
+            return results
     except Exception:
         # Fallback to Salon model if Storefront table does not exist or query fails
         from .models import Salon

@@ -112,7 +112,7 @@ class SalonDiscoveryDetailView(RetrieveAPIView):
 class DiscoverMapView(APIView):
     """Map viewport endpoint — returns lightweight venue markers.
 
-    ``GET /api/v1/discover/map?sw_lat=…&sw_lng=…&ne_lat=…&ne_lng=…&zoom=…[&category=…]``
+    ``GET /api/v1/discover/map?latitude=…&longitude=…&latitudeDelta=…&longitudeDelta=…[&category=…]``
 
     All parameters are optional. Bounding-box filtering replaces pagination.
     A hard ``LIMIT`` inside the selector acts as a safety valve.
@@ -122,14 +122,14 @@ class DiscoverMapView(APIView):
 
     @extend_schema(
         parameters=[
-            OpenApiParameter("sw_lat", float, required=False,
-                             description="Bounding-box south-west latitude"),
-            OpenApiParameter("sw_lng", float, required=False,
-                             description="Bounding-box south-west longitude"),
-            OpenApiParameter("ne_lat", float, required=False,
-                             description="Bounding-box north-east latitude"),
-            OpenApiParameter("ne_lng", float, required=False,
-                             description="Bounding-box north-east longitude"),
+            OpenApiParameter("latitude", float, required=False,
+                             description="Center latitude"),
+            OpenApiParameter("longitude", float, required=False,
+                             description="Center longitude"),
+            OpenApiParameter("latitudeDelta", float, required=False,
+                             description="Latitude delta span"),
+            OpenApiParameter("longitudeDelta", float, required=False,
+                             description="Longitude delta span"),
             OpenApiParameter("zoom", int, required=False,
                              description="Current map zoom level"),
             OpenApiParameter("category", str, required=False,
@@ -150,18 +150,26 @@ class DiscoverMapView(APIView):
                     pass
             return None
 
-        sw_lat = parse_float("sw_lat")
-        sw_lng = parse_float("sw_lng")
-        ne_lat = parse_float("ne_lat")
-        ne_lng = parse_float("ne_lng")
+        latitude = parse_float("latitude") or parse_float("lat")
+        longitude = parse_float("longitude") or parse_float("lng")
+        latitude_delta = (
+            parse_float("latitudeDelta")
+            or parse_float("latitude_delta")
+            or parse_float("lat_delta")
+        )
+        longitude_delta = (
+            parse_float("longitudeDelta")
+            or parse_float("longitude_delta")
+            or parse_float("lng_delta")
+        )
 
         category = params.get("category", "all")
 
         venues_qs = map_venues(
-            sw_lat=sw_lat,
-            sw_lng=sw_lng,
-            ne_lat=ne_lat,
-            ne_lng=ne_lng,
+            latitude=latitude,
+            longitude=longitude,
+            latitude_delta=latitude_delta,
+            longitude_delta=longitude_delta,
             category=category,
         )
 
@@ -173,3 +181,6 @@ class DiscoverMapView(APIView):
             "count": len(venues),
             "venues": venues,
         })
+
+
+
