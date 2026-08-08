@@ -63,13 +63,25 @@ def discoverable_salons():
             branch_timezone=Subquery(
                 branch.values("timezone")[:1], output_field=TextField()
             ),
-            photo_url=Subquery(
+            cover_url=Subquery(
                 StorefrontMedia.objects.filter(
                     storefront_id=OuterRef("pk"),
                     deleted_at__isnull=True,
                     is_public=True,
                     moderation_status="APPROVED",
                     kind="COVER",
+                )
+                .order_by("-is_featured", "sort_order")
+                .values("url")[:1],
+                output_field=TextField(),
+            ),
+            logo_url=Subquery(
+                StorefrontMedia.objects.filter(
+                    storefront_id=OuterRef("pk"),
+                    deleted_at__isnull=True,
+                    is_public=True,
+                    moderation_status="APPROVED",
+                    kind="LOGO",
                 )
                 .order_by("-is_featured", "sort_order")
                 .values("url")[:1],
