@@ -20,6 +20,8 @@ def haversine_km(lat1, lng1, lat2, lng2):
 
 
 class SalonListView(APIView):
+    serializer_class = SalonSerializer
+
     def get(self, request):
         salons = list(Salon.objects.all())
 
@@ -48,7 +50,8 @@ class SalonListView(APIView):
         OpenApiParameter("city", str, description="Filter by city name, e.g. Dubai"),
         OpenApiParameter("hijab_mode", str, description="1 to show only hijab-certified salons", enum=["1"]),
         OpenApiParameter("open_now", str, description="1 to show only currently open salons", enum=["1"]),
-    ]
+    ],
+    responses=SalonCardSerializer(many=True),
 )
 class SalonDiscoveryListView(ListAPIView):
     """Figma discovery list + map screen. Public platform salons."""
@@ -81,7 +84,7 @@ class SalonDiscoveryListView(ListAPIView):
         if sort == "distance" and lat and lng:
             return qs.order_by("distance_km")
         return qs.order_by("-avg_rating")
-    
+
     def filter_queryset(self, queryset):
         queryset = super().filter_queryset(queryset)
         if getattr(self, "_filter_open_now", False):
@@ -94,6 +97,7 @@ class SalonDiscoveryListView(ListAPIView):
         return queryset
 
 
+@extend_schema(responses=SalonCardSerializer)
 class SalonDiscoveryDetailView(RetrieveAPIView):
     """Single salon card by id (map pin tap / card tap)."""
 
@@ -178,4 +182,5 @@ class DiscoverMapView(APIView):
             "venues": venues,
         })
 
-
+
+
