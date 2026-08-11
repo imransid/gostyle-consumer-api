@@ -14,6 +14,7 @@ from .models import Salon
 from .money import major
 from .selectors import (
     discoverable_salons,
+    filter_by_category,
     map_venues,
     salon_categories,
     salon_packages,
@@ -71,8 +72,10 @@ class SalonListView(APIView):
         OpenApiParameter("sort", str, description="Sort order", enum=["distance", "rating"]),
         OpenApiParameter("rating_min", float, description="Minimum average rating, e.g. 4.5"),
         OpenApiParameter("city", str, description="Filter by city name, e.g. Dubai"),
+        OpenApiParameter("category", str, description="Filter by salon category", enum=["gents", "ladies", "unisex"]),
         OpenApiParameter("hijab_mode", str, description="1 to show only hijab-certified salons", enum=["1"]),
         OpenApiParameter("open_now", str, description="1 to show only currently open salons", enum=["1"]),
+        OpenApiParameter("total_amount", float, description="Booking total used to compute deposit.amount, e.g. 250"),
     ],
     responses=SalonCardSerializer(many=True),
 )
@@ -80,7 +83,7 @@ class SalonDiscoveryListView(ListAPIView):
     """Figma discovery list + map screen. Public platform salons."""
 
     serializer_class = SalonCardSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         # with_published_hours adds the storefront's PUBLISHED hours and its
@@ -112,6 +115,10 @@ class SalonDiscoveryListView(ListAPIView):
         if city:
             qs = qs.filter(branch_city__iexact=city)
 
+        category = self.request.query_params.get("category")
+        if category in ("gents", "ladies", "unisex"):
+            qs = filter_by_category(qs, category)
+
         sort = self.request.query_params.get("sort")
         if sort == "distance" and lat and lng:
             return qs.order_by("distance_km")
@@ -133,12 +140,17 @@ class SalonDiscoveryListView(ListAPIView):
         return queryset
 
 
-@extend_schema(responses=SalonCardSerializer)
+@extend_schema(
+    parameters=[
+        OpenApiParameter("total_amount", float, description="Booking total used to compute deposit.amount, e.g. 250"),
+    ],
+    responses=SalonCardSerializer,
+)
 class SalonDiscoveryDetailView(RetrieveAPIView):
     """Single salon card by id (map pin tap / card tap)."""
 
     serializer_class = SalonCardSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     lookup_field = "pk"
 
     def get_queryset(self):
@@ -386,7 +398,7 @@ class SalonProductsView(APIView):
 class DiscoverMapView(APIView):
     """Map viewport endpoint — returns lightweight venue markers.
 
-    ``GET /api/v1/discover/map?sw_lat=…&sw_lng=…&ne_lat=…&ne_lng=…&zoom=…[&category=…]``
+    ``GET /api/v1/discover/map?latitude=…&longitude=…&latitudeDelta=…&longitudeDelta=…[&category=…]``
 
     All parameters are optional. Bounding-box filtering replaces pagination.
     A hard ``LIMIT`` inside the selector acts as a safety valve.
@@ -396,19 +408,19 @@ class DiscoverMapView(APIView):
 
     @extend_schema(
         parameters=[
-            OpenApiParameter("sw_lat", float, required=False,
-                             description="Bounding-box south-west latitude"),
-            OpenApiParameter("sw_lng", float, required=False,
-                             description="Bounding-box south-west longitude"),
-            OpenApiParameter("ne_lat", float, required=False,
-                             description="Bounding-box north-east latitude"),
-            OpenApiParameter("ne_lng", float, required=False,
-                             description="Bounding-box north-east longitude"),
+            OpenApiParameter("latitude", float, required=False,
+                             description="Center latitude"),
+            OpenApiParameter("longitude", float, required=False,
+                             description="Center longitude"),
+            OpenApiParameter("latitudeDelta", float, required=False,
+                             description="Latitude delta span"),
+            OpenApiParameter("longitudeDelta", float, required=False,
+                             description="Longitude delta span"),
             OpenApiParameter("zoom", int, required=False,
                              description="Current map zoom level"),
             OpenApiParameter("category", str, required=False,
                              description="Venue category filter",
-                             enum=["all", "gents", "ladies"]),
+                             enum=["all", "gents", "ladies", "unisex"]),
         ],
         responses={200: MapVenueSerializer(many=True)},
     )
@@ -424,18 +436,26 @@ class DiscoverMapView(APIView):
                     pass
             return None
 
-        sw_lat = parse_float("sw_lat")
-        sw_lng = parse_float("sw_lng")
-        ne_lat = parse_float("ne_lat")
-        ne_lng = parse_float("ne_lng")
+        latitude = parse_float("latitude") or parse_float("lat")
+        longitude = parse_float("longitude") or parse_float("lng")
+        latitude_delta = (
+            parse_float("latitudeDelta")
+            or parse_float("latitude_delta")
+            or parse_float("lat_delta")
+        )
+        longitude_delta = (
+            parse_float("longitudeDelta")
+            or parse_float("longitude_delta")
+            or parse_float("lng_delta")
+        )
 
         category = params.get("category", "all")
 
         venues_qs = map_venues(
-            sw_lat=sw_lat,
-            sw_lng=sw_lng,
-            ne_lat=ne_lat,
-            ne_lng=ne_lng,
+            latitude=latitude,
+            longitude=longitude,
+            latitude_delta=latitude_delta,
+            longitude_delta=longitude_delta,
             category=category,
         )
 

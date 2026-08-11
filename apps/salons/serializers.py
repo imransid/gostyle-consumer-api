@@ -9,6 +9,17 @@ from .models import Salon
 from .snapshot import field as snap_field
 from .snapshot import items as snap_items
 
+# Normalize platform salon.gender values to the app's category vocabulary.
+CATEGORY_ALIASES = {
+    "male": "gents",
+    "men": "gents",
+    "female": "ladies",
+    "women": "ladies",
+    "both": "unisex",
+    "mixed": "unisex",
+    "all": "unisex",
+}
+
 
 class SalonSerializer(serializers.ModelSerializer):
     open = serializers.BooleanField(source="open_now")
@@ -44,6 +55,7 @@ class SalonCardSerializer(serializers.Serializer):
     slug = serializers.CharField()
     name = serializers.CharField(source="branch_name")
     city = serializers.CharField(source="branch_city", allow_null=True)
+    category = serializers.SerializerMethodField()
     rating = serializers.SerializerMethodField()
     review_count = serializers.IntegerField(allow_null=True)
     coordinate = serializers.SerializerMethodField()
@@ -54,6 +66,7 @@ class SalonCardSerializer(serializers.Serializer):
     logo_url = serializers.CharField(allow_null=True)
     hijab_certified = serializers.BooleanField()
     deposit = serializers.SerializerMethodField()
+    free_cancellation = serializers.SerializerMethodField()
     closes_at = serializers.SerializerMethodField()
     distance_km = serializers.SerializerMethodField()
     gallery_urls = serializers.ListField(
@@ -95,6 +108,13 @@ class SalonCardSerializer(serializers.Serializer):
             return None
         return round(d, 1)
 
+    def get_category(self, obj):
+        raw = getattr(obj, "category", None)
+        if not raw:
+            return None
+        value = raw.lower()
+        return CATEGORY_ALIASES.get(value, value)
+
     def get_rating(self, obj):
         if obj.avg_rating is None:
             return None
@@ -120,14 +140,43 @@ class SalonCardSerializer(serializers.Serializer):
     def get_closes_at(self, obj):
         return self._hours(obj)["closes_at"]
 
+    def _total_amount(self):
+        """Optional ?total_amount= query param (e.g. selected services total)."""
+        request = self.context.get("request")
+        if request is None:
+            return None
+        raw = request.query_params.get("total_amount")
+        if raw in (None, ""):
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
     def get_deposit(self, obj):
         mode = getattr(obj, "deposit_mode", None)
         if mode is None:
             return None
         if mode == "NONE":
-            return {"required": False, "label": "No Deposit"}
+            return {
+                "required": False,
+                "label": "No Deposit",
+                "percentage": None,
+                "amount": None,
+            }
         pct = (obj.deposit_bps or 0) // 100
-        return {"required": True, "label": f"{pct}% Deposit", "percent": pct}
+        total = self._total_amount()
+        amount = round(total * pct / 100) if total is not None else None
+        return {
+            "required": True,
+            "label": f"{pct}% Deposit",
+            "percentage": pct,
+            "amount": amount,
+        }
+
+    def get_free_cancellation(self, obj):
+        hours = getattr(obj, "cancel_window_hours", None)
+        return hours is not None and hours > 0
 
 
 class MapVenueSerializer(serializers.Serializer):

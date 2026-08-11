@@ -1,6 +1,6 @@
 from django.db.models import QuerySet
 from django.db.models import Avg, Count, Exists, F, FloatField, Func, OuterRef, Subquery, TextField, Value
-from django.db.models.functions import ACos, Cos, Radians, Sin
+from django.db.models.functions import ACos, Cos, Lower, Radians, Sin
 from django.contrib.postgres.aggregates import ArrayAgg
 from django.contrib.postgres.fields import ArrayField
 from apps.platform_data.models import Product, ProductVariant
@@ -13,6 +13,7 @@ from apps.platform_data.models import StorefrontVersion
 
 from apps.platform_data.models import (
     Branch,
+    Salon as PlatformSalon,
     Storefront,
     StorefrontCertification,
     StorefrontMedia,
@@ -35,6 +36,30 @@ from apps.platform_data.models import (
 )
 
 from apps.platform_data.models import FileItem, StaffProfile, UserAccount
+
+from .serializers import CATEGORY_ALIASES
+
+
+def filter_by_category(qs, category):
+    """Filter a Storefront queryset by salon category ('gents'/'ladies'/'unisex').
+
+    The category lives on the platform ``salon.gender`` column (joined via
+    ``tenant_id``); raw values are matched case-insensitively, including the
+    aliases the serializer normalizes (male/female/both, …).
+    """
+    raw_values = [category] + [
+        raw for raw, canonical in CATEGORY_ALIASES.items() if canonical == category
+    ]
+    return qs.annotate(
+        salon_category=Lower(
+            Subquery(
+                PlatformSalon.objects.filter(
+                    tenant_id=OuterRef("tenant_id")
+                ).values("gender")[:1],
+                output_field=TextField(),
+            )
+        )
+    ).filter(salon_category__in=raw_values)
 
 
 def with_published_hours(qs):
@@ -391,6 +416,17 @@ def discoverable_salons():
                     storefront_id=OuterRef("pk")
                 ).values("deposit_bps")[:1],
             ),
+            cancel_window_hours=Subquery(
+                StorefrontPolicy.objects.filter(
+                    storefront_id=OuterRef("pk")
+                ).values("cancel_window_hours")[:1],
+            ),
+            category=Subquery(
+                PlatformSalon.objects.filter(
+                    tenant_id=OuterRef("tenant_id")
+                ).values("gender")[:1],
+                output_field=TextField(),
+            ),
             gallery_urls=Subquery(
                 StorefrontMedia.objects.filter(
                     storefront_id=OuterRef("pk"),
@@ -416,33 +452,41 @@ def discoverable_salons():
 MAP_VENUE_LIMIT: int = 500
 
 # Valid category filter values; anything else falls back to "all".
-_VALID_CATEGORIES = frozenset({"gents", "ladies"})
+_VALID_CATEGORIES = frozenset({"gents", "ladies", "unisex"})
 
 
 def map_venues(
-    sw_lat: float | None = None,
-    sw_lng: float | None = None,
-    ne_lat: float | None = None,
-    ne_lng: float | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    latitude_delta: float | None = None,
+    longitude_delta: float | None = None,
     category: str = "all",
 ) -> "QuerySet[Storefront]":
-    """Return discoverable storefronts inside the viewport bounding box (if specified).
+    """Return discoverable storefronts inside the viewport bounding box.
 
+    The bounding box is computed from the map region (center + delta).
     Only the columns needed for map markers are annotated (lat, lng,
     avg_rating, photo_url) to keep the query lightweight. A hard LIMIT is
     enforced as a safety valve.
 
     Args:
-        sw_lat: Optional South-west latitude of the bounding box.
-        sw_lng: Optional South-west longitude of the bounding box.
-        ne_lat: Optional North-east latitude of the bounding box.
-        ne_lng: Optional North-east longitude of the bounding box.
+        latitude: Center latitude of the map region.
+        longitude: Center longitude of the map region.
+        latitude_delta: Latitude span of the visible region.
+        longitude_delta: Longitude span of the visible region.
         category: ``"all"`` | ``"gents"`` | ``"ladies"``. Default ``"all"``.
 
     Returns:
         A lightweight queryset of ``Storefront`` instances annotated with
         ``lat``, ``lng``, ``avg_rating``, and ``photo_url``.
     """
+    sw_lat = sw_lng = ne_lat = ne_lng = None
+    if None not in (latitude, longitude, latitude_delta, longitude_delta):
+        sw_lat = latitude - (latitude_delta / 2.0)
+        ne_lat = latitude + (latitude_delta / 2.0)
+        sw_lng = longitude - (longitude_delta / 2.0)
+        ne_lng = longitude + (longitude_delta / 2.0)
+
     published_reviews = StorefrontReview.objects.filter(
         storefront_id=OuterRef("pk"),
         state="PUBLISHED",
@@ -491,12 +535,14 @@ def map_venues(
             lng__lte=ne_lng,
         )
 
-    if category in _VALID_CATEGORIES and any(f.name == "category" for f in Storefront._meta.fields):
-        qs = qs.filter(category=category)
+    if category in _VALID_CATEGORIES:
+        qs = filter_by_category(qs, category)
 
     try:
-        results = list(qs[:MAP_VENUE_LIMIT])
-        return results
+        from django.db import transaction
+        with transaction.atomic():
+            results = list(qs[:MAP_VENUE_LIMIT])
+            return results
     except Exception:
         # Fallback to Salon model if Storefront table does not exist or query fails
         from .models import Salon
@@ -509,7 +555,7 @@ def map_venues(
                 longitude__gte=sw_lng,
                 longitude__lte=ne_lng,
             )
-        if category in ("gents", "ladies"):
+        if category in _VALID_CATEGORIES:
             salon_qs = salon_qs.filter(category=category)
 
         items = []

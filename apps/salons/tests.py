@@ -1,11 +1,12 @@
-
 """
 Tests for the pure modules behind the salon profile endpoints.
 
-NO DATABASE. Every test here runs against snapshot.py, hours.py, money.py and
-translate.py directly, which is possible because those four modules import
-nothing from Django. That is the payoff of keeping them pure: no fixtures, no
-transactions, no test database, and a full run in milliseconds.
+NO DATABASE in the SimpleTestCase classes below. They run against snapshot.py,
+hours.py, money.py and translate.py directly, which is possible because those
+four modules import nothing from Django. That is the payoff of keeping them
+pure: no fixtures, no transactions, no test database, and a full run in
+milliseconds. (DiscoverMapViewTests at the bottom is the exception: it drives
+the map endpoint through the API and does need a database.)
 
 WHAT IS WORTH TESTING HERE. Not the happy path, which the seeded salon already
 proves end to end. These cover the cases the seed CANNOT reach: a snapshot
@@ -17,10 +18,13 @@ years of production data and never from a fixture written this morning.
 
 from decimal import Decimal
 
-from django.test import SimpleTestCase
+from django.contrib.auth import get_user_model
+from django.test import SimpleTestCase, TestCase
+from rest_framework.test import APIClient
 
 from apps.salons import translate
 from apps.salons.hours import is_within, resolve
+from apps.salons.models import Salon
 from apps.salons.money import bps_to_percent, major
 from apps.salons.snapshot import field, items, normalize
 
@@ -112,7 +116,7 @@ class HoursTests(SimpleTestCase):
 
     def test_overnight_window(self):
         """
-        The bug this replaced compared strings, so "18:00" <= "20:00" 
+        The bug this replaced compared strings, so "18:00" <= "20:00"
         "02:00" was False and a bar open till 2am reported shut all evening.
         """
         self.assertTrue(is_within("18:00", "02:00", "20:00"))
@@ -310,3 +314,65 @@ class TranslateTests(SimpleTestCase):
         self.assertFalse(policy["deposit_required"])
         self.assertEqual(policy["deposit_percentage"], 0)
         self.assertFalse(policy["free_cancellation"])
+
+
+User = get_user_model()
+
+
+class DiscoverMapViewTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(phone="+8801700000000", password="password")
+        self.client.force_authenticate(user=self.user)
+
+        # Inside Mymensingh region: 24.5547702, 90.4080668 ± 0.06
+        self.salon1 = Salon.objects.create(
+            id="salon-near-center",
+            name="Salon Near Center",
+            category="gents",
+            latitude=24.554,
+            longitude=90.408,
+            rating=4.5,
+        )
+        # Outside region
+        self.salon2 = Salon.objects.create(
+            id="far-salon",
+            name="Far Salon",
+            category="gents",
+            latitude=25.554,
+            longitude=91.408,
+            rating=4.0,
+        )
+
+    def test_map_with_region_params_filters_correctly(self):
+        """Only salon1 (inside region) should be returned."""
+        response = self.client.get("/api/v1/discover/map", {
+            "latitude": 24.5547702,
+            "longitude": 90.4080668,
+            "latitudeDelta": 0.12,
+            "longitudeDelta": 0.12,
+        })
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("venues", data)
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["venues"][0]["lat"], 24.554)
+
+    def test_map_without_params_returns_all(self):
+        """No region params → returns all salons."""
+        response = self.client.get("/api/v1/discover/map")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("venues", data)
+        self.assertEqual(data["count"], 2)
+
+    def test_map_unauthenticated_returns_401(self):
+        """Unauthenticated requests should be rejected."""
+        self.client.force_authenticate(user=None)
+        response = self.client.get("/api/v1/discover/map", {
+            "latitude": 24.5547702,
+            "longitude": 90.4080668,
+            "latitudeDelta": 0.12,
+            "longitudeDelta": 0.12,
+        })
+        self.assertEqual(response.status_code, 401)
