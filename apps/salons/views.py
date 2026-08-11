@@ -28,7 +28,38 @@ from .snapshot import items as snap_items
 from .snapshot import read_snapshot
 from .hours import resolve as resolve_hours
 from .selectors import salon_stylists
+from .selectors import salon_products
 
+
+
+class SalonProductsView(APIView):
+    """
+    GET /api/v1/salon/<uuid>/products
+
+    The shop tab. Retail products only, priced from each product's default
+    variant. The list is tenant-wide rather than branch-specific because
+    product has no branch column; see the selector for why that is a schema
+    fact and not a shortcut.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, salon_id):
+        salon = salon_profile(salon_id)
+        if salon is None:
+            raise Http404("Salon not found")
+
+        products = [
+            {
+                "id": str(p.id),
+                "name": p.name,
+                "price": major(p.price_minor),
+                "image_url": p.image_url,
+            }
+            for p in salon_products(salon)
+        ]
+
+        return Response({"products": products})
 
 
 class SalonPackagesView(APIView):

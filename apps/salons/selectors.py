@@ -3,6 +3,7 @@ from django.db.models import Avg, Count, Exists, F, FloatField, Func, OuterRef, 
 from django.db.models.functions import ACos, Cos, Radians, Sin
 from django.contrib.postgres.aggregates import ArrayAgg
 from django.contrib.postgres.fields import ArrayField
+from apps.platform_data.models import Product, ProductVariant
 
 from apps.platform_data.models import Category, Service, ServiceBranchAvailability
 
@@ -30,6 +31,46 @@ from apps.platform_data.models import (
 )
 
 from apps.platform_data.models import FileItem, StaffProfile, UserAccount
+
+
+def salon_products(storefront):
+    """
+    Retail products a customer may buy.
+
+    TYPE IS THE IMPORTANT FILTER. product_type is RETAIL, PROFESSIONAL or
+    CONSUMABLE, and only RETAIL is for sale: PROFESSIONAL is salon-use stock
+    like developer and bleach, CONSUMABLE is towels and foils. Selling either
+    in the app shop would be wrong, so type is not optional here.
+
+    NOT BRANCH-SCOPED, and that is a schema fact rather than a choice: product
+    carries tenant_id only. A multi-branch tenant therefore shows the same
+    shop at every branch. Stock is tracked per branch in stock_lot, so a
+    per-branch shop is possible later, but it is a different query.
+
+    The price comes from the LOWEST-POSITION variant, which is the one the
+    salon ordered first and so the one they treat as default. Cheapest would
+    be a guess about intent; position is the salon's own answer.
+    """
+    default_variant = ProductVariant.objects.filter(
+        product_id=OuterRef("pk"),
+        deleted_at__isnull=True,
+    ).order_by("position")
+
+    return (
+        Product.objects.filter(
+            tenant_id=storefront.tenant_id,
+            status="ACTIVE",
+            type="RETAIL",
+            deleted_at__isnull=True,
+        )
+        .annotate(
+            price_minor=Subquery(default_variant.values("sale_price_minor")[:1]),
+        )
+        # A product with no priced variant cannot be sold, and rendering it
+        # with a null price would put a broken card in the shop.
+        .filter(price_minor__isnull=False)
+        .order_by("name")
+    )
 
 
 

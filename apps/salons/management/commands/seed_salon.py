@@ -1,11 +1,11 @@
-# apps/salons/management/commands/seed_salon.py
+
 """
 Insert one complete salon for local development.
 
 The profile endpoints read across storefront, branch, tenant, categories,
-services, availability, staff, packages and a published version snapshot.
-Testing them needs all of those to exist and agree with each other, which no
-fixture file expresses readably.
+services, availability, staff, packages, products and a published version
+snapshot. Testing them needs all of those to exist and agree with each other,
+which no fixture file expresses readably.
 
 WRITES TO PLATFORM-OWNED TABLES. Every table here is managed = False and
 belongs to gostyle-platform. That is acceptable on a local database and
@@ -71,6 +71,15 @@ STAFF = [
 # salon_packages() compute price_before, save_amount and duration correctly.
 PKG_ITEMS = [(0, 1), (2, 1)]
 PKG_PRICE_MINOR = 37000
+
+# name, type, price_minor. The PROFESSIONAL row is salon-use stock, not for
+# sale, and it must NOT reach the shop tab. It is the only proof the type
+# filter in salon_products() actually runs.
+PRODUCTS = [
+    ("Iron Beard Oil", "RETAIL", 18000),
+    ("Matte Hair Clay", "RETAIL", 22000),
+    ("Salon Developer 20 Vol", "PROFESSIONAL", 4500),
+]
 
 SNAPSHOT = {
     "IDENTITY": {
@@ -144,6 +153,14 @@ def staff_id(index):
 
 def package_item_id(order):
     return uuid.UUID(f"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb{order}")
+
+
+def product_id(index):
+    return uuid.UUID(f"cccccccc-cccc-cccc-cccc-ccccccccccc{index}")
+
+
+def variant_id(index):
+    return uuid.UUID(f"dddddddd-dddd-dddd-dddd-ddddddddddd{index}")
 
 
 class Command(BaseCommand):
@@ -353,21 +370,62 @@ class Command(BaseCommand):
                 [PKG_AVAIL_ID, PKG_ID, BRANCH_ID, True, now, now],
             )
 
+            # A product carries no price of its own: the price lives on the
+            # variant, so both rows are needed for a product to be sellable.
+            for index, (name, ptype, price) in enumerate(PRODUCTS):
+                cur.execute(
+                    """
+                    INSERT INTO public.product
+                        (id, tenant_id, name, unit, type, status,
+                         track_batch_expiry, image_url, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    [product_id(index), TENANT_ID, name, "bottle", ptype,
+                     "ACTIVE", False,
+                     f"https://picsum.photos/seed/prod{index}/400/400",
+                     now, now],
+                )
+
+                cur.execute(
+                    """
+                    INSERT INTO public.product_variant
+                        (id, tenant_id, product_id, name, sku, cost_minor,
+                         sale_price_minor, currency, position,
+                         created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    [variant_id(index), TENANT_ID, product_id(index),
+                     "Default", f"SKU-{index:03d}", price // 2, price,
+                     "AED", 0, now, now],
+                )
+
         self.stdout.write(self.style.SUCCESS("Seeded salon."))
         self.stdout.write(f"  GET /api/v1/salon/{STOREFRONT_ID}")
         self.stdout.write(f"  GET /api/v1/salon/{STOREFRONT_ID}/services")
         self.stdout.write(f"  GET /api/v1/salon/{STOREFRONT_ID}/stylists")
         self.stdout.write(f"  GET /api/v1/salon/{STOREFRONT_ID}/packages")
+        self.stdout.write(f"  GET /api/v1/salon/{STOREFRONT_ID}/products")
 
     def _purge(self, cur):
         """
         Delete in reverse dependency order.
 
-        Children before parents throughout: package items and availability
-        before the package, the package before the services it references,
-        availability before service, profile before account, service before
-        category, and live_version_id cleared before the version it points at.
+        Children before parents throughout: variant before product, package
+        items and availability before the package, the package before the
+        services it references, availability before service, profile before
+        account, service before category, and live_version_id cleared before
+        the version row it points at.
         """
+        for index in range(len(PRODUCTS)):
+            cur.execute(
+                "DELETE FROM public.product_variant WHERE id = %s", [variant_id(index)]
+            )
+            cur.execute(
+                "DELETE FROM public.product WHERE id = %s", [product_id(index)]
+            )
+
         cur.execute(
             "DELETE FROM public.service_package_branch_availability WHERE id = %s",
             [PKG_AVAIL_ID],
