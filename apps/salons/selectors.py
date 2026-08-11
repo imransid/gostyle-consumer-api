@@ -22,6 +22,48 @@ from apps.platform_data.models import (
     Tenant,
 )
 
+from apps.platform_data.models import FileItem, StaffProfile, UserAccount
+
+
+def salon_stylists(storefront):
+    """
+    Staff a customer may see for one salon.
+
+    TWO status columns, and both are required. employment_status says whether
+    the person still works here; onboarding_state says whether they ever
+    finished joining. A row that is ACTIVE and INVITED is an unaccepted
+    invitation, which is a real person who has never worked a shift, and
+    showing them on a public profile would be wrong.
+
+    rating, review_count, years_experience and day_off are NOT selected here
+    because no column holds them: storefront_review has no staff_id, and
+    neither staff_profile nor user_account records experience. They are sent
+    as null by the serializer. See the platform tickets.
+    """
+    user = UserAccount.objects.filter(id=OuterRef("user_id"))
+
+    return (
+        StaffProfile.objects.filter(
+            tenant_id=storefront.tenant_id,
+            branch_id=storefront.branch_id,
+            employment_status="ACTIVE",
+            onboarding_state="ACTIVE",
+            deleted_at__isnull=True,
+        )
+        .annotate(
+            first_name=Subquery(user.values("first_name")[:1], output_field=TextField()),
+            last_name=Subquery(user.values("last_name")[:1], output_field=TextField()),
+            job_title=Subquery(user.values("job_title")[:1], output_field=TextField()),
+            avatar_file_id=Subquery(user.values("avatar_file_item_id")[:1]),
+        )
+        .annotate(
+            avatar_url=Subquery(
+                FileItem.objects.filter(id=OuterRef("avatar_file_id")).values("url")[:1],
+                output_field=TextField(),
+            ),
+        )
+        .order_by("created_at")
+    )
 
 
 def salon_services(storefront):

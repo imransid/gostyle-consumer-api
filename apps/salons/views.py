@@ -27,7 +27,46 @@ from .serializers import SalonProfileSerializer
 from .snapshot import items as snap_items
 from .snapshot import read_snapshot
 from .hours import resolve as resolve_hours
+from .selectors import salon_stylists
 
+
+
+class SalonStylistsView(APIView):
+    """
+    GET /api/v1/salon/<uuid>/stylists
+
+    Four fields the mobile contract asks for have no source in this schema and
+    are sent as null: rating and review_count (storefront_review carries no
+    staff_id, so a review is of the salon and not the person), years_experience
+    (no column anywhere) and day_off (derivable from shift_roster later, but
+    never stored as a fact). Null means hide the element.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, salon_id):
+        salon = salon_profile(salon_id)
+        if salon is None:
+            raise Http404("Salon not found")
+
+        stylists = [
+            {
+                "id": str(s.id),
+                # position is the salon's own label for the seat; job_title is
+                # what the person calls themselves. Prefer position, since it
+                # is the one a manager sets deliberately per branch.
+                "name": " ".join(filter(None, [s.first_name, s.last_name])) or None,
+                "role": s.position or s.job_title,
+                "avatar_url": s.avatar_url,
+                "rating": None,
+                "review_count": None,
+                "years_experience": None,
+                "day_off": None,
+            }
+            for s in salon_stylists(salon)
+        ]
+
+        return Response({"stylists": stylists})
 
 
 class SalonServicesView(APIView):
