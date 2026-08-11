@@ -10,6 +10,71 @@ from .selectors import discoverable_salons, map_venues, with_distance
 from .serializers import MapVenueSerializer, SalonCardSerializer
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 
+import zoneinfo
+from datetime import datetime
+
+from django.http import Http404
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from .selectors import salon_profile
+from .serializers import SalonProfileSerializer
+from .snapshot import items as snap_items
+from .snapshot import read_snapshot
+from .hours import resolve as resolve_hours
+
+
+class SalonProfileView(APIView):
+    """
+    GET /api/v1/salon/<uuid>
+
+    APIView, not RetrieveAPIView, because the response is an object and the
+    project's default pagination class would otherwise wrap list endpoints in
+    an envelope the app does not expect.
+
+    AllowAny explicitly: the project default is IsAuthenticated. With AllowAny
+    the JWT still populates request.user when a token is sent, which is what
+    the user-specific fields will need, and does not 401 when it is absent.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, salon_id):
+        salon = salon_profile(salon_id)
+        if salon is None:
+            raise Http404("Salon not found")
+
+        snapshot = read_snapshot(salon)
+
+        # The clock lives HERE, at the edge, and nowhere else. hours.resolve
+        # is pure and takes the local time it should reason about, the same
+        # discipline the platform's domain services use.
+        tz = zoneinfo.ZoneInfo(salon.branch_timezone or "Asia/Dubai")
+        now = datetime.now(tz)
+
+        exception = None
+        auto_rule=False
+
+        hours = resolve_hours(
+            weekly=snapshot["HOURS"].get("weekly"),
+            exception=exception,
+            state=salon.manual_state,
+            weekday_index=now.weekday(),
+            now_hhmm=now.strftime("%H:%M"),
+        )
+
+        data = SalonProfileSerializer(
+            salon,
+            context={
+                "snapshot": snapshot,
+                "hours": hours,
+                "cancel_window_hours": snapshot["POLICY"].get("cancelWindowHours"),
+            },
+        ).data
+        return Response(data)
+
+
 def haversine_km(lat1, lng1, lat2, lng2):
     r = 6371  # earth radius km
     p1, p2 = math.radians(lat1), math.radians(lat2)

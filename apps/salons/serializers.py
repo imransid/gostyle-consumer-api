@@ -3,6 +3,11 @@ from .models import Salon
 import zoneinfo
 from datetime import datetime
 
+from . import translate
+from .hours import resolve as resolve_hours
+from .snapshot import field as snap_field
+from .snapshot import items as snap_items
+
 DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 
@@ -126,3 +131,114 @@ class MapVenueSerializer(serializers.Serializer):
         if obj.avg_rating is None:
             return None
         return round(float(obj.avg_rating), 1)
+
+class SalonProfileSerializer(serializers.Serializer):
+    """
+    The salon profile screen's header, info card and check-in card.
+
+    Most of what this returns is NOT in columns: it comes from the published
+    snapshot, which the view reads once and passes in through context. Doing
+    that in the view rather than here keeps the number of queries visible at
+    the call site instead of hidden behind a serializer method.
+    """
+
+    id = serializers.UUIDField()
+    slug = serializers.CharField()
+    cover_url = serializers.CharField(allow_null=True)
+    logo_url = serializers.CharField(allow_null=True)
+    rating = serializers.SerializerMethodField()
+    review_count = serializers.IntegerField(allow_null=True)
+    currency = serializers.CharField(allow_null=True)
+
+    gallery = serializers.SerializerMethodField()
+    name = serializers.SerializerMethodField()
+    tagline = serializers.SerializerMethodField()
+    bio = serializers.SerializerMethodField()
+    category = serializers.SerializerMethodField()
+    price_level = serializers.SerializerMethodField()
+    amenities = serializers.SerializerMethodField()
+    social_links = serializers.SerializerMethodField()
+    location = serializers.SerializerMethodField()
+    booking_policy = serializers.SerializerMethodField()
+
+    is_open = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
+    hours_today = serializers.SerializerMethodField()
+
+    # Agreed as not-yet-available. Present so the app's shape is stable and
+    # null means "hide this element". See the platform tickets for the two
+    # that need schema work.
+    active_booking = serializers.SerializerMethodField()
+
+    # ── helpers ──────────────────────────────────────────────────────
+    @property
+    def _snap(self):
+        return self.context["snapshot"]
+
+    @property
+    def _hours(self):
+        return self.context["hours"]
+
+    # ── fields ───────────────────────────────────────────────────────
+    def get_rating(self, obj) -> float | None:
+        if obj.avg_rating is None:
+            return None
+        return round(float(obj.avg_rating), 1)
+
+    def get_gallery(self, obj) -> list:
+        return obj.gallery_urls or []
+
+    def get_name(self, obj) -> str | None:
+        # Falls back to the branch name: a salon that published without
+        # filling IDENTITY still has to render with a name on the card.
+        return snap_field(self._snap, "IDENTITY", "nameEn") or obj.branch_name
+
+    def get_tagline(self, obj) -> str | None:
+        return snap_field(self._snap, "IDENTITY", "tagEn")
+
+    def get_bio(self, obj) -> str | None:
+        return snap_field(self._snap, "IDENTITY", "aboutEn")
+
+    def get_category(self, obj) -> str | None:
+        return translate.category(snap_field(self._snap, "AUDIENCE", "mode"))
+
+    def get_price_level(self, obj) -> int | None:
+        return translate.price_level(snap_field(self._snap, "BADGES", "priceTier"))
+
+    def get_amenities(self, obj) -> list:
+        return translate.amenities(snap_items(self._snap, "AMENITIES", "items"))
+
+    def get_social_links(self, obj) -> list:
+        return translate.social_links(self._snap.get("SOCIALS"))
+
+    def get_location(self, obj) -> dict:
+        # MAP overrides the branch address for PRESENTATION; the branch value
+        # is the fallback, not a competing truth.
+        lat = snap_field(self._snap, "MAP", "lat", obj.lat)
+        lng = snap_field(self._snap, "MAP", "lng", obj.lng)
+        return {
+            "address": snap_field(self._snap, "MAP", "address"),
+            "latitude": lat,
+            "longitude": lng,
+            "map_url": f"https://maps.google.com/?q={lat},{lng}" if lat and lng else None,
+        }
+
+    def get_booking_policy(self, obj) -> dict:
+        return translate.booking_policy(
+            getattr(obj, "deposit_mode", None),
+            getattr(obj, "deposit_bps", None),
+            self.context.get("cancel_window_hours"),
+        )
+
+    def get_is_open(self, obj) -> bool | None:
+        return self._hours["is_open"]
+
+    def get_status(self, obj) -> str | None:
+        return self._hours["status"]
+
+    def get_hours_today(self, obj) -> str | None:
+        return self._hours["hours_today"]
+
+    def get_active_booking(self, obj):
+        # Needs the consumer-to-customer link that does not exist yet.
+        return None

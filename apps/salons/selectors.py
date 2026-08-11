@@ -13,6 +13,55 @@ from apps.platform_data.models import (
     StorefrontReview,
 )
 
+from datetime import date
+from apps.platform_data.models import (
+    StorefrontStatus,
+    StorefrontStatusException,
+    Tenant,
+)
+
+
+def salon_profile(storefront_id):
+    """
+    One salon for the profile screen.
+
+    Builds on discoverable_salons() so the media, rating and policy columns
+    are identical to what /discover already serves: two endpoints describing
+    the same salon must not disagree about its rating.
+
+    Adds three things the card did not need:
+      - live_version_id, so the snapshot can be read
+      - today's manual state and dated exception, for the hours resolver
+      - the tenant currency
+
+    Returns None when the salon does not exist or is not public, so the view
+    can 404 rather than the query raising.
+    """
+    today = date.today()
+
+    return (
+        discoverable_salons()
+        .annotate(
+            currency=Subquery(
+                Tenant.objects.filter(id=OuterRef("tenant_id")).values(
+                    "currency_default"
+                )[:1],
+                output_field=TextField(),
+            ),
+            # The manual state, but ONLY when it applies to today. A state
+            # left over from last week is not today's answer.
+             manual_state=Subquery(
+                StorefrontStatus.objects.filter(
+                    storefront_id=OuterRef("pk"),
+                ).values("state")[:1],
+                output_field=TextField(),
+            ),
+            
+        )
+        .filter(id=storefront_id)
+        .first()
+    )
+
 
 def with_distance(qs, user_lat, user_lng):
     """Annotate distance_km from the user's location using the haversine formula."""
