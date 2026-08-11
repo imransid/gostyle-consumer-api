@@ -6,7 +6,7 @@ from .serializers import SalonSerializer
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.permissions import AllowAny, IsAuthenticated
 
-from .selectors import discoverable_salons, map_venues, with_distance
+from .selectors import discoverable_salons, filter_by_category, map_venues, with_distance
 from .serializers import MapVenueSerializer, SalonCardSerializer
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 
@@ -48,6 +48,7 @@ class SalonListView(APIView):
         OpenApiParameter("sort", str, description="Sort order", enum=["distance", "rating"]),
         OpenApiParameter("rating_min", float, description="Minimum average rating, e.g. 4.5"),
         OpenApiParameter("city", str, description="Filter by city name, e.g. Dubai"),
+        OpenApiParameter("category", str, description="Filter by salon category", enum=["gents", "ladies", "unisex"]),
         OpenApiParameter("hijab_mode", str, description="1 to show only hijab-certified salons", enum=["1"]),
         OpenApiParameter("open_now", str, description="1 to show only currently open salons", enum=["1"]),
         OpenApiParameter("total_amount", float, description="Booking total used to compute deposit.amount, e.g. 250"),
@@ -81,6 +82,9 @@ class SalonDiscoveryListView(ListAPIView):
         city = self.request.query_params.get("city")
         if city:
             qs = qs.filter(branch_city__iexact=city)
+        category = self.request.query_params.get("category")
+        if category in ("gents", "ladies", "unisex"):
+            qs = filter_by_category(qs, category)
         sort = self.request.query_params.get("sort")
         if sort == "distance" and lat and lng:
             return qs.order_by("distance_km")
@@ -140,7 +144,7 @@ class DiscoverMapView(APIView):
                              description="Current map zoom level"),
             OpenApiParameter("category", str, required=False,
                              description="Venue category filter",
-                             enum=["all", "gents", "ladies"]),
+                             enum=["all", "gents", "ladies", "unisex"]),
         ],
         responses={200: MapVenueSerializer(many=True)},
     )
