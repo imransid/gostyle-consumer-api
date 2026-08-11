@@ -13,7 +13,7 @@ from drf_spectacular.utils import OpenApiParameter, extend_schema
 from .money import major
 from .selectors import salon_categories, salon_services
 
-
+from .selectors import salon_packages
 import zoneinfo
 from datetime import datetime
 
@@ -30,6 +30,48 @@ from .hours import resolve as resolve_hours
 from .selectors import salon_stylists
 
 
+
+class SalonPackagesView(APIView):
+    """
+    GET /api/v1/salon/<uuid>/packages
+
+    my_packages is ALWAYS empty, and not because the user is logged out. The
+    platform can SELL a package (sale_line.package_id records it) but nothing
+    anywhere tracks sessions used against sessions bought: there is no
+    redemption table. Returning the key with an empty list lets the app ship
+    the tab now; filling it needs schema work on the platform side.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, salon_id):
+        salon = salon_profile(salon_id)
+        if salon is None:
+            raise Http404("Salon not found")
+
+        bundles = []
+        for pkg in salon_packages(salon):
+            sum_minor = pkg.sum_minor or 0
+            save_minor = max(sum_minor - pkg.price_minor, 0)
+
+            bundles.append({
+                "id": str(pkg.id),
+                "name": pkg.name,
+                "description": pkg.description,
+                # highlights is text[] in Postgres but TextField in the stale
+                # model, so guard the type rather than trusting either.
+                "features": list(pkg.highlights) if isinstance(pkg.highlights, (list, tuple)) else [],
+                "duration_minutes": pkg.total_minutes,
+                "price": major(pkg.price_minor),
+                # Only shown when the bundle actually saves something. A
+                # package priced at or above its parts is not a deal, and
+                # printing "save 0" on the card would look like a bug.
+                "price_before": major(sum_minor) if save_minor else None,
+                "save_amount": major(save_minor) if save_minor else None,
+                "theme": pkg.color_theme,
+            })
+
+        return Response({"my_packages": [], "bundles": bundles})
 
 class SalonStylistsView(APIView):
     """

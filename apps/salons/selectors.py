@@ -22,7 +22,73 @@ from apps.platform_data.models import (
     Tenant,
 )
 
+from django.db.models import F, IntegerField, Sum
+from apps.platform_data.models import (
+    ServicePackage,
+    ServicePackageBranchAvailability,
+    ServicePackageItem,
+)
+
 from apps.platform_data.models import FileItem, StaffProfile, UserAccount
+
+
+
+def salon_packages(storefront):
+    """
+    Bundles a customer may buy at one salon.
+
+    price_before is the sum of the member services at their own prices times
+    quantity, which is what the customer would pay buying them separately.
+    That is derived rather than stored, and deliberately not taken from
+    discount_bps: a FIXED-price package has no discount percentage at all, so
+    reading the discount would give nothing for exactly the packages the app
+    most wants to show a saving on.
+
+    The two aggregates are done as subqueries rather than a join so the
+    package rows are not multiplied by their items.
+    """
+    availability = ServicePackageBranchAvailability.objects.filter(
+        package_id=OuterRef("pk"),
+        branch_id=storefront.branch_id,
+    )
+
+    items = ServicePackageItem.objects.filter(package_id=OuterRef("pk"))
+
+    return (
+        ServicePackage.objects.filter(
+            tenant_id=storefront.tenant_id,
+            status="PUBLISHED",
+            deleted_at__isnull=True,
+            online_booking_enabled=True,
+        )
+        .annotate(
+            branch_available=Subquery(availability.values("available")[:1]),
+            total_minutes=Subquery(
+                items.values("package_id")
+                .annotate(
+                    total=Sum(
+                        F("service__duration_minutes") * F("quantity"),
+                        output_field=IntegerField(),
+                    )
+                )
+                .values("total")[:1],
+                output_field=IntegerField(),
+            ),
+            sum_minor=Subquery(
+                items.values("package_id")
+                .annotate(
+                    total=Sum(
+                        F("service__price_minor") * F("quantity"),
+                        output_field=IntegerField(),
+                    )
+                )
+                .values("total")[:1],
+                output_field=IntegerField(),
+            ),
+        )
+        .filter(branch_available=True)
+        .order_by("name")
+    )
 
 
 def salon_stylists(storefront):
