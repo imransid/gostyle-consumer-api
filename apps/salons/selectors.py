@@ -1,17 +1,42 @@
 from django.db.models import QuerySet
 from django.db.models import Avg, Count, Exists, F, FloatField, Func, OuterRef, Subquery, TextField, Value
-from django.db.models.functions import ACos, Cos, Radians, Sin
+from django.db.models.functions import ACos, Cos, Lower, Radians, Sin
 from django.contrib.postgres.aggregates import ArrayAgg
 from django.contrib.postgres.fields import ArrayField
 
 from apps.platform_data.models import (
     Branch,
+    Salon as PlatformSalon,
     Storefront,
     StorefrontCertification,
     StorefrontMedia,
     StorefrontPolicy,
     StorefrontReview,
 )
+
+from .serializers import CATEGORY_ALIASES
+
+
+def filter_by_category(qs, category):
+    """Filter a Storefront queryset by salon category ('gents'/'ladies'/'unisex').
+
+    The category lives on the platform ``salon.gender`` column (joined via
+    ``tenant_id``); raw values are matched case-insensitively, including the
+    aliases the serializer normalizes (male/female/both, …).
+    """
+    raw_values = [category] + [
+        raw for raw, canonical in CATEGORY_ALIASES.items() if canonical == category
+    ]
+    return qs.annotate(
+        salon_category=Lower(
+            Subquery(
+                PlatformSalon.objects.filter(
+                    tenant_id=OuterRef("tenant_id")
+                ).values("gender")[:1],
+                output_field=TextField(),
+            )
+        )
+    ).filter(salon_category__in=raw_values)
 
 
 def with_distance(qs, user_lat, user_lng):
@@ -106,6 +131,17 @@ def discoverable_salons():
                     storefront_id=OuterRef("pk")
                 ).values("deposit_bps")[:1],
             ),
+            cancel_window_hours=Subquery(
+                StorefrontPolicy.objects.filter(
+                    storefront_id=OuterRef("pk")
+                ).values("cancel_window_hours")[:1],
+            ),
+            category=Subquery(
+                PlatformSalon.objects.filter(
+                    tenant_id=OuterRef("tenant_id")
+                ).values("gender")[:1],
+                output_field=TextField(),
+            ),
             gallery_urls=Subquery(
                 StorefrontMedia.objects.filter(
                     storefront_id=OuterRef("pk"),
@@ -131,7 +167,7 @@ def discoverable_salons():
 MAP_VENUE_LIMIT: int = 500
 
 # Valid category filter values; anything else falls back to "all".
-_VALID_CATEGORIES = frozenset({"gents", "ladies"})
+_VALID_CATEGORIES = frozenset({"gents", "ladies", "unisex"})
 
 
 def map_venues(
@@ -214,8 +250,8 @@ def map_venues(
             lng__lte=ne_lng,
         )
 
-    if category in _VALID_CATEGORIES and any(f.name == "category" for f in Storefront._meta.fields):
-        qs = qs.filter(category=category)
+    if category in _VALID_CATEGORIES:
+        qs = filter_by_category(qs, category)
 
     try:
         from django.db import transaction
@@ -234,7 +270,7 @@ def map_venues(
                 longitude__gte=sw_lng,
                 longitude__lte=ne_lng,
             )
-        if category in ("gents", "ladies"):
+        if category in _VALID_CATEGORIES:
             salon_qs = salon_qs.filter(category=category)
 
         items = []
