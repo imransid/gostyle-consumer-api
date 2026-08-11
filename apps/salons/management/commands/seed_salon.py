@@ -2,8 +2,8 @@
 """
 Insert one complete salon for local development.
 
-The profile endpoints read across storefront, branch, tenant, media, reviews,
-policy, categories, services and a published version snapshot. Testing them
+The profile endpoints read across storefront, branch, tenant, categories,
+services, availability, staff and a published version snapshot. Testing them
 needs all of those to exist and agree with each other, which no fixture file
 expresses readably.
 
@@ -48,6 +48,17 @@ SERVICES = [
     # the "Other" fallback must keep a bookable service visible rather than
     # silently dropping it, and 150.00 must win over the catalogue's 180.00.
     ("Scalp Treatment", None, 18000, 20, "SVC-004", 15000),
+]
+
+# first, last, job_title, position, onboarding_state
+STAFF = [
+    ("Liam", "Johnson", "Barber and Grooming Expert", "Senior Barber", "ACTIVE"),
+    ("Darius", "Stone", "Haircut and Styling Expert", "Master Barber", "ACTIVE"),
+    # employment_status ACTIVE but onboarding_state INVITED: a real person who
+    # was invited and never accepted. They have never worked a shift, so they
+    # must NOT appear on a public profile. This row is the only proof that the
+    # selector filters on BOTH status columns rather than just employment.
+    ("Ghost", "Invitee", "Barber", None, "INVITED"),
 ]
 
 SNAPSHOT = {
@@ -101,13 +112,23 @@ SNAPSHOT = {
 }
 
 
+# Deterministic ids so a re-run inserts nothing new and duplicates nothing.
+# uuid4() here would defeat ON CONFLICT, because a fresh random id never
+# conflicts and every run would add another copy.
 def service_id(index):
-    """Deterministic ids so a re-run updates nothing and duplicates nothing."""
     return uuid.UUID(f"66666666-6666-6666-6666-66666666666{index}")
 
 
 def availability_id(index):
     return uuid.UUID(f"77777777-7777-7777-7777-77777777777{index}")
+
+
+def user_id(index):
+    return uuid.UUID(f"88888888-8888-8888-8888-88888888888{index}")
+
+
+def staff_id(index):
+    return uuid.UUID(f"99999999-9999-9999-9999-99999999999{index}")
 
 
 class Command(BaseCommand):
@@ -236,18 +257,60 @@ class Command(BaseCommand):
                      True, branch_price, "AED", now, now],
                 )
 
+            # The person is a user_account; the job is a staff_profile. Both
+            # rows are needed, and the account comes first because the profile
+            # points at it.
+            for index, (first, last, job_title, position, onboarding) in enumerate(STAFF):
+                cur.execute(
+                    """
+                    INSERT INTO public.user_account
+                        (id, tenant_id, phone_e164, first_name, last_name,
+                         locale, status, scopes, failed_login_count,
+                         job_title, all_branch_access, must_change_password,
+                         created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    [user_id(index), TENANT_ID, f"+9715012345{index}0",
+                     first, last, "en", "ACTIVE", json.dumps([]), 0,
+                     job_title, False, False, now, now],
+                )
+
+                cur.execute(
+                    """
+                    INSERT INTO public.staff_profile
+                        (id, tenant_id, user_id, branch_id, position,
+                         employment_status, onboarding_state, skills, shifts,
+                         created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    [staff_id(index), TENANT_ID, user_id(index), BRANCH_ID,
+                     position, "ACTIVE", onboarding,
+                     json.dumps([]), json.dumps({}), now, now],
+                )
+
         self.stdout.write(self.style.SUCCESS("Seeded salon."))
         self.stdout.write(f"  GET /api/v1/salon/{STOREFRONT_ID}")
         self.stdout.write(f"  GET /api/v1/salon/{STOREFRONT_ID}/services")
+        self.stdout.write(f"  GET /api/v1/salon/{STOREFRONT_ID}/stylists")
 
     def _purge(self, cur):
         """
         Delete in reverse dependency order.
 
         Children before parents throughout: availability before service,
-        service before category, and live_version_id cleared before the
-        version row it points at.
+        profile before account, service before category, and live_version_id
+        cleared before the version row it points at.
         """
+        for index in range(len(STAFF)):
+            cur.execute(
+                "DELETE FROM public.staff_profile WHERE id = %s", [staff_id(index)]
+            )
+            cur.execute(
+                "DELETE FROM public.user_account WHERE id = %s", [user_id(index)]
+            )
+
         for index in range(len(SERVICES)):
             cur.execute(
                 "DELETE FROM public.service_branch_availability WHERE id = %s",
@@ -257,8 +320,10 @@ class Command(BaseCommand):
                 "DELETE FROM public.service WHERE id = %s", [service_id(index)]
             )
 
-        # Children first: CAT_CUTS and CAT_BEARD both reference CAT_HAIR.
-        for cat_id, _, parent_id in sorted(CATEGORIES, key=lambda c: c[2] is None):
+        # Children first: CAT_CUTS and CAT_BEARD both reference CAT_HAIR, so
+        # deleting the parent first would fail the foreign key. Sorting on
+        # "has no parent" puts the children (False) ahead of the parent (True).
+        for cat_id, _, _, parent_id in sorted(CATEGORIES, key=lambda c: c[3] is None):
             cur.execute("DELETE FROM public.category WHERE id = %s", [cat_id])
 
         cur.execute(
