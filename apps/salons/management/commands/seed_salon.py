@@ -2,15 +2,17 @@
 """
 Insert one complete salon for local development.
 
-The profile endpoint reads across storefront, branch, tenant, media, reviews,
-policy and a published version snapshot. Testing it needs all of those to
-exist and agree with each other, which no fixture file expresses readably.
+The profile endpoints read across storefront, branch, tenant, media, reviews,
+policy, categories, services and a published version snapshot. Testing them
+needs all of those to exist and agree with each other, which no fixture file
+expresses readably.
 
 WRITES TO PLATFORM-OWNED TABLES. Every table here is managed = False and
 belongs to gostyle-platform. That is acceptable on a local database and
 nowhere else, so the command refuses to run against a non-local host.
 """
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -23,6 +25,30 @@ TENANT_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 BRANCH_ID = uuid.UUID("22222222-2222-2222-2222-222222222222")
 STOREFRONT_ID = uuid.UUID("33333333-3333-3333-3333-333333333333")
 VERSION_ID = uuid.UUID("44444444-4444-4444-4444-444444444444")
+
+# Two levels: one parent chip with two child groups beneath it. The platform
+# schema supports this through category.parent_id and no tenant populates it
+# today, so the seed is the only place the tree case can be exercised.
+CAT_HAIR_ID = uuid.UUID("55555555-5555-5555-5555-555555555551")
+CAT_CUTS_ID = uuid.UUID("55555555-5555-5555-5555-555555555552")
+CAT_BEARD_ID = uuid.UUID("55555555-5555-5555-5555-555555555553")
+
+CATEGORIES = [
+    (CAT_HAIR_ID, "Haircut and Styling", "قص وتصفيف الشعر", None),
+    (CAT_CUTS_ID, "Precision Cuts", "قصات دقيقة", CAT_HAIR_ID),
+    (CAT_BEARD_ID, "Beard Care", "العناية باللحية", CAT_HAIR_ID),
+]
+
+# name, category_id, price_minor, minutes, code, branch_price_minor
+SERVICES = [
+    ("The Gentleman's Cut", CAT_CUTS_ID, 19900, 30, "SVC-001", None),
+    ("Modern Fade", CAT_CUTS_ID, 21500, 25, "SVC-002", None),
+    ("Hot Towel Shave", CAT_BEARD_ID, 26000, 35, "SVC-003", None),
+    # No category at all, and a branch price override. Two edges in one row:
+    # the "Other" fallback must keep a bookable service visible rather than
+    # silently dropping it, and 150.00 must win over the catalogue's 180.00.
+    ("Scalp Treatment", None, 18000, 20, "SVC-004", 15000),
+]
 
 SNAPSHOT = {
     "IDENTITY": {
@@ -73,6 +99,15 @@ SNAPSHOT = {
     # published before those sections existed is the normal case snapshot.py
     # was written to survive, so the seed must contain one.
 }
+
+
+def service_id(index):
+    """Deterministic ids so a re-run updates nothing and duplicates nothing."""
+    return uuid.UUID(f"66666666-6666-6666-6666-66666666666{index}")
+
+
+def availability_id(index):
+    return uuid.UUID(f"77777777-7777-7777-7777-77777777777{index}")
 
 
 class Command(BaseCommand):
@@ -144,7 +179,7 @@ class Command(BaseCommand):
                 ON CONFLICT (id) DO NOTHING
                 """,
                 [VERSION_ID, TENANT_ID, STOREFRONT_ID, 1,
-                 __import__("json").dumps(SNAPSHOT), [], now, True],
+                 json.dumps(SNAPSHOT), [], now, True],
             )
 
             # live_version_id is set AFTER the version exists, which is also
@@ -154,11 +189,82 @@ class Command(BaseCommand):
                 [VERSION_ID, STOREFRONT_ID],
             )
 
+            # Categories before services: a service points at a category, and
+            # inserting the child first would fail the foreign key.
+            for cat_id, name, name_ar, parent_id in CATEGORIES:
+                cur.execute(
+                    """
+                    INSERT INTO public.category
+                        (id, tenant_id, name_en, name_ar, slug, sort_order,
+                         parent_id, icon, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    [cat_id, TENANT_ID, name, name_ar,
+                     name.lower().replace(" ", "-"), 0, parent_id,
+                     "scissors", now, now],
+                )
+
+            for index, (name, cat_id, price, minutes, code, branch_price) in enumerate(SERVICES):
+                cur.execute(
+                    """
+                    INSERT INTO public.service
+                        (id, tenant_id, name, description, duration_minutes,
+                         price_minor, currency, status, code, audience,
+                         category_id, online_booking_enabled,
+                         created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    [service_id(index), TENANT_ID, name,
+                     f"{name} at Iron Razor.", minutes, price, "AED",
+                     "PUBLISHED", code, "MALE", cat_id, True, now, now],
+                )
+
+                # A service is bookable only where it is AVAILABLE, so the row
+                # is not optional: without it the selector filters the service
+                # out entirely.
+                cur.execute(
+                    """
+                    INSERT INTO public.service_branch_availability
+                        (id, service_id, branch_id, available, price_minor,
+                         currency, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    [availability_id(index), service_id(index), BRANCH_ID,
+                     True, branch_price, "AED", now, now],
+                )
+
         self.stdout.write(self.style.SUCCESS("Seeded salon."))
         self.stdout.write(f"  GET /api/v1/salon/{STOREFRONT_ID}")
+        self.stdout.write(f"  GET /api/v1/salon/{STOREFRONT_ID}/services")
 
     def _purge(self, cur):
-        cur.execute("UPDATE public.storefront SET live_version_id = NULL WHERE id = %s", [STOREFRONT_ID])
+        """
+        Delete in reverse dependency order.
+
+        Children before parents throughout: availability before service,
+        service before category, and live_version_id cleared before the
+        version row it points at.
+        """
+        for index in range(len(SERVICES)):
+            cur.execute(
+                "DELETE FROM public.service_branch_availability WHERE id = %s",
+                [availability_id(index)],
+            )
+            cur.execute(
+                "DELETE FROM public.service WHERE id = %s", [service_id(index)]
+            )
+
+        # Children first: CAT_CUTS and CAT_BEARD both reference CAT_HAIR.
+        for cat_id, _, parent_id in sorted(CATEGORIES, key=lambda c: c[2] is None):
+            cur.execute("DELETE FROM public.category WHERE id = %s", [cat_id])
+
+        cur.execute(
+            "UPDATE public.storefront SET live_version_id = NULL WHERE id = %s",
+            [STOREFRONT_ID],
+        )
         cur.execute("DELETE FROM public.storefront_version WHERE id = %s", [VERSION_ID])
         cur.execute("DELETE FROM public.storefront WHERE id = %s", [STOREFRONT_ID])
         cur.execute("DELETE FROM public.branch WHERE id = %s", [BRANCH_ID])

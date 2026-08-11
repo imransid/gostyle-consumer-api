@@ -6,6 +6,7 @@ from .views import (
     SalonDiscoveryListView,
     SalonListView,
     SalonProfileView,
+    SalonServicesView,
 )
 
 urlpatterns = [
@@ -14,4 +15,5 @@ urlpatterns = [
     path("discover/map", DiscoverMapView.as_view(), name="salon-discover-map"),
     path("discover/<uuid:pk>", SalonDiscoveryDetailView.as_view(), name="salon-discover-detail"),
     path("salon/<uuid:salon_id>", SalonProfileView.as_view(), name="salon-profile"),
+    path("salon/<uuid:salon_id>/services", SalonServicesView.as_view(), name="salon-services"),
 ]

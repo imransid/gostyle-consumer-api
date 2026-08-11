@@ -4,6 +4,8 @@ from django.db.models.functions import ACos, Cos, Radians, Sin
 from django.contrib.postgres.aggregates import ArrayAgg
 from django.contrib.postgres.fields import ArrayField
 
+from apps.platform_data.models import Category, Service, ServiceBranchAvailability
+
 from apps.platform_data.models import (
     Branch,
     Storefront,
@@ -20,6 +22,56 @@ from apps.platform_data.models import (
     Tenant,
 )
 
+
+
+def salon_services(storefront):
+    """
+    Bookable services for one salon, with the branch price override applied.
+
+    Filtered on what a CUSTOMER may book, which is narrower than what the
+    salon's own console lists: published, not deleted, online booking on, and
+    available at this branch. A service hidden on a schedule (hide_from /
+    auto_show_after) is deliberately NOT handled here yet; that is a second
+    filter and belongs with the rest of the visibility rules.
+
+    price_minor is COALESCEd: service_branch_availability may carry a per-branch
+    price, and when it does it wins over the catalogue price.
+    """
+    availability = ServiceBranchAvailability.objects.filter(
+        service_id=OuterRef("pk"),
+        branch_id=storefront.branch_id,
+    )
+
+    return (
+        Service.objects.filter(
+            tenant_id=storefront.tenant_id,
+            status="PUBLISHED",
+            deleted_at__isnull=True,
+            online_booking_enabled=True,
+        )
+        .annotate(
+            branch_available=Subquery(availability.values("available")[:1]),
+            branch_price_minor=Subquery(availability.values("price_minor")[:1]),
+        )
+        .filter(branch_available=True)
+        .order_by("name")
+    )
+
+
+def salon_categories(tenant_id):
+    """
+    Every category for a tenant, as a dict keyed by id.
+
+    Read whole rather than joined per service: a tenant has a handful of
+    categories and a salon has many services, so one small query beats a join
+    repeated on every row. The parent lookup below also needs the full set.
+    """
+    rows = Category.objects.filter(
+        tenant_id=tenant_id,
+        deleted_at__isnull=True,
+    ).values("id", "name_en", "slug", "icon", "parent_id", "sort_order")
+
+    return {row["id"]: row for row in rows}
 
 def salon_profile(storefront_id):
     """

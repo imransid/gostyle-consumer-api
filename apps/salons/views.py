@@ -10,6 +10,10 @@ from .selectors import discoverable_salons, map_venues, with_distance
 from .serializers import MapVenueSerializer, SalonCardSerializer
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 
+from .money import major
+from .selectors import salon_categories, salon_services
+
+
 import zoneinfo
 from datetime import datetime
 
@@ -24,6 +28,81 @@ from .snapshot import items as snap_items
 from .snapshot import read_snapshot
 from .hours import resolve as resolve_hours
 
+
+
+class SalonServicesView(APIView):
+    """
+    GET /api/v1/salon/<uuid>/services
+
+    Two levels out of a one-level table. A category with a parent becomes a
+    GROUP under that parent's chip; a category without one is its own chip and
+    its own group. Tenants do not populate parent_id today, so this reads as a
+    flat list now and becomes a real tree the moment they do, with no change
+    to the response shape or to the app.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, salon_id):
+        salon = salon_profile(salon_id)
+        if salon is None:
+            raise Http404("Salon not found")
+
+        categories = salon_categories(salon.tenant_id)
+        services = salon_services(salon)
+
+        # Group services under their own category id.
+        grouped = {}
+        for svc in services:
+            grouped.setdefault(svc.category_0_id, []).append(svc)
+
+        chips = {}
+        groups = []
+
+        for cat_id, svcs in grouped.items():
+            cat = categories.get(cat_id)
+            # A service with no category, or one pointing at a deleted row,
+            # still has to appear: dropping it would silently hide a bookable
+            # service from the menu.
+            if cat is None:
+                cat = {"id": None, "name_en": "Other", "icon": None, "parent_id": None}
+
+            parent = categories.get(cat["parent_id"]) if cat["parent_id"] else None
+            chip = parent or cat
+
+            chips[chip["id"]] = {
+                "id": str(chip["id"]) if chip["id"] else "other",
+                "label": chip["name_en"],
+                "icon": chip.get("icon"),
+            }
+
+            groups.append({
+                "id": str(cat["id"]) if cat["id"] else "other",
+                "category_id": str(chip["id"]) if chip["id"] else "other",
+                "name": cat["name_en"],
+                "services": [self._service(s) for s in svcs],
+            })
+
+        return Response({
+            "service_categories": [{"id": "all", "label": "All"}] + list(chips.values()),
+            "service_groups": groups,
+        })
+
+    @staticmethod
+    def _service(svc) -> dict:
+        # duration_min and duration_max are the SAME number. A real range needs
+        # service_variant rows with differing durations; until the app reads
+        # those, sending one value twice is honest and lets the app collapse
+        # "20 - 20 mins" to "20 mins" itself.
+        price_minor = svc.branch_price_minor or svc.price_minor
+        return {
+            "id": str(svc.id),
+            "name": svc.name,
+            "description": svc.description,
+            "price": major(price_minor),
+            "duration_min": svc.duration_minutes,
+            "duration_max": svc.duration_minutes,
+        }
 
 class SalonProfileView(APIView):
     """
