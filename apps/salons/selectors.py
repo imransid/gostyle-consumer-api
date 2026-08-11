@@ -6,6 +6,7 @@ from django.contrib.postgres.fields import ArrayField
 
 from apps.platform_data.models import (
     Branch,
+    Salon as PlatformSalon,
     Storefront,
     StorefrontCertification,
     StorefrontMedia,
@@ -105,6 +106,17 @@ def discoverable_salons():
                 StorefrontPolicy.objects.filter(
                     storefront_id=OuterRef("pk")
                 ).values("deposit_bps")[:1],
+            ),
+            cancel_window_hours=Subquery(
+                StorefrontPolicy.objects.filter(
+                    storefront_id=OuterRef("pk")
+                ).values("cancel_window_hours")[:1],
+            ),
+            category=Subquery(
+                PlatformSalon.objects.filter(
+                    tenant_id=OuterRef("tenant_id")
+                ).values("gender")[:1],
+                output_field=TextField(),
             ),
             gallery_urls=Subquery(
                 StorefrontMedia.objects.filter(

@@ -50,6 +50,7 @@ class SalonListView(APIView):
         OpenApiParameter("city", str, description="Filter by city name, e.g. Dubai"),
         OpenApiParameter("hijab_mode", str, description="1 to show only hijab-certified salons", enum=["1"]),
         OpenApiParameter("open_now", str, description="1 to show only currently open salons", enum=["1"]),
+        OpenApiParameter("total_amount", float, description="Booking total used to compute deposit.amount, e.g. 250"),
     ],
     responses=SalonCardSerializer(many=True),
 )
@@ -57,7 +58,7 @@ class SalonDiscoveryListView(ListAPIView):
     """Figma discovery list + map screen. Public platform salons."""
 
     serializer_class = SalonCardSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):          # ← purano get_queryset er JAYGAY ei notun ta
         qs = discoverable_salons()
@@ -97,12 +98,17 @@ class SalonDiscoveryListView(ListAPIView):
         return queryset
 
 
-@extend_schema(responses=SalonCardSerializer)
+@extend_schema(
+    parameters=[
+        OpenApiParameter("total_amount", float, description="Booking total used to compute deposit.amount, e.g. 250"),
+    ],
+    responses=SalonCardSerializer,
+)
 class SalonDiscoveryDetailView(RetrieveAPIView):
     """Single salon card by id (map pin tap / card tap)."""
 
     serializer_class = SalonCardSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     lookup_field = "pk"
 
     def get_queryset(self):
