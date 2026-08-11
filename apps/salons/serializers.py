@@ -1,14 +1,13 @@
-from rest_framework import serializers
-from .models import Salon
-import zoneinfo
 from datetime import datetime
+import zoneinfo
+
+from rest_framework import serializers
 
 from . import translate
 from .hours import resolve as resolve_hours
+from .models import Salon
 from .snapshot import field as snap_field
 from .snapshot import items as snap_items
-
-DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 
 class SalonSerializer(serializers.ModelSerializer):
@@ -24,8 +23,22 @@ class SalonSerializer(serializers.ModelSerializer):
     def get_coordinate(self, obj):
         return {"latitude": obj.latitude, "longitude": obj.longitude}
 
+
 class SalonCardSerializer(serializers.Serializer):
-    """Read-only card shape for the discovery list and map (Figma salon card)."""
+    """
+    Read-only card shape for the discovery list and map (Figma salon card).
+
+    HOURS COME FROM THE PUBLISHED SNAPSHOT, not branch.opening_hours. That
+    column is written once by nest-build at salon provisioning and never
+    touched again; the hours a customer should see are the ones the manager
+    published on their storefront card. The two drift the moment a salon edits
+    its hours, and this card showed the onboarding value until that was fixed.
+
+    The time arithmetic itself lives in hours.py, shared with the profile
+    endpoint. Two endpoints describing the same salon must not be able to
+    disagree about whether it is open, and a second implementation here is
+    exactly how they would.
+    """
 
     id = serializers.UUIDField()
     slug = serializers.CharField()
@@ -35,6 +48,7 @@ class SalonCardSerializer(serializers.Serializer):
     review_count = serializers.IntegerField(allow_null=True)
     coordinate = serializers.SerializerMethodField()
     is_open_now = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
     hours_today = serializers.SerializerMethodField()
     cover_url = serializers.CharField(allow_null=True)
     logo_url = serializers.CharField(allow_null=True)
@@ -47,6 +61,33 @@ class SalonCardSerializer(serializers.Serializer):
         allow_null=True,
         required=False,
     )
+
+    def _hours(self, obj):
+        """
+        Resolve once per salon and cache the answer on the instance.
+
+        Four fields ask the same question. resolve() is pure Python over data
+        already fetched, so it is cheap, but running it four times per card on
+        a fifteen-row page is sixty needless calls and four chances for the
+        fields to disagree if the clock ticks between them.
+        """
+        cached = getattr(obj, "_resolved_hours", None)
+        if cached is None:
+            tz = zoneinfo.ZoneInfo(getattr(obj, "branch_timezone", None) or "Asia/Dubai")
+            now = datetime.now(tz)
+            published = getattr(obj, "published_hours", None) or {}
+            cached = resolve_hours(
+                weekly=published.get("weekly"),
+                # Dated exceptions are not read on the list: the table does
+                # not exist in this schema version. The profile endpoint has
+                # the same gap, and both are re-checked before release.
+                exception=None,
+                state=getattr(obj, "manual_state", None),
+                weekday_index=now.weekday(),
+                now_hhmm=now.strftime("%H:%M"),
+            )
+            obj._resolved_hours = cached
+        return cached
 
     def get_distance_km(self, obj):
         d = getattr(obj, "distance_km", None)
@@ -64,32 +105,20 @@ class SalonCardSerializer(serializers.Serializer):
             return None
         return {"latitude": obj.lat, "longitude": obj.lng}
 
-    def _today_window(self, obj):
-        hours = obj.opening_hours
-        if not hours:
-            return None
-        tz = zoneinfo.ZoneInfo(obj.branch_timezone or "Asia/Dubai")
-        now = datetime.now(tz)
-        day = DAY_KEYS[now.weekday()]
-        window = hours.get(day)
-        if not window or not window.get("open") or not window.get("close"):
-            return None
-        return now, window
-
     def get_is_open_now(self, obj):
-        result = self._today_window(obj)
-        if result is None:
-            return None
-        now, window = result
-        current = now.strftime("%H:%M")
-        return window["open"] <= current < window["close"]
+        return self._hours(obj)["is_open"]
+
+    def get_status(self, obj):
+        # OPEN, BUSY, WALK_INS, SPECIAL_HOURS or CLOSED. is_open_now cannot
+        # carry "Busy", which is a state no grid can compute and the reason
+        # the salon set it by hand.
+        return self._hours(obj)["status"]
 
     def get_hours_today(self, obj):
-        result = self._today_window(obj)
-        if result is None:
-            return None
-        _, window = result
-        return f'{window["open"]} - {window["close"]}'
+        return self._hours(obj)["hours_today"]
+
+    def get_closes_at(self, obj):
+        return self._hours(obj)["closes_at"]
 
     def get_deposit(self, obj):
         mode = getattr(obj, "deposit_mode", None)
@@ -99,23 +128,6 @@ class SalonCardSerializer(serializers.Serializer):
             return {"required": False, "label": "No Deposit"}
         pct = (obj.deposit_bps or 0) // 100
         return {"required": True, "label": f"{pct}% Deposit", "percent": pct}
-
-    def get_closes_at(self, obj):
-        result = self._today_window(obj)
-        if result is None:
-            return None
-        now, window = result
-        close = window["close"]  # "22:00"
-        hh, mm = int(close[:2]), int(close[3:])
-        suffix = "PM" if hh >= 12 else "AM"
-        hh12 = hh % 12 or 12
-        if self.get_is_open_now(obj):
-            return f"Closes at {hh12}:{mm:02d} {suffix}"
-        opens = window["open"]
-        ohh, omm = int(opens[:2]), int(opens[3:])
-        osuffix = "PM" if ohh >= 12 else "AM"
-        ohh12 = ohh % 12 or 12
-        return f"Opens at {ohh12}:{omm:02d} {osuffix}"
 
 
 class MapVenueSerializer(serializers.Serializer):
@@ -131,6 +143,7 @@ class MapVenueSerializer(serializers.Serializer):
         if obj.avg_rating is None:
             return None
         return round(float(obj.avg_rating), 1)
+
 
 class SalonProfileSerializer(serializers.Serializer):
     """

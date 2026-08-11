@@ -7,6 +7,10 @@ from apps.platform_data.models import Product, ProductVariant
 
 from apps.platform_data.models import Category, Service, ServiceBranchAvailability
 
+from django.db.models.fields.json import KeyTransform
+from apps.platform_data.models import StorefrontVersion
+
+
 from apps.platform_data.models import (
     Branch,
     Storefront,
@@ -31,6 +35,37 @@ from apps.platform_data.models import (
 )
 
 from apps.platform_data.models import FileItem, StaffProfile, UserAccount
+
+
+def with_published_hours(qs):
+    """
+    Annotate each salon with its published HOURS section.
+
+    THE CARD USED TO READ branch.opening_hours, which is the wrong source:
+    that column is written once by nest-build at salon provisioning and never
+    touched again. The hours a customer sees are the ones the manager
+    PUBLISHED on their storefront card, which live in the live version's
+    snapshot. The two drift the moment a salon edits its hours, and the card
+    has been showing the onboarding value ever since.
+
+    Only the HOURS key is extracted, not the whole snapshot. Pulling all
+    thirteen sections per salon to read one of them would multiply the
+    response size of a fifteen-row page for nothing.
+    """
+    return qs.annotate(
+        published_hours=Subquery(
+            StorefrontVersion.objects
+            .filter(id=OuterRef("live_version_id"))
+            .annotate(hours=KeyTransform("HOURS", "snapshot"))
+            .values("hours")[:1],
+        ),
+        manual_state=Subquery(
+            StorefrontStatus.objects
+            .filter(storefront_id=OuterRef("pk"))
+            .values("state")[:1],
+            output_field=TextField(),
+        ),
+    )
 
 
 def salon_products(storefront):
