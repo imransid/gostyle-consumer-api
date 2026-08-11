@@ -3,9 +3,9 @@
 Insert one complete salon for local development.
 
 The profile endpoints read across storefront, branch, tenant, categories,
-services, availability, staff and a published version snapshot. Testing them
-needs all of those to exist and agree with each other, which no fixture file
-expresses readably.
+services, availability, staff, packages and a published version snapshot.
+Testing them needs all of those to exist and agree with each other, which no
+fixture file expresses readably.
 
 WRITES TO PLATFORM-OWNED TABLES. Every table here is managed = False and
 belongs to gostyle-platform. That is acceptable on a local database and
@@ -32,6 +32,9 @@ VERSION_ID = uuid.UUID("44444444-4444-4444-4444-444444444444")
 CAT_HAIR_ID = uuid.UUID("55555555-5555-5555-5555-555555555551")
 CAT_CUTS_ID = uuid.UUID("55555555-5555-5555-5555-555555555552")
 CAT_BEARD_ID = uuid.UUID("55555555-5555-5555-5555-555555555553")
+
+PKG_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1")
+PKG_AVAIL_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2")
 
 CATEGORIES = [
     (CAT_HAIR_ID, "Haircut and Styling", "قص وتصفيف الشعر", None),
@@ -60,6 +63,14 @@ STAFF = [
     # selector filters on BOTH status columns rather than just employment.
     ("Ghost", "Invitee", "Barber", None, "INVITED"),
 ]
+
+# (service index, quantity). Members are Gentleman's Cut (199.00, 30m) and
+# Hot Towel Shave (260.00, 35m): 459.00 and 65 minutes bought separately,
+# against a bundle price of 370.00. None of those three derived numbers is
+# stored anywhere, so this package is the only proof the Sum subqueries in
+# salon_packages() compute price_before, save_amount and duration correctly.
+PKG_ITEMS = [(0, 1), (2, 1)]
+PKG_PRICE_MINOR = 37000
 
 SNAPSHOT = {
     "IDENTITY": {
@@ -129,6 +140,10 @@ def user_id(index):
 
 def staff_id(index):
     return uuid.UUID(f"99999999-9999-9999-9999-99999999999{index}")
+
+
+def package_item_id(order):
+    return uuid.UUID(f"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb{order}")
 
 
 class Command(BaseCommand):
@@ -290,19 +305,80 @@ class Command(BaseCommand):
                      json.dumps([]), json.dumps({}), now, now],
                 )
 
+            # ONE package, inserted after the services it is built from exist.
+            # highlights and color_gallery are text[] in Postgres while the
+            # stale model calls them TextField; psycopg3 maps a Python list to
+            # an array regardless, which is why passing lists works here.
+            cur.execute(
+                """
+                INSERT INTO public.service_package
+                    (id, tenant_id, name, description, price_minor, currency,
+                     status, branch_scoped, current_version, highlights,
+                     requires_coordinator, giftable, audience, color_theme,
+                     color_gallery, scheduling, online_booking_enabled,
+                     deposit_type, pricing_mode, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                [PKG_ID, TENANT_ID, "Groom and Go",
+                 "Leave sharp, stay sharp.", PKG_PRICE_MINOR, "AED",
+                 "PUBLISHED", False, 1,
+                 ["Gentleman's Cut", "Hot Towel Shave", "Beard oil to take home"],
+                 False, True, "MALE", "gold", [], "SEQUENTIAL", True,
+                 "NONE", "FIXED", now, now],
+            )
+
+            for order, (svc_index, qty) in enumerate(PKG_ITEMS):
+                cur.execute(
+                    """
+                    INSERT INTO public.service_package_item
+                        (id, package_id, service_id, quantity, sort_order)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    [package_item_id(order), PKG_ID, service_id(svc_index),
+                     qty, order],
+                )
+
+            # Once per package, NOT once per item: a package is available at a
+            # branch or it is not, regardless of how many services it holds.
+            cur.execute(
+                """
+                INSERT INTO public.service_package_branch_availability
+                    (id, package_id, branch_id, available, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                [PKG_AVAIL_ID, PKG_ID, BRANCH_ID, True, now, now],
+            )
+
         self.stdout.write(self.style.SUCCESS("Seeded salon."))
         self.stdout.write(f"  GET /api/v1/salon/{STOREFRONT_ID}")
         self.stdout.write(f"  GET /api/v1/salon/{STOREFRONT_ID}/services")
         self.stdout.write(f"  GET /api/v1/salon/{STOREFRONT_ID}/stylists")
+        self.stdout.write(f"  GET /api/v1/salon/{STOREFRONT_ID}/packages")
 
     def _purge(self, cur):
         """
         Delete in reverse dependency order.
 
-        Children before parents throughout: availability before service,
-        profile before account, service before category, and live_version_id
-        cleared before the version row it points at.
+        Children before parents throughout: package items and availability
+        before the package, the package before the services it references,
+        availability before service, profile before account, service before
+        category, and live_version_id cleared before the version it points at.
         """
+        cur.execute(
+            "DELETE FROM public.service_package_branch_availability WHERE id = %s",
+            [PKG_AVAIL_ID],
+        )
+        for order in range(len(PKG_ITEMS)):
+            cur.execute(
+                "DELETE FROM public.service_package_item WHERE id = %s",
+                [package_item_id(order)],
+            )
+        cur.execute("DELETE FROM public.service_package WHERE id = %s", [PKG_ID])
+
         for index in range(len(STAFF)):
             cur.execute(
                 "DELETE FROM public.staff_profile WHERE id = %s", [staff_id(index)]
