@@ -15,12 +15,12 @@ code here.
 
 There is one Postgres database and two applications on top of it.
 
-| | `gostyle-platform` (NestJS + Prisma) | `gostyle-customer-api` (this repo) |
-| --- | --- | --- |
-| Audience | Salon owners and staff | Customers, via the mobile app |
-| Schema | **Owns it.** Prisma migrations define every table | **Borrows it.** Reads, never migrates |
-| Postgres schema | `public` | `consumer` |
-| Access to `public` | Full | `SELECT` only, enforced by DB grant |
+|                    | `gostyle-platform` (NestJS + Prisma)              | `gostyle-customer-api` (this repo)    |
+| ------------------ | ------------------------------------------------- | ------------------------------------- |
+| Audience           | Salon owners and staff                            | Customers, via the mobile app         |
+| Schema             | **Owns it.** Prisma migrations define every table | **Borrows it.** Reads, never migrates |
+| Postgres schema    | `public`                                          | `consumer`                            |
+| Access to `public` | Full                                              | `SELECT` only, enforced by DB grant   |
 
 The connection sets `search_path=consumer,public` (see
 [base.py](config/settings/base.py)), so both schemas are visible on one
@@ -79,7 +79,7 @@ around — it is the reason the architecture below exists.
 
 1. Put the query in [selectors.py](apps/salons/selectors.py). Views and
    serializers do not touch `.objects` directly.
-2. Filter for what a *customer* may see, which is narrower than what the salon's
+2. Filter for what a _customer_ may see, which is narrower than what the salon's
    console shows: `deleted_at__isnull=True`, the right `status`/`visibility`,
    `online_booking_enabled`, and branch availability.
 3. Prefer `Subquery`/`annotate` over joins when a row could otherwise be
@@ -114,12 +114,12 @@ for customer visibility. They do not format, round, translate or decide.
 
 ### Pure modules — logic only
 
-| Module | Answers |
-| --- | --- |
-| [snapshot.py](apps/salons/snapshot.py) | "What did this salon publish?" — safe reads of the JSONB snapshot, with every section guaranteed present |
-| [hours.py](apps/salons/hours.py) | "Is it open?" — the weekly grid, dated exceptions, and manual states like `BUSY`, including overnight windows |
-| [money.py](apps/salons/money.py) | Minor units → `Decimal`, in one place |
-| [translate.py](apps/salons/translate.py) | Platform vocabulary → app vocabulary (amenities, price tiers, social handles → URLs) |
+| Module                                   | Answers                                                                                                       |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| [snapshot.py](apps/salons/snapshot.py)   | "What did this salon publish?" — safe reads of the JSONB snapshot, with every section guaranteed present      |
+| [hours.py](apps/salons/hours.py)         | "Is it open?" — the weekly grid, dated exceptions, and manual states like `BUSY`, including overnight windows |
+| [money.py](apps/salons/money.py)         | Minor units → `Decimal`, in one place                                                                         |
+| [translate.py](apps/salons/translate.py) | Platform vocabulary → app vocabulary (amenities, price tiers, social handles → URLs)                          |
 
 These import nothing from Django. No fixtures, no test database, no transactions,
 and the whole suite runs in under a tenth of a second. They are also the reason
@@ -173,7 +173,7 @@ Interactive API docs: <http://127.0.0.1:8000/api/docs/>
 
 ### Migrations and the platform tables
 
-`migrate` creates only the `consumer`-schema tables. It will *not* create
+`migrate` creates only the `consumer`-schema tables. It will _not_ create
 `storefront`, `branch`, `service` or any other platform table — those are
 expected to already exist in `public`, put there by `gostyle-platform`. On a
 fresh local database they will not, which is what `seed_salon` is for.
@@ -184,7 +184,7 @@ fresh local database they will not, which is what `seed_salon` is for.
 
 The profile endpoints read across storefront, branch, tenant, categories,
 services, per-branch availability, staff, packages, products and a published
-version snapshot — all of which must exist *and agree with each other* before a
+version snapshot — all of which must exist _and agree with each other_ before a
 single request returns anything meaningful. No fixture file expresses that
 readably, so it is a command:
 
@@ -212,7 +212,7 @@ database and nowhere else. It reads `DB_HOST` and refuses to run unless it is
 The seeded data is chosen to exercise the cases a happy-path fixture would miss:
 a two-level category tree (which no real tenant populates yet), a service with no
 category at all, a branch price override that must beat the catalogue price, a
-staff row that is `ACTIVE`/`INVITED` and must *not* appear publicly, a
+staff row that is `ACTIVE`/`INVITED` and must _not_ appear publicly, a
 `PROFESSIONAL` product that must not reach the shop tab, and a package whose
 `price_before` and `save_amount` are derived rather than stored.
 
@@ -235,7 +235,7 @@ access outright, so if someone later adds a model import to a pure module, those
 tests fail loudly rather than quietly opening a connection.
 
 What is worth testing here is not the happy path — the seeded salon proves that
-end to end — but the shapes the seed *cannot* reach: a snapshot published before
+end to end — but the shapes the seed _cannot_ reach: a snapshot published before
 a section existed, a weekly grid missing today's row, a manual state overruling
 real opening hours, a social payload with every network switched off. Those
 arrive from years of production data and never from a fixture written this
@@ -256,25 +256,29 @@ address they do not own. If that ever regresses, those two fail. See
 
 ---
 
+## deploy
+
+`cd ~/gostyle-customer && git pull origin main && docker build -t gostyle-consumer-api:local . && docker service update --force gostyle-consumer_api`
+
 ## API surface
 
 All routes are under `/api/v1/`. Auth is JWT (`rest_framework_simplejwt`):
 7-day access token, 30-day rotating refresh token with blacklist-on-rotate.
 
-| Endpoint | Auth | Notes |
-| --- | --- | --- |
-| `POST /auth/otp/request`, `/auth/otp/resend`, `/auth/otp/verify` | JWT | Verifies the caller's OWN contact on file; any `destination` in the body is validated and then ignored |
-| `POST /auth/register`, `/auth/login`, `/auth/logout`, `/auth/token/refresh` | — | Register creates the account and returns tokens immediately; login then requires a verified contact |
-| `GET/PATCH /auth/me` | JWT | |
-| `GET /discover` | JWT | Salon cards. Filters: `lat`/`lng`, `sort`, `rating_min`, `city`, `category`, `hijab_mode`, `open_now`, `total_amount` |
-| `GET /discover/map` | JWT | Lightweight markers for a map viewport (center + delta) |
-| `GET /discover/<uuid>` | JWT | One card |
-| `GET /salon/<uuid>` | Public | Profile header, info card, check-in card |
-| `GET /salon/<uuid>/services` | Public | Two-level category grouping |
-| `GET /salon/<uuid>/stylists` | Public | |
-| `GET /salon/<uuid>/packages` | Public | |
-| `GET /salon/<uuid>/products` | Public | Retail only |
-| `GET /salons/` | JWT | Legacy demo list, superseded by `/discover` |
+| Endpoint                                                                    | Auth   | Notes                                                                                                                 |
+| --------------------------------------------------------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------- |
+| `POST /auth/otp/request`, `/auth/otp/resend`, `/auth/otp/verify`            | JWT    | Verifies the caller's OWN contact on file; any `destination` in the body is validated and then ignored                |
+| `POST /auth/register`, `/auth/login`, `/auth/logout`, `/auth/token/refresh` | —      | Register creates the account and returns tokens immediately; login then requires a verified contact                   |
+| `GET/PATCH /auth/me`                                                        | JWT    |                                                                                                                       |
+| `GET /discover`                                                             | JWT    | Salon cards. Filters: `lat`/`lng`, `sort`, `rating_min`, `city`, `category`, `hijab_mode`, `open_now`, `total_amount` |
+| `GET /discover/map`                                                         | JWT    | Lightweight markers for a map viewport (center + delta)                                                               |
+| `GET /discover/<uuid>`                                                      | JWT    | One card                                                                                                              |
+| `GET /salon/<uuid>`                                                         | Public | Profile header, info card, check-in card                                                                              |
+| `GET /salon/<uuid>/services`                                                | Public | Two-level category grouping                                                                                           |
+| `GET /salon/<uuid>/stylists`                                                | Public |                                                                                                                       |
+| `GET /salon/<uuid>/packages`                                                | Public |                                                                                                                       |
+| `GET /salon/<uuid>/products`                                                | Public | Retail only                                                                                                           |
+| `GET /salons/`                                                              | JWT    | Legacy demo list, superseded by `/discover`                                                                           |
 
 `open_now` cannot be a SQL filter — whether a salon is open depends on its own
 timezone and a JSONB grid — so it is computed in Python and fed back as an id
