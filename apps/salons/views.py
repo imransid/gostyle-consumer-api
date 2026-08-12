@@ -83,7 +83,7 @@ class SalonDiscoveryListView(ListAPIView):
     """Figma discovery list + map screen. Public platform salons."""
 
     serializer_class = SalonCardSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     def get_queryset(self):
         # with_published_hours adds the storefront's PUBLISHED hours and its
@@ -150,7 +150,7 @@ class SalonDiscoveryDetailView(RetrieveAPIView):
     """Single salon card by id (map pin tap / card tap)."""
 
     serializer_class = SalonCardSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
     lookup_field = "pk"
 
     def get_queryset(self):
@@ -404,7 +404,7 @@ class DiscoverMapView(APIView):
     A hard ``LIMIT`` inside the selector acts as a safety valve.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     @extend_schema(
         parameters=[
