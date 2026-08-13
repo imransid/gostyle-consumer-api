@@ -302,3 +302,8 @@ service sits on port 3850, next to the platform API on 3849, sharing its Postgre
 and the `gostyle-net` network. Every image is tagged `sha-<short-sha>` so any
 commit that reached production can be redeployed by tag. See
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+Public traffic arrives at **https://api.gostyle.uk**, where host nginx on the
+manager node terminates TLS and proxies to 3850. The site config is
+[nginx/api.gostyle.uk.conf](nginx/api.gostyle.uk.conf), installed and
+certificate-issued by [scripts/setup-nginx.sh](scripts/setup-nginx.sh).

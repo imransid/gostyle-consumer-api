@@ -1,8 +1,8 @@
 # Salon Discovery API — Mobile Handoff
 
-Status: LIVE on staging (`http://156.67.214.42:3850`)
+Status: LIVE on staging (`https://api.gostyle.uk`, formerly `http://156.67.214.42:3850`)
 Auth: none required (public endpoints)
-Swagger: `http://156.67.214.42:3850/api/docs/` (see `/api/v1/discover`)
+Swagger: `https://api.gostyle.uk/api/docs/` (see `/api/v1/discover`)
 
 These endpoints replace the old `/api/v1/salons` list for the Explore
 screens (Interactive Map, Salon Card, Saloons List View, Hijab Mode list).

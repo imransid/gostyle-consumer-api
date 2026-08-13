@@ -72,7 +72,8 @@ the only place production secrets live — they are never stored in GitHub:
 
 ```sh
 DJANGO_SECRET_KEY=<long random string>
-DJANGO_ALLOWED_HOSTS=api.gostyle.app,127.0.0.1
+DJANGO_ALLOWED_HOSTS=api.gostyle.uk,127.0.0.1
+DJANGO_CSRF_TRUSTED_ORIGINS=https://api.gostyle.uk
 DB_PASSWORD=<consumer_app password>
 WHATSAPP_PHONE_NUMBER_ID=...
 WHATSAPP_ACCESS_TOKEN=...
@@ -95,7 +96,87 @@ If it prints `false`, recreate it from the `gostyle` stack with
 `--attachable` (compose: `attachable: true`). `deploy.sh` refuses to deploy
 otherwise rather than half-applying a release.
 
-### 5. Protect `main`
+### 5. HTTPS on `api.gostyle.uk`
+
+`docker-compose.yml` publishes gunicorn on port **3850**, plain HTTP. Host nginx
+on the manager node terminates TLS in front of it, with a Let's Encrypt
+certificate; nothing about the container changes.
+
+```
+client ──https──▶ nginx :443 ──http──▶ 127.0.0.1:3850 ──▶ gunicorn (2 replicas)
+```
+
+The site config lives in git at [`nginx/api.gostyle.uk.conf`](../nginx/api.gostyle.uk.conf)
+and is installed by [`scripts/setup-nginx.sh`](../scripts/setup-nginx.sh). Before
+running it, point the DNS record at the manager node and make sure ports 80 and
+443 are reachable — certbot proves ownership over HTTP-01:
+
+```sh
+dig +short api.gostyle.uk        # must be the manager node's public IP
+```
+
+Then, on the manager node, from a checkout of this repo:
+
+```sh
+sudo EMAIL=ops@gostyle.uk ./scripts/setup-nginx.sh
+```
+
+The script installs nginx + certbot, serves the ACME challenge from a temporary
+HTTP-only site (the real config can't start before the certificate file exists),
+issues the certificate, installs the real config, and registers a renewal deploy
+hook that reloads nginx. It is idempotent — re-run it after editing the config in
+git, and it will reuse the existing certificate. `STAGING=1` uses Let's Encrypt's
+staging CA, which is the right way to rehearse without burning the
+5-per-week duplicate-certificate limit.
+
+Verify:
+
+```sh
+curl -sI https://api.gostyle.uk/api/docs/          # 200
+curl -sI http://api.gostyle.uk/api/docs/           # 301 → https
+sudo certbot renew --dry-run                       # renewal actually works
+```
+
+**Two things the script cannot do for you:**
+
+1. **The stack's env file** must list the domain, or Django answers every request
+   with `400 Bad Request` (`DisallowedHost`):
+   ```sh
+   DJANGO_ALLOWED_HOSTS=api.gostyle.uk,156.67.214.42,localhost,127.0.0.1
+   DJANGO_CSRF_TRUSTED_ORIGINS=https://api.gostyle.uk,http://156.67.214.42:3850
+   ```
+   Redeploy afterwards, since Swarm only re-reads it on deploy. **Note that the
+   manager node does not currently use the `deploy.sh` flow described above:** it
+   runs `/root/gostyle-customer/docker-stack.consumer.yml` with `env_file:
+   stack.env` and a locally built `gostyle-consumer-api:local` image, deployed by
+   hand with
+   ```sh
+   cd /root/gostyle-customer && docker stack deploy -c docker-stack.consumer.yml gostyle-consumer
+   ```
+   So the live env file is `/root/gostyle-customer/stack.env`, not
+   `/opt/gostyle-consumer/.env`, and the running image is not the one CI pushes to
+   GHCR. Reconciling those two is worth doing; until then, edit the file the
+   stack actually reads.
+
+2. **Port 3850 stays open to the world.** Swarm publishes it on `0.0.0.0`, so
+   `http://<manager-ip>:3850` still serves the API unencrypted, bypassing nginx
+   entirely. Docker inserts its iptables rules ahead of ufw, so `ufw deny 3850`
+   does nothing; block it in the `DOCKER-USER` chain instead, or at the cloud
+   firewall:
+   ```sh
+   sudo iptables -I DOCKER-USER -p tcp --dport 3850 ! -s 127.0.0.1 -j DROP
+   sudo apt install iptables-persistent   # so it survives a reboot
+   ```
+
+Django's side of the arrangement is in
+[`config/settings/production.py`](../config/settings/production.py):
+`SECURE_PROXY_SSL_HEADER` makes `request.is_secure()` trust nginx's
+`X-Forwarded-Proto` (without it, `SECURE_SSL_REDIRECT` would loop), HSTS is sent
+for a year, cookies are secure-only, and DRF's `NUM_PROXIES=1` keeps the login
+throttle per-client rather than per-proxy. Each of those is overridable by env
+var — e.g. `DJANGO_HSTS_SECONDS=0` while first bringing a domain up.
+
+### 6. Protect `main`
 
 `Settings → Branches → Add rule` for `main`:
 
