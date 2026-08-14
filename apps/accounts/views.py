@@ -49,7 +49,7 @@ class OtpRequestView(APIView):
     Also serves the /auth/otp/resend alias.
     """
 
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     throttle_classes = []  # rate-limited in the service via Redis
 
     @extend_schema(request=OtpRequestSerializer, responses={200: OtpRequestedSerializer})
@@ -60,6 +60,26 @@ class OtpRequestView(APIView):
 
         services.request_otp_for_user(
             user=request.user,
+            destination_type=data["destination_type"],
+            purpose=data["purpose"],
+            ip=_client_ip(request),
+        )
+        return Response(_OTP_REQUESTED, status=status.HTTP_200_OK)
+
+
+class OtpReSendView(APIView):
+
+    permission_classes = [AllowAny]
+    throttle_classes = [] 
+
+    @extend_schema(request=OtpRequestSerializer, responses={200: OtpRequestedSerializer})
+    def post(self, request):
+        s = OtpRequestSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        data = s.validated_data
+
+        services.resend_otp_for_user(
+            destination=data["destination"],
             destination_type=data["destination_type"],
             purpose=data["purpose"],
             ip=_client_ip(request),

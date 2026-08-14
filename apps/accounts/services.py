@@ -101,6 +101,20 @@ def request_otp_for_user(user, destination_type, purpose, ip):
         ip=ip,
     )
 
+def resend_otp_for_user(destination, destination_type, purpose, ip):
+    """Like request_otp, but the destination is always the caller's own
+    contact on file — never a client-supplied value. Prevents an
+    authenticated user from spamming OTPs to someone else's email/phone.
+    """
+    field = _account_field(destination_type) 
+    request_otp(
+        destination=destination,
+        destination_type=destination_type,
+        purpose=purpose,
+        ip=ip,
+    )
+
+
 
 def verify_otp_for_user(user, destination_type, purpose, code, ip):
     """Check a submitted code against the caller's own contact and, on

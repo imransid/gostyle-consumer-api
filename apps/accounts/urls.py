@@ -12,12 +12,13 @@ from .views import (
     PasswordResetView,
     PasswordVerifyView,
     RegisterView,
+    OtpReSendView
 )
 
 urlpatterns = [
     path("auth/otp/request", OtpRequestView.as_view()),
     # Resend is the same operation as request: issue a fresh code.
-    path("auth/otp/resend", OtpRequestView.as_view()),
+    path("auth/otp/resend", OtpReSendView.as_view()),
     path("auth/otp/verify", OtpVerifyView.as_view()),
     path("auth/register", RegisterView.as_view()),
     path("auth/login", LoginView.as_view()),
