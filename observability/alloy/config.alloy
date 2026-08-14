@@ -1,0 +1,189 @@
+// Grafana Alloy -- the only process on this node that reads logs.
+//
+// Runs as a global Swarm service, so one copy exists per node and picks up
+// containers scheduled there without anything being told about it. Two sources:
+//
+//   1. every Docker container's stdout/stderr, via the Docker API
+//   2. the host nginx access/error logs, which are files on disk
+//
+// Nothing about the application services changes to make this work -- no logging
+// driver, no sidecar. If Loki is down, Alloy buffers and retries; the API never
+// notices.
+//
+// Label discipline: a Loki label creates a stream, and streams are the index.
+// Keep them low-cardinality (stack, service, container, level, job, vhost).
+// Per-request values like request_id go in structured metadata, which is
+// queryable but not indexed.
+
+logging {
+  // The JSON stages below log a parse failure for every plain-text line they
+  // meet -- gunicorn's startup banner, Redis, Postgres. At "warn" that noise
+  // stays out of the way. Drop to "debug" when a pipeline misbehaves.
+  level  = "warn"
+  format = "logfmt"
+}
+
+// -- destination --------------------------------------------------------------
+
+loki.write "default" {
+  endpoint {
+    // On the server this is the platform stack's Loki, which is why the name is
+    // stack-qualified: LOKI_URL=http://gostyle_loki:3100/loki/api/v1/push.
+    // The fallback is the sibling `loki` service in
+    // docker-compose.observability.yml, used on a laptop.
+    url = coalesce(sys.env("LOKI_URL"), "http://loki:3100/loki/api/v1/push")
+  }
+
+  external_labels = {
+    node = constants.hostname,
+  }
+}
+
+// -- source 1: Docker containers ----------------------------------------------
+
+discovery.docker "local" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "10s"
+}
+
+discovery.relabel "containers" {
+  targets = discovery.docker.local.targets
+
+  // Swarm stamps these on every task container: the stack name
+  // (gostyle-consumer) and the fully-qualified service name
+  // (gostyle-consumer_api).
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_stack_namespace"]
+    target_label  = "stack"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_swarm_service_name"]
+    target_label  = "service"
+  }
+
+  // Anything started outside Swarm has neither label. Fall back to the container
+  // name so nothing lands in Loki unlabelled and invisible. Docker reports names
+  // with a leading slash.
+  rule {
+    source_labels = ["service", "__meta_docker_container_name"]
+    separator     = ";"
+    regex         = ";/(.*)"
+    target_label  = "service"
+  }
+
+  // The individual replica, e.g. gostyle-consumer_api.1.xyz -- how you tell two
+  // gunicorn replicas apart.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+}
+
+loki.source.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  targets          = discovery.relabel.containers.output
+  forward_to       = [loki.process.containers.receiver]
+  labels           = { job = "docker" }
+  refresh_interval = "10s"
+}
+
+loki.process "containers" {
+  forward_to = [loki.write.default.receiver]
+
+  // A container Alloy has never seen before is read from the *start* of its
+  // log, which for something up since July means replaying months of history.
+  // Loki refuses anything older than its reject_old_samples_max_age (168h) and
+  // rejects the whole batch with a 400, so those pushes are pure waste and they
+  // delay the current lines behind them. Drop them here instead. 160h leaves
+  // margin under Loki's limit for clock skew and time in flight.
+  stage.drop {
+    older_than          = "160h"
+    drop_counter_reason = "older_than_loki_accepts"
+  }
+
+  // Only the API emits JSON (Django via config/observability.py, gunicorn via
+  // --access-logformat). Scoping the parse keeps it off Redis and Postgres,
+  // whose lines would never parse.
+  stage.match {
+    selector = "{job=\"docker\", service=~\".*(api|consumer).*\"}"
+
+    stage.json {
+      expressions = {
+        level      = "level",
+        request_id = "request_id",
+      }
+    }
+
+    // Low cardinality, and the thing you filter on most: worth an index.
+    stage.labels {
+      values = { level = "" }
+    }
+
+    // Unique per request: queryable via `| request_id="..."`, but it does not
+    // create a stream.
+    stage.structured_metadata {
+      values = { request_id = "" }
+    }
+  }
+}
+
+// -- source 2: host nginx logs ------------------------------------------------
+
+local.file_match "nginx" {
+  path_targets = [
+    {
+      __path__ = "/var/log/nginx/*.access.log",
+      job      = "nginx",
+      stream   = "access",
+    },
+    {
+      __path__ = "/var/log/nginx/*.error.log",
+      job      = "nginx",
+      stream   = "error",
+    },
+  ]
+  sync_period = "30s"
+}
+
+loki.source.file "nginx" {
+  targets    = local.file_match.nginx.targets
+  forward_to = [loki.process.nginx.receiver]
+
+  // On a first start there may be months of rotated access logs sitting there.
+  // Begin at the end rather than replaying all of it into a fresh Loki, where
+  // reject_old_samples would drop most of it anyway.
+  tail_from_end = true
+}
+
+loki.process "nginx" {
+  forward_to = [loki.write.default.receiver]
+
+  // Same guard as above: rotated logs still on disk can predate Loki's window.
+  stage.drop {
+    older_than          = "160h"
+    drop_counter_reason = "older_than_loki_accepts"
+  }
+
+  // Access lines are JSON because of nginx/log-format-json.conf. Error lines
+  // are nginx's own fixed format and cannot be; they pass through as-is.
+  stage.match {
+    selector = "{job=\"nginx\", stream=\"access\"}"
+
+    stage.json {
+      expressions = {
+        vhost      = "vhost",
+        request_id = "request_id",
+      }
+    }
+
+    stage.labels {
+      values = { vhost = "" }
+    }
+
+    stage.structured_metadata {
+      values = { request_id = "" }
+    }
+  }
+}
