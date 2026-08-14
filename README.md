@@ -291,6 +291,7 @@ Further reading, all in [docs/](docs/):
 - [SALON_PROFILE_API.md](docs/SALON_PROFILE_API.md) — mobile handoff for the five profile endpoints, including why `:id` is a storefront UUID
 - [AUTH_GUIDE.md](docs/AUTH_GUIDE.md) — the OTP → verify → register flow in plain language
 - [DEPLOYMENT.md](docs/DEPLOYMENT.md) — CI/CD, image tags, and the rollback lever
+- [OBSERVABILITY.md](docs/OBSERVABILITY.md) — logs in Grafana Loki, and the request ID that ties Django, gunicorn and nginx together
 
 ---
 
@@ -307,3 +308,19 @@ Public traffic arrives at **https://api.gostyle.uk**, where host nginx on the
 manager node terminates TLS and proxies to 3850. The site config is
 [nginx/api.gostyle.uk.conf](nginx/api.gostyle.uk.conf), installed and
 certificate-issued by [scripts/setup-nginx.sh](scripts/setup-nginx.sh).
+
+## Logs
+
+Django, gunicorn and nginx all log JSON, one object per line, and Grafana Alloy
+ships every container's output on the node to Loki — no logging driver or
+sidecar on the API service. A `X-Request-ID` set by
+[config/observability.py](config/observability.py) and echoed on the response
+lets one LogQL query pull back all three views of a single request:
+
+```logql
+{stack="gostyle-consumer"} | request_id="9f8c2e1a4b7d"
+```
+
+Deploy it with `sudo ./scripts/setup-observability.sh`; read Grafana at
+**https://logs.gostyle.uk**. Retention is 30 days. See
+[docs/OBSERVABILITY.md](docs/OBSERVABILITY.md).
