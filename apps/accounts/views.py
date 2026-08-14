@@ -49,7 +49,7 @@ class OtpRequestView(APIView):
     Also serves the /auth/otp/resend alias.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
     throttle_classes = []  # rate-limited in the service via Redis
 
     @extend_schema(request=OtpRequestSerializer, responses={200: OtpRequestedSerializer})
