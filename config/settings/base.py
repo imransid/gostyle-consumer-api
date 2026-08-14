@@ -31,6 +31,9 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # First, so that responses returned by the middleware below it (the HTTPS
+    # redirect, CommonMiddleware's 301s) still carry X-Request-ID.
+    "config.observability.RequestIDMiddleware",
     'django.middleware.security.SecurityMiddleware',
     "whitenoise.middleware.WhiteNoiseMiddleware",
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -202,6 +205,51 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+
+
+# Logging. Everything goes to stdout as one JSON object per line; the container
+# runtime captures it and Grafana Alloy ships it to Loki. See
+# config/observability.py for the formatter and docs/OBSERVABILITY.md for the
+# rest of the pipeline. DJANGO_LOG_FORMAT=plain swaps in human-readable output
+# for anyone tailing a shell (config.settings.local does this by default).
+LOG_LEVEL = env("DJANGO_LOG_LEVEL", default="INFO").upper()
+LOG_FORMAT = env("DJANGO_LOG_FORMAT", default="json")
+
+LOGGING = {
+    "version": 1,
+    # Third-party libraries configure loggers at import time; leave them alone.
+    "disable_existing_loggers": False,
+    "filters": {
+        "request_id": {"()": "config.observability.RequestIDFilter"},
+    },
+    "formatters": {
+        "json": {"()": "config.observability.JsonFormatter"},
+        "plain": {
+            "format": "{levelname:<8} {name} [{request_id}] {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            # One stream, so lines cannot interleave between stdout and stderr.
+            "stream": "ext://sys.stdout",
+            "filters": ["request_id"],
+            "formatter": LOG_FORMAT,
+        },
+    },
+    "root": {"handlers": ["console"], "level": LOG_LEVEL},
+    "loggers": {
+        "django": {"level": LOG_LEVEL},
+        # Guards against DJANGO_LOG_LEVEL=DEBUG turning every request into a
+        # flood of SQL and autoreload chatter. Raise these deliberately instead.
+        "django.db.backends": {"level": "INFO"},
+        "django.utils.autoreload": {"level": "INFO"},
+        # A wrong Host header is an internet background-noise event, not a
+        # 500-a-minute alarm.
+        "django.security.DisallowedHost": {"level": "ERROR"},
+    },
+}
 
 
 # Email (used for email-channel OTP delivery). SMTP in production; the local
