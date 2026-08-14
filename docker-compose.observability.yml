@@ -1,0 +1,67 @@
+# Loki + Grafana + Alloy on a laptop, for trying LogQL against real output
+# before deploying any of it.
+#
+#   docker compose -f docker-compose.observability.yml up -d
+#   open http://localhost:3001          # admin / admin
+#
+# Same images and the same config files as the production stack
+# (docker-stack.observability.yml), so a query that works here works there. The
+# differences are deliberate:
+#
+#   * plain compose, not Swarm -- containers here carry no swarm labels, so
+#     Alloy's fallback rule labels them by container name
+#   * no host nginx to tail; that mount is dropped
+#   * a throwaway anonymous-admin Grafana, on 3001 to stay clear of 3000
+#
+# To see the API's own logs here, run it with `docker compose up` alongside and
+# set DJANGO_LOG_FORMAT=json.
+
+services:
+  loki:
+    image: grafana/loki:3.5.0
+    command: ["-config.file=/etc/loki/loki.yml"]
+    volumes:
+      - ./observability/loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki_data:/loki
+    ports:
+      # Handy for `curl 'localhost:3100/loki/api/v1/labels'`; not published in
+      # production.
+      - "127.0.0.1:3100:3100"
+
+  grafana:
+    image: grafana/grafana:12.0.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: http://localhost:3001
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/etc/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      - loki
+
+  alloy:
+    image: grafana/alloy:v1.8.0
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    user: root
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy_data:/var/lib/alloy/data
+    depends_on:
+      - loki
+
+volumes:
+  loki_data:
+  grafana_data:
+  alloy_data:

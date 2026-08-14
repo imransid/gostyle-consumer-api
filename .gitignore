@@ -4,3 +4,5 @@ __pycache__/
 .env
 db.sqlite3
 .DS_Store
+# Grafana admin password, written by scripts/setup-observability.sh.
+observability.env

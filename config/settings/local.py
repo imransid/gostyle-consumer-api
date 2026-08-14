@@ -16,3 +16,9 @@ CACHES = {
 
 # Log OTP codes to the console rather than calling WhatsApp or SMTP.
 OTP_SENDER = "console"
+
+# JSON log lines are for Loki, not for a human reading a terminal. Set
+# DJANGO_LOG_FORMAT=json locally to see exactly what production emits.
+LOGGING["handlers"]["console"]["formatter"] = env(  # noqa: F405
+    "DJANGO_LOG_FORMAT", default="plain"
+)

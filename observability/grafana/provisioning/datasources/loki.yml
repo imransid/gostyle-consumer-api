@@ -1,0 +1,19 @@
+# Provisioned at startup, so a rebuilt Grafana comes back with its data source
+# already wired. Provisioned data sources cannot be edited in the UI -- change
+# this file and redeploy the stack instead.
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    # Overlay-network name; Loki is not published to the host.
+    url: http://loki:3100
+    isDefault: true
+    editable: false
+    jsonData:
+      # Loki is configured with auth_enabled: false, so there is one implicit
+      # tenant and no header to send.
+      maxLines: 2000
+      timeout: 60

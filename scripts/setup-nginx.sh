@@ -8,6 +8,12 @@
 #
 #   sudo EMAIL=ops@gostyle.uk ./scripts/setup-nginx.sh
 #
+# It also serves the Grafana vhost, by pointing it at the other template:
+#
+#   sudo DOMAIN=logs.gostyle.uk UPSTREAM_PORT=3851 HEALTH_PATH=/login \
+#        TEMPLATE=nginx/logs.gostyle.uk.conf EMAIL=ops@gostyle.uk \
+#        ./scripts/setup-nginx.sh
+#
 # Prerequisites, checked below:
 #   - api.gostyle.uk's A/AAAA record already points at this host
 #   - ports 80 and 443 reachable from the internet (ACME uses HTTP-01)
@@ -22,6 +28,8 @@ WEBROOT="${WEBROOT:-/var/www/certbot}"
 STAGING="${STAGING:-0}"          # STAGING=1 uses Let's Encrypt's staging CA
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TEMPLATE="${TEMPLATE:-$REPO_DIR/nginx/api.gostyle.uk.conf}"
+HEALTH_PATH="${HEALTH_PATH:-/api/docs/}"   # what the pre/post-flight curls probe
+LOG_FORMAT_SNIPPET="$REPO_DIR/nginx/log-format-json.conf"
 
 AVAILABLE="/etc/nginx/sites-available/$DOMAIN"
 ENABLED="/etc/nginx/sites-enabled/$DOMAIN"
@@ -38,7 +46,7 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 log "Preflight"
 
-if ! curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:$UPSTREAM_PORT/api/docs/"; then
+if ! curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:$UPSTREAM_PORT$HEALTH_PATH"; then
   warn "nothing healthy on 127.0.0.1:$UPSTREAM_PORT — is the gostyle-consumer stack running?"
   warn "continuing; nginx will 502 until it is."
 fi
@@ -66,6 +74,18 @@ if ! command -v nginx >/dev/null || ! command -v certbot >/dev/null; then
 fi
 
 install -d -m 755 "$WEBROOT"
+
+# --- shared log format --------------------------------------------------------
+
+# `log_format` is an http-context directive, so it cannot live in a vhost. Both
+# templates reference json_combined and nginx -t rejects an undefined format, so
+# this has to land before any config test below.
+if [ -f "$LOG_FORMAT_SNIPPET" ]; then
+  log "Installing the JSON access-log format to /etc/nginx/conf.d/"
+  install -m 644 "$LOG_FORMAT_SNIPPET" /etc/nginx/conf.d/log-format-json.conf
+else
+  warn "$LOG_FORMAT_SNIPPET missing — vhosts using json_combined will fail nginx -t"
+fi
 
 # --- certificate --------------------------------------------------------------
 
@@ -161,8 +181,8 @@ fi
 # --- done ---------------------------------------------------------------------
 
 log "Verifying"
-curl -fsS -o /dev/null -w '%{url_effective} -> %{http_code}\n' "https://$DOMAIN/api/docs/" \
-  || warn "https://$DOMAIN/api/docs/ did not answer 2xx — check the app's DJANGO_ALLOWED_HOSTS"
+curl -fsS -o /dev/null -w '%{url_effective} -> %{http_code}\n' "https://$DOMAIN$HEALTH_PATH" \
+  || warn "https://$DOMAIN$HEALTH_PATH did not answer 2xx — check the app's DJANGO_ALLOWED_HOSTS"
 
 cat <<EOF
 

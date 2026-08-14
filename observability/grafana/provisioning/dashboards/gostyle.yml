@@ -1,0 +1,18 @@
+# Loads every dashboard JSON in /etc/grafana/dashboards into a "GoStyle" folder.
+#
+# The directory is a read-only bind mount of observability/grafana/dashboards,
+# so the dashboards live in git. Editing one in the UI works for the session but
+# will not save -- export the JSON and commit it.
+apiVersion: 1
+
+providers:
+  - name: gostyle
+    orgId: 1
+    folder: GoStyle
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false
