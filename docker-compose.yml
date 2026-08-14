@@ -28,11 +28,27 @@ services:
       - "60"
       - --access-logfile
       - "-"
+      # JSON, to match what Django emits (config/observability.py), so Loki
+      # parses both with the same `| json` stage. %({X-Request-ID}o)s reads the
+      # response header RequestIDMiddleware sets, which is how an access line
+      # and the application logs for the same request find each other.
+      # %(D)s is microseconds; %(B)s is the response body size.
+      #
+      # Client-supplied fields (User-Agent, Referer, X-Forwarded-For) are left
+      # out on purpose: gunicorn does not escape values, so a quote in one would
+      # produce an unparseable line. nginx logs all three, escaped properly
+      # (nginx/log-format-json.conf).
+      - --access-logformat
+      - '{"level":"INFO","src":"gunicorn.access","method":"%(m)s","path":"%(U)s","query":"%(q)s","status":%(s)s,"duration_us":%(D)s,"bytes":"%(B)s","request_id":"%({X-Request-ID}o)s"}'
     environment:
       DJANGO_SETTINGS_MODULE: config.settings.production
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
       DJANGO_DEBUG: "0"
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS}
+
+      # Structured logs for Loki. "plain" is only for reading in a terminal.
+      DJANGO_LOG_LEVEL: ${DJANGO_LOG_LEVEL:-INFO}
+      DJANGO_LOG_FORMAT: ${DJANGO_LOG_FORMAT:-json}
 
       # Shared Postgres from the `gostyle` stack. Service name, not container name.
       DB_HOST: gostyle_postgres
