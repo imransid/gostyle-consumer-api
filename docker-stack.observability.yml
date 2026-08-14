@@ -1,0 +1,80 @@
+# Log collection for the GoStyle node.
+#
+#   sudo ./scripts/setup-observability.sh
+#   docker stack deploy -c docker-stack.observability.yml gostyle-observability
+#
+# This deploys **only Grafana Alloy**, the collector. Loki and Grafana already
+# run on this node as part of the `gostyle` platform stack:
+#
+#   gostyle_loki      grafana/loki:3.4.1     :3100   storage + query
+#   gostyle_grafana   grafana/grafana        :3001   the UI, Loki already wired
+#
+# Until this stack existed, nothing was writing to that Loki -- it had been up
+# for months holding zero logs, because a collector was never deployed. Alloy is
+# the missing piece, not a replacement, so nothing here touches either service.
+#
+# Alloy watches the Docker socket, so it collects every container on the node:
+# the consumer API, the platform API, Postgres, Redis. Plus the host's nginx
+# logs, which are files rather than container output. Nothing needs a logging
+# driver or a sidecar, and if Loki is down Alloy buffers and retries -- no
+# application notices.
+#
+# For a self-contained Loki + Grafana + Alloy (a laptop, or a node with no
+# platform stack), use docker-compose.observability.yml instead.
+#
+# Variables, from the shell (setup-observability.sh sources observability.env):
+#
+#   LOKI_URL   default: http://gostyle_loki:3100/loki/api/v1/push
+#   OBS_DIR    default: /root/gostyle-customer/observability
+
+version: "3.8"
+
+services:
+  alloy:
+    image: grafana/alloy:v1.8.0
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    environment:
+      # Read by config.alloy. The service DNS name is the *stack-qualified* one,
+      # because Loki lives in the `gostyle` stack and Alloy does not.
+      LOKI_URL: ${LOKI_URL:-http://gostyle_loki:3100/loki/api/v1/push}
+    # Needs to read the Docker socket (root:docker) and /var/log/nginx
+    # (root:adm, mode 640). The alloy user is in neither group.
+    user: root
+    volumes:
+      # Bind-mounted rather than shipped as a Docker config: Swarm configs are
+      # immutable, so every edit would need a new name. This way "edit the file,
+      # redeploy" works. It does pin the stack to the node holding the checkout,
+      # hence the placement constraint below.
+      - ${OBS_DIR:-/root/gostyle-customer/observability}/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      # Read-only: Alloy only lists containers and streams their logs.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/log/nginx:/var/log/nginx:ro
+      # Read positions, so a restart resumes instead of re-sending everything.
+      - alloy_data:/var/lib/alloy/data
+    networks:
+      - gostyle-net
+    deploy:
+      # One per node, now and after any node is added.
+      mode: global
+      placement:
+        constraints: [node.role == manager]
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits:
+          memory: 512M
+
+networks:
+  # The platform's existing overlay, where Loki lives. Declared external so this
+  # stack attaches to it and never owns, alters or removes it. The consumer API
+  # stack already joins the same network.
+  gostyle-net:
+    external: true
+    name: gostyle_gostyle-net
+
+volumes:
+  alloy_data:

@@ -11,6 +11,9 @@ staticfiles/
 
 # Secrets & local env (provided at runtime via compose)
 .env
+# Per-host observability settings; read by the deploy script on the host, never
+# needed inside the image.
+observability.env
 
 # VCS & tooling
 .git/
