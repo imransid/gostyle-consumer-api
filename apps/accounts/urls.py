@@ -7,6 +7,10 @@ from .views import (
     MeView,
     OtpRequestView,
     OtpVerifyView,
+    PasswordChangeView,
+    PasswordForgotView,
+    PasswordResetView,
+    PasswordVerifyView,
     RegisterView,
 )
 
@@ -20,4 +24,8 @@ urlpatterns = [
     path("auth/logout", LogoutView.as_view()),
     path("auth/token/refresh", TokenRefreshView.as_view()),
     path("auth/me", MeView.as_view()),
+    path("auth/password/change", PasswordChangeView.as_view()),
+    path("auth/password/forgot", PasswordForgotView.as_view()),
+    path("auth/password/verify", PasswordVerifyView.as_view()),
+    path("auth/password/reset", PasswordResetView.as_view()),
 ]

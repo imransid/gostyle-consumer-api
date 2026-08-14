@@ -4,7 +4,7 @@ from django.db import transaction
 from django.db.models import F
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
-
+from datetime import timedelta
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from . import ratelimit
@@ -177,3 +177,157 @@ def register(destination, destination_type, full_name, password):
         "detail": "Registration successful. Please verify your account to continue.",
         **tokens,
     }
+
+
+def change_password(user, old_password, new_password):
+    """Change the password of an authenticated caller.
+
+    Deliberately does NOT blacklist other sessions. The user knows their old
+    password, so there is no reason to believe another session is hostile, and
+    logging someone out of their other devices for a routine change is
+    surprising. reset_password below takes the opposite view, for the opposite
+    reason.
+    """
+    if not user.check_password(old_password):
+        # Same generic message as login. A distinct "wrong old password" is
+        # harmless here (the caller is already authenticated as this user) but
+        # keeping one phrasing means one string to get right.
+        raise ValidationError({"detail": "Invalid credentials."})
+
+    user.set_password(new_password)
+    user.save(update_fields=["password"])
+
+
+def request_password_reset(destination, destination_type, ip):
+    """Step 1: send a reset code.
+
+    ALWAYS the same outcome whether the account exists or not. An attacker
+    who can tell registered numbers from unregistered ones has a customer list,
+    so the code is issued and the response returned identically either way;
+    only delivery is skipped when there is nobody to deliver to.
+
+    Rate limiting runs BEFORE the account lookup, so timing does not leak the
+    answer either.
+    """
+    ratelimit.enforce_request_otp(destination, Purpose.PASSWORD_RESET, ip)
+
+    if not account_exists(destination, destination_type):
+        # Silent no-op. Not an error, not a different response.
+        return
+
+    request_otp(
+        destination=destination,
+        destination_type=destination_type,
+        purpose=Purpose.PASSWORD_RESET,
+        ip=ip,
+    )
+
+
+def verify_password_reset(destination, destination_type, code, ip):
+    """Step 2: exchange a correct code for a single-use reset token.
+
+    The token is a Verification row. Its id is a UUID4, so it cannot be
+    guessed; it expires in ten minutes; and consumed_at makes it single-use.
+    That is why this returns a token rather than just "ok": without one, step
+    three would have to trust a destination supplied by the client.
+    """
+    ratelimit.enforce_verify_otp(ip)
+
+    now = timezone.now()
+    matched = False
+
+    with transaction.atomic():
+        codes = (
+            OtpCode.objects.select_for_update()
+            .filter(
+                destination=destination,
+                destination_type=destination_type,
+                purpose=Purpose.PASSWORD_RESET,
+                consumed_at__isnull=True,
+                expires_at__gt=now,
+            )
+            .order_by("-created_at")
+        )
+
+        for otp in codes:
+            if otp.check_code(code):
+                otp.consumed_at = now
+                otp.save(update_fields=["consumed_at"])
+                matched = True
+                break
+
+    if not matched:
+        raise ValidationError({"detail": "Invalid code."})
+
+    verification = Verification.objects.create(
+        destination=destination,
+        destination_type=destination_type,
+        purpose=Purpose.PASSWORD_RESET,
+        expires_at=now + timedelta(seconds=VERIFICATION_TTL_SECONDS),
+    )
+
+    return {
+        "reset_token": str(verification.id),
+        "expires_in": VERIFICATION_TTL_SECONDS,
+    }
+
+
+def reset_password(reset_token, new_password):
+    """Step 3: spend the token and set the password.
+
+    The whole thing is one transaction with select_for_update on the
+    Verification row. Two requests arriving with the same token cannot both
+    succeed: the second blocks, then finds consumed_at already set.
+
+    Every refresh token is blacklisted afterwards. Somebody resetting a
+    password may be doing it BECAUSE their account was stolen, so any session
+    the attacker holds has to die with the old password. change_password does
+    not do this, and the difference is deliberate.
+    """
+    now = timezone.now()
+
+    with transaction.atomic():
+        verification = (
+            Verification.objects.select_for_update()
+            .filter(
+                id=reset_token,
+                purpose=Purpose.PASSWORD_RESET,
+                consumed_at__isnull=True,
+                expires_at__gt=now,
+            )
+            .first()
+        )
+
+        if verification is None:
+            raise ValidationError({"detail": "Invalid or expired reset token."})
+
+        account = find_account(
+            verification.destination, verification.destination_type
+        )
+        if account is None:
+            # The account was deleted between step two and step three.
+            raise ValidationError({"detail": "Invalid or expired reset token."})
+
+        verification.consumed_at = now
+        verification.save(update_fields=["consumed_at"])
+
+        account.set_password(new_password)
+        account.save(update_fields=["password"])
+
+        _blacklist_all_refresh_tokens(account)
+
+
+def _blacklist_all_refresh_tokens(account):
+    """Kill every outstanding session for this account.
+
+    Imported here rather than at module scope: token_blacklist models are only
+    loadable once apps are ready, and services.py is imported early.
+    """
+    from rest_framework_simplejwt.token_blacklist.models import (
+        BlacklistedToken,
+        OutstandingToken,
+    )
+
+    tokens = OutstandingToken.objects.filter(user=account)
+    for token in tokens:
+        BlacklistedToken.objects.get_or_create(token=token)

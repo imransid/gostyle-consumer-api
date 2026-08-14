@@ -12,18 +12,23 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 
 from . import ratelimit, services
 from .serializers import (
+    DetailSerializer,
     LoginSerializer,
     LogoutSerializer,
-    OtpRequestedSerializer,
     OtpRequestSerializer,
+    OtpRequestedSerializer,
     OtpVerifiedSerializer,
     OtpVerifySerializer,
+    PasswordChangeSerializer,
+    PasswordForgotSerializer,
+    PasswordResetSerializer,
+    PasswordResetTokenSerializer,
+    PasswordVerifySerializer,
     ProfileSerializer,
+    RegisterResponseSerializer,
     RegisterSerializer,
     TokenPairSerializer,
-    RegisterResponseSerializer
 )
-
 # Constant OTP-request response. It carries nothing derived from the request or
 # from account existence, so the body is byte-identical for every identifier.
 _OTP_REQUESTED = {
@@ -145,3 +150,114 @@ class LogoutView(APIView):
         except TokenError:
             raise ValidationError({"detail": "Invalid or expired token."})
         return Response(status=status.HTTP_205_RESET_CONTENT)
+
+
+class PasswordChangeView(APIView):
+    """
+    POST /api/v1/auth/password/change
+
+    For a caller who knows their current password. The old password is the
+    proof, so no OTP is involved.
+    """
+
+    permission_classes = [IsAuthenticated]
+    throttle_classes = []
+
+    @extend_schema(request=PasswordChangeSerializer, responses={200: None})
+    def post(self, request):
+        s = PasswordChangeSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+
+        services.change_password(
+            user=request.user,
+            old_password=s.validated_data["old_password"],
+            new_password=s.validated_data["new_password"],
+        )
+        return Response({"detail": "Password changed."}, status=status.HTTP_200_OK)
+
+
+class PasswordForgotView(APIView):
+    """
+    POST /api/v1/auth/password/forgot
+
+    Step 1 of 3. AllowAny by necessity: someone who has forgotten their
+    password cannot hold a token.
+
+    This is the one endpoint that accepts a client-supplied destination and
+    sends a message to it, which is the shape closed off in 227d437. It is
+    acceptable here only because enforce_request_otp applies a cooldown plus
+    per-destination hourly and daily caps plus a per-IP cap, and because the
+    response is identical whether the account exists or not.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = []  # rate-limited in the service via Redis
+
+    @extend_schema(request=PasswordForgotSerializer, responses={200: None})
+    def post(self, request):
+        s = PasswordForgotSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+
+        services.request_password_reset(
+            destination=s.validated_data["destination"],
+            destination_type=s.validated_data["destination_type"],
+            ip=_client_ip(request),
+        )
+        # Same body whether or not an account exists. Do not "improve" this.
+        return Response(
+            {"detail": "If that account exists, a code has been sent."},
+            status=status.HTTP_200_OK,
+        )
+
+
+class PasswordVerifyView(APIView):
+    """
+    POST /api/v1/auth/password/verify
+
+    Step 2 of 3. Trades a correct code for a single-use reset token.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = []
+
+    @extend_schema(
+        request=PasswordVerifySerializer,
+        responses={200: PasswordResetTokenSerializer},
+    )
+    def post(self, request):
+        s = PasswordVerifySerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+
+        result = services.verify_password_reset(
+            destination=s.validated_data["destination"],
+            destination_type=s.validated_data["destination_type"],
+            code=s.validated_data["code"],
+            ip=_client_ip(request),
+        )
+        return Response(result, status=status.HTTP_200_OK)
+
+
+class PasswordResetView(APIView):
+    """
+    POST /api/v1/auth/password/reset
+
+    Step 3 of 3. The token carries the identity; no destination is accepted
+    from the client, so a valid token cannot be pointed at another account.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = []
+
+    @extend_schema(request=PasswordResetSerializer, responses={200: None})
+    def post(self, request):
+        s = PasswordResetSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+
+        services.reset_password(
+            reset_token=s.validated_data["reset_token"],
+            new_password=s.validated_data["new_password"],
+        )
+        return Response(
+            {"detail": "Password reset. Please sign in."},
+            status=status.HTTP_200_OK,
+        )
