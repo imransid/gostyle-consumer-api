@@ -61,7 +61,7 @@ services:
       # Short name resolves because redis is in this same stack.
       REDIS_URL: redis://redis:6379/0
 
-      OTP_SENDER: whatsapp
+      OTP_SENDER: smtp
       WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID}
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN}
       WHATSAPP_TEMPLATE_NAME: ${WHATSAPP_TEMPLATE_NAME}
