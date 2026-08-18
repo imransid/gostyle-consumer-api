@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package gostyle.auth.v1;
+
+service ConsumerAuth {
+  rpc VerifyConsumer (VerifyConsumerRequest) returns (VerifyConsumerResponse);
+}
+
+message VerifyConsumerRequest {
+  string token = 1;
+}
+
+message VerifyConsumerResponse {
+  bool valid = 1;
+  string consumer_id = 2;
+  bool verified = 3;
+}
