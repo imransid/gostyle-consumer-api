@@ -156,6 +156,7 @@ SIMPLE_JWT = {
     # Invalidate the old refresh token once it is rotated, and let logout
     # blacklist a refresh token (requires the token_blacklist app).
     "BLACKLIST_AFTER_ROTATION": True,
+    "ISSUER": "gostyle-consumer",
     "AUDIENCE": "gostyle-consumer",
     "USER_ID_FIELD": "id",
     "USER_ID_CLAIM": "consumer_id",
