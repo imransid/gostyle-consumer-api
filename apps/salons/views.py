@@ -1,16 +1,15 @@
-import math
 import zoneinfo
 from datetime import datetime
 
 from django.http import Http404
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework.generics import ListAPIView, RetrieveAPIView
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework import status
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .hours import resolve as resolve_hours
-from .models import Salon
 from .money import major
 from .selectors import (
     discoverable_salons,
@@ -29,40 +28,38 @@ from .serializers import (
     MapVenueSerializer,
     SalonCardSerializer,
     SalonProfileSerializer,
-    SalonSerializer,
 )
 from .snapshot import read_snapshot
 
 
-def haversine_km(lat1, lng1, lat2, lng2):
-    r = 6371  # earth radius km
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dp = math.radians(lat2 - lat1)
-    dl = math.radians(lng2 - lng1)
-    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return r * 2 * math.asin(math.sqrt(a))
-
-
 class SalonListView(APIView):
-    serializer_class = SalonSerializer
+    """
+    GET /api/v1/salons/ — GONE.
+
+    This read the `salons_salon` table, which is a fixture: three invented
+    salons written by the `seed_salons` command. It never touched the platform
+    database, so it returned the same demo list on every environment including
+    production, which is exactly how it went unnoticed.
+
+    410 rather than deletion, and rather than 404. A client on an old build
+    calling this needs to be told the resource is gone for good and where the
+    real one is; a 404 reads as a typo or an outage and invites a retry.
+    """
+
+    permission_classes = [AllowAny]
 
     def get(self, request):
-        salons = list(Salon.objects.all())
-
-        lat = request.query_params.get("lat")
-        lng = request.query_params.get("lng")
-        category = request.query_params.get("category")
-
-        if category in ("gents", "ladies", "unisex"):
-            salons = [s for s in salons if s.category == category]
-
-        if lat and lng:
-            lat, lng = float(lat), float(lng)
-            for s in salons:
-                s.distance_km = round(haversine_km(lat, lng, s.latitude, s.longitude), 2)
-            salons.sort(key=lambda s: s.distance_km)
-
-        return Response(SalonSerializer(salons, many=True).data)
+        return Response(
+            {
+                "detail": (
+                    "GET /api/v1/salons/ has been removed. It served fixture "
+                    "data, never real salons. Use GET /api/v1/discover for "
+                    "salon cards or GET /api/v1/discover/map for map markers."
+                ),
+                "replaced_by": "/api/v1/discover",
+            },
+            status=status.HTTP_410_GONE,
+        )
 
 
 @extend_schema(

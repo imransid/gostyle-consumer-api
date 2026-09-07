@@ -119,6 +119,7 @@ for customer visibility. They do not format, round, translate or decide.
 | [snapshot.py](apps/salons/snapshot.py)   | "What did this salon publish?" — safe reads of the JSONB snapshot, with every section guaranteed present      |
 | [hours.py](apps/salons/hours.py)         | "Is it open?" — the weekly grid, dated exceptions, and manual states like `BUSY`, including overnight windows |
 | [money.py](apps/salons/money.py)         | Minor units → `Decimal`, in one place                                                                         |
+| [geo.py](apps/salons/geo.py)             | Map region (centre + span) → bounding box, so the map endpoint has something testable without a database      |
 | [translate.py](apps/salons/translate.py) | Platform vocabulary → app vocabulary (amenities, price tiers, social handles → URLs)                          |
 
 These import nothing from Django. No fixtures, no test database, no transactions,
@@ -217,22 +218,52 @@ staff row that is `ACTIVE`/`INVITED` and must _not_ appear publicly, a
 `price_before` and `save_amount` are derived rather than stored.
 
 A second command, `seed_salons` (plural), fills the legacy `salons_salon` demo
-table used by the old `/api/v1/salons` endpoint. Unrelated to the platform data.
+table. Nothing reads that table any more: `/api/v1/salons/` now answers `410
+Gone` and the map endpoint no longer falls back to it. The command, the model
+and the table are kept only so the table can be dropped deliberately in its own
+migration rather than as a side effect.
+
+### Why `/discover` can look like it is stuck on demo data
+
+This is worth knowing before you go looking for a bug in the queries, because
+the answer has caught people twice.
+
+This service and `gostyle-platform` share **one** database — not a copy, the
+same instance. If you doubt it, run `select system_identifier from
+pg_control_system();` from both sides and compare.
+
+A salon existing in the platform still does not appear here.
+`discoverable_salons()` starts from `storefront` filtered on
+`visibility = 'PUBLIC' AND link_enabled = true`, and a freshly created
+storefront defaults to `HIDDEN` with `link_enabled = false`. A tenant with
+branches, staff and a full catalogue therefore returns *nothing* until someone
+in the platform console creates the storefront (`storefront-edit.create`), sets
+it public and link-enabled, and publishes it (`storefront.publish`, which sets
+`live_version_id`). All three, or the salon is visible to nobody — which is the
+correct behaviour and indistinguishable from a broken endpoint.
+
+`seed_salon` writes its salon with all three already set. On a dev database it
+is often the only row that satisfies the filter, which is why every response
+looks like the fixture. Before assuming the API is wrong:
+
+```sql
+select count(*) from storefront where visibility = 'PUBLIC' and link_enabled;
+```
 
 ---
 
 ## Tests
 
 ```bash
-python manage.py test apps.salons   # 44 tests
-python manage.py test               # 81 tests, everything
+python manage.py test apps.salons   # 45 tests
+python manage.py test               # everything
 python manage.py check
 ```
 
-`apps.salons` is 41 `SimpleTestCase` tests over the four pure modules plus 3
-`TestCase` tests driving the map endpoint. `SimpleTestCase` refuses database
-access outright, so if someone later adds a model import to a pure module, those
-tests fail loudly rather than quietly opening a connection.
+`apps.salons` is 45 `SimpleTestCase` tests over the five pure modules, and not
+one of them touches a database. `SimpleTestCase` refuses database access
+outright, so if someone later adds a model import to a pure module, those tests
+fail loudly rather than quietly opening a connection.
 
 What is worth testing here is not the happy path — the seeded salon proves that
 end to end — but the shapes the seed _cannot_ reach: a snapshot published before
@@ -241,11 +272,14 @@ real opening hours, a social payload with every network switched off. Those
 arrive from years of production data and never from a fixture written this
 morning.
 
-Note for anyone extending the DB-backed tests: platform tables do not exist in
-the test database, so a query against `storefront` raises. `map_venues()` catches
-that and falls back to the local `salons_salon` model, which is why the map tests
-can run at all. A new endpoint reading platform tables cannot be integration-
-tested this way — put its logic in a pure module and test that.
+Note for anyone extending the tests: platform tables do not exist in the test
+database, so a query against `storefront` raises. There is no way around that
+and you must not build one. `map_venues()` used to catch that exception and fall
+back to the local `salons_salon` model, which let three map tests pass while
+proving nothing — the same fallback silently served demo salons in production
+whenever the real query failed. It is gone. An endpoint reading platform tables
+cannot be integration-tested here: put its arithmetic in a pure module
+([geo.py](apps/salons/geo.py) is the map's) and test that.
 
 `apps.accounts` is 37 tests over the auth flow, driven through the real URL conf.
 Two of them exist to pin down one security property: the OTP endpoints send the
@@ -270,15 +304,15 @@ All routes are under `/api/v1/`. Auth is JWT (`rest_framework_simplejwt`):
 | `POST /auth/otp/request`, `/auth/otp/resend`, `/auth/otp/verify`            | JWT    | Verifies the caller's OWN contact on file; any `destination` in the body is validated and then ignored                |
 | `POST /auth/register`, `/auth/login`, `/auth/logout`, `/auth/token/refresh` | —      | Register creates the account and returns tokens immediately; login then requires a verified contact                   |
 | `GET/PATCH /auth/me`                                                        | JWT    |                                                                                                                       |
-| `GET /discover`                                                             | JWT    | Salon cards. Filters: `lat`/`lng`, `sort`, `rating_min`, `city`, `category`, `hijab_mode`, `open_now`, `total_amount` |
-| `GET /discover/map`                                                         | JWT    | Lightweight markers for a map viewport (center + delta)                                                               |
-| `GET /discover/<uuid>`                                                      | JWT    | One card                                                                                                              |
+| `GET /discover`                                                             | Public | Salon cards. Filters: `lat`/`lng`, `sort`, `rating_min`, `city`, `category`, `hijab_mode`, `open_now`, `total_amount` |
+| `GET /discover/map`                                                         | Public | Lightweight markers for a map viewport (center + delta)                                                               |
+| `GET /discover/<uuid>`                                                      | Public | One card                                                                                                              |
 | `GET /salon/<uuid>`                                                         | Public | Profile header, info card, check-in card                                                                              |
 | `GET /salon/<uuid>/services`                                                | Public | Two-level category grouping                                                                                           |
 | `GET /salon/<uuid>/stylists`                                                | Public |                                                                                                                       |
 | `GET /salon/<uuid>/packages`                                                | Public |                                                                                                                       |
 | `GET /salon/<uuid>/products`                                                | Public | Retail only                                                                                                           |
-| `GET /salons/`                                                              | JWT    | Legacy demo list, superseded by `/discover`                                                                           |
+| `GET /salons/`                                                              | Public | **410 Gone.** Served fixture data, never real salons. Use `/discover`                                                  |
 
 `open_now` cannot be a SQL filter — whether a salon is open depends on its own
 timezone and a JSONB grid — so it is computed in Python and fed back as an id

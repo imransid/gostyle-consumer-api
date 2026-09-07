@@ -5,8 +5,8 @@ NO DATABASE in the SimpleTestCase classes below. They run against snapshot.py,
 hours.py, money.py and translate.py directly, which is possible because those
 four modules import nothing from Django. That is the payoff of keeping them
 pure: no fixtures, no transactions, no test database, and a full run in
-milliseconds. (DiscoverMapViewTests at the bottom is the exception: it drives
-the map endpoint through the API and does need a database.)
+milliseconds. There is no longer an exception to that rule — see
+BoundingBoxTests at the bottom for why the map tests stopped needing one.
 
 WHAT IS WORTH TESTING HERE. Not the happy path, which the seeded salon already
 proves end to end. These cover the cases the seed CANNOT reach: a snapshot
@@ -18,13 +18,11 @@ years of production data and never from a fixture written this morning.
 
 from decimal import Decimal
 
-from django.contrib.auth import get_user_model
-from django.test import SimpleTestCase, TestCase
-from rest_framework.test import APIClient
+from django.test import SimpleTestCase
 
 from apps.salons import translate
+from apps.salons.geo import bounding_box
 from apps.salons.hours import is_within, resolve
-from apps.salons.models import Salon
 from apps.salons.money import bps_to_percent, major
 from apps.salons.snapshot import field, items, normalize
 
@@ -316,63 +314,40 @@ class TranslateTests(SimpleTestCase):
         self.assertFalse(policy["free_cancellation"])
 
 
-User = get_user_model()
+class BoundingBoxTests(SimpleTestCase):
+    """
+    What DiscoverMapViewTests used to cover, minus the lie.
 
+    Those three tests created `salons_salon` rows and asserted the map endpoint
+    returned them. It did — but only because map_venues() swallowed the failing
+    `storefront` query (that table does not exist in the test database) and fell
+    back to the demo model. They were green proof of a bug. The fallback is gone,
+    so the real arithmetic is tested here instead, where no database is needed.
+    """
 
-class DiscoverMapViewTests(TestCase):
-    def setUp(self):
-        self.client = APIClient()
-        self.user = User.objects.create_user(phone="+8801700000000", password="password")
-        self.client.force_authenticate(user=self.user)
+    def test_delta_is_a_full_span_not_a_radius(self):
+        # 0.12 of span around 24.55 is ±0.06, not ±0.12. Getting this backwards
+        # doubles the viewport and is invisible without an assertion.
+        sw_lat, sw_lng, ne_lat, ne_lng = bounding_box(24.55, 90.40, 0.12, 0.12)
+        self.assertAlmostEqual(sw_lat, 24.49)
+        self.assertAlmostEqual(ne_lat, 24.61)
+        self.assertAlmostEqual(sw_lng, 90.34)
+        self.assertAlmostEqual(ne_lng, 90.46)
 
-        # Inside Mymensingh region: 24.5547702, 90.4080668 ± 0.06
-        self.salon1 = Salon.objects.create(
-            id="salon-near-center",
-            name="Salon Near Center",
-            category="gents",
-            latitude=24.554,
-            longitude=90.408,
-            rating=4.5,
+    def test_a_point_inside_and_a_point_outside(self):
+        sw_lat, sw_lng, ne_lat, ne_lng = bounding_box(24.5547702, 90.4080668, 0.12, 0.12)
+        self.assertTrue(sw_lat <= 24.554 <= ne_lat and sw_lng <= 90.408 <= ne_lng)
+        self.assertFalse(sw_lat <= 25.554 <= ne_lat and sw_lng <= 91.408 <= ne_lng)
+
+    def test_missing_component_means_no_box_at_all(self):
+        # No box means an unfiltered query, which is what "no region params"
+        # has to mean. Defaulting a missing delta to zero would instead return
+        # only salons standing exactly on the centre point.
+        self.assertIsNone(bounding_box(24.55, 90.40, None, 0.12))
+        self.assertIsNone(bounding_box(None, None, None, None))
+
+    def test_negative_span_is_not_an_inverted_box(self):
+        self.assertEqual(
+            bounding_box(24.55, 90.40, -0.12, -0.12),
+            bounding_box(24.55, 90.40, 0.12, 0.12),
         )
-        # Outside region
-        self.salon2 = Salon.objects.create(
-            id="far-salon",
-            name="Far Salon",
-            category="gents",
-            latitude=25.554,
-            longitude=91.408,
-            rating=4.0,
-        )
-
-    def test_map_with_region_params_filters_correctly(self):
-        """Only salon1 (inside region) should be returned."""
-        response = self.client.get("/api/v1/discover/map", {
-            "latitude": 24.5547702,
-            "longitude": 90.4080668,
-            "latitudeDelta": 0.12,
-            "longitudeDelta": 0.12,
-        })
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertIn("venues", data)
-        self.assertEqual(data["count"], 1)
-        self.assertEqual(data["venues"][0]["lat"], 24.554)
-
-    def test_map_without_params_returns_all(self):
-        """No region params → returns all salons."""
-        response = self.client.get("/api/v1/discover/map")
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertIn("venues", data)
-        self.assertEqual(data["count"], 2)
-
-    def test_map_unauthenticated_returns_401(self):
-        """Unauthenticated requests should be rejected."""
-        self.client.force_authenticate(user=None)
-        response = self.client.get("/api/v1/discover/map", {
-            "latitude": 24.5547702,
-            "longitude": 90.4080668,
-            "latitudeDelta": 0.12,
-            "longitudeDelta": 0.12,
-        })
-        self.assertEqual(response.status_code, 401)
