@@ -37,6 +37,7 @@ from apps.platform_data.models import (
 
 from apps.platform_data.models import FileItem, StaffProfile, UserAccount
 
+from .geo import bounding_box
 from .serializers import CATEGORY_ALIASES
 
 
@@ -479,12 +480,7 @@ def map_venues(
         A lightweight queryset of ``Storefront`` instances annotated with
         ``lat``, ``lng``, ``avg_rating``, and ``photo_url``.
     """
-    sw_lat = sw_lng = ne_lat = ne_lng = None
-    if None not in (latitude, longitude, latitude_delta, longitude_delta):
-        sw_lat = latitude - (latitude_delta / 2.0)
-        ne_lat = latitude + (latitude_delta / 2.0)
-        sw_lng = longitude - (longitude_delta / 2.0)
-        ne_lng = longitude + (longitude_delta / 2.0)
+    box = bounding_box(latitude, longitude, latitude_delta, longitude_delta)
 
     published_reviews = StorefrontReview.objects.filter(
         storefront_id=OuterRef("pk"),
@@ -525,7 +521,8 @@ def map_venues(
         )
     )
 
-    if None not in (sw_lat, sw_lng, ne_lat, ne_lng):
+    if box is not None:
+        sw_lat, sw_lng, ne_lat, ne_lng = box
         qs = qs.filter(
             lat__gte=sw_lat,
             lat__lte=ne_lat,
@@ -536,31 +533,10 @@ def map_venues(
     if category in _VALID_CATEGORIES:
         qs = filter_by_category(qs, category)
 
-    try:
-        from django.db import transaction
-        with transaction.atomic():
-            results = list(qs[:MAP_VENUE_LIMIT])
-            return results
-    except Exception:
-        # Fallback to Salon model if Storefront table does not exist or query fails
-        from .models import Salon
-
-        salon_qs = Salon.objects.all()
-        if None not in (sw_lat, sw_lng, ne_lat, ne_lng):
-            salon_qs = salon_qs.filter(
-                latitude__gte=sw_lat,
-                latitude__lte=ne_lat,
-                longitude__gte=sw_lng,
-                longitude__lte=ne_lng,
-            )
-        if category in _VALID_CATEGORIES:
-            salon_qs = salon_qs.filter(category=category)
-
-        items = []
-        for s in salon_qs[:MAP_VENUE_LIMIT]:
-            s.lat = s.latitude
-            s.lng = s.longitude
-            s.avg_rating = s.rating
-            s.photo_url = s.logo
-            items.append(s)
-        return items
+    # NO try/except HERE, deliberately. This used to swallow every exception
+    # and fall back to the local `salons_salon` demo table, which meant a
+    # schema drift, a missing column or a denied SELECT under the read-only
+    # `consumer_app` grant all came back as three fake salons with a 200 and
+    # nothing in the log. A map that is broken must look broken: let it raise,
+    # let django.request log it, let the 500 be visible.
+    return qs[:MAP_VENUE_LIMIT]

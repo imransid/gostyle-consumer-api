@@ -5,7 +5,6 @@ from rest_framework import serializers
 
 from . import translate
 from .hours import resolve as resolve_hours
-from .models import Salon
 from .snapshot import field as snap_field
 from .snapshot import items as snap_items
 
@@ -19,20 +18,6 @@ CATEGORY_ALIASES = {
     "mixed": "unisex",
     "all": "unisex",
 }
-
-
-class SalonSerializer(serializers.ModelSerializer):
-    open = serializers.BooleanField(source="open_now")
-    coordinate = serializers.SerializerMethodField()
-    distance_km = serializers.FloatField(read_only=True, required=False)
-
-    class Meta:
-        model = Salon
-        fields = ["id", "name", "category", "rating", "reviews",
-                  "open", "hours", "logo", "coordinate", "distance_km"]
-
-    def get_coordinate(self, obj):
-        return {"latitude": obj.latitude, "longitude": obj.longitude}
 
 
 class SalonCardSerializer(serializers.Serializer):
