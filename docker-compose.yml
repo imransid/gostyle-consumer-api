@@ -15,8 +15,8 @@ services:
       restart_policy:
         condition: on-failure
 
-  consumer-api:
-    image: ghcr.io/entity-tech-solutions/gostyle-platform/gostyle-consumer-api:${TAG}
+  api:
+    image: ${IMAGE:-gostyle-consumer-api:local}
     command:
       - gunicorn
       - config.wsgi:application
@@ -85,6 +85,40 @@ services:
         delay: 10s
       rollback_config:
         order: start-first
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+
+  # Internal gRPC auth service. Same image, different process.
+  # Deliberately not published: add_insecure_port means no TLS, so this
+  # must stay on the overlay network. Other stacks reach it at
+  # gostyle-consumer_grpc:50051.
+  grpc:
+    image: ${IMAGE:-gostyle-consumer-api:local}
+    command:
+      - python
+      - manage.py
+      - grpcserver
+      - --port
+      - "50051"
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.production
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+      DJANGO_DEBUG: "0"
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS}
+      DJANGO_LOG_LEVEL: ${DJANGO_LOG_LEVEL:-INFO}
+      DJANGO_LOG_FORMAT: ${DJANGO_LOG_FORMAT:-json}
+      DB_HOST: gostyle_postgres
+      DB_PORT: "5432"
+      DB_NAME: gostyle
+      DB_USER: consumer_app
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_SCHEMA: consumer
+      REDIS_URL: redis://redis:6379/0
+    networks:
+      - gostyle-net
+    deploy:
+      replicas: 1
       restart_policy:
         condition: on-failure
         max_attempts: 3
