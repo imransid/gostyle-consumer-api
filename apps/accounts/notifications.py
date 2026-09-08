@@ -30,20 +30,32 @@ class ConsoleSender:
 
 
 class EmailSender:
-    """Delivers the code over Django's configured email backend."""
+    """Delivers the code over Django's configured email backend.
+
+    Sends multipart: plain text for clients that refuse HTML, and the branded
+    template for everything else.
+    """
 
     def send(self, destination, code, destination_type):
-        send_mail(
-            subject="Your Go Style verification code",
-            message=(
-                f"Your verification code is {code}. "
-                "It expires in 5 minutes. If you did not request this, ignore this email."
-            ),
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[destination],
-            fail_silently=False,
+        from django.core.mail import EmailMultiAlternatives
+        from .emails import render_otp_email
+
+        minutes = 5  # matches OTP_TTL_SECONDS in services.py
+
+        text = (
+            f"Your verification code is {code}. "
+            f"It expires in {minutes} minutes. "
+            "If you did not request this, ignore this email."
         )
 
+        msg = EmailMultiAlternatives(
+            subject="Your Go Style verification code",
+            body=text,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            to=[destination],
+        )
+        msg.attach_alternative(render_otp_email(code, minutes), "text/html")
+        msg.send(fail_silently=False)
 
 class WhatsAppSender:
     """Delivers the code over the WhatsApp Cloud API using an authentication
