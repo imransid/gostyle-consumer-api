@@ -347,7 +347,6 @@ def discoverable_salons():
     return (
         Storefront.objects.filter(
             visibility="PUBLIC",
-            link_enabled=True,
             deleted_at__isnull=True,
         )
         .annotate(
@@ -497,7 +496,6 @@ def map_venues(
     qs = (
         Storefront.objects.filter(
             visibility="PUBLIC",
-            link_enabled=True,
             deleted_at__isnull=True,
         )
         .annotate(
