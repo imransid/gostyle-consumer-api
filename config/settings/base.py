@@ -135,6 +135,7 @@ CACHES = {
 }
 
 REST_FRAMEWORK = {
+    "EXCEPTION_HANDLER": "apps.accounts.exceptions.api_exception_handler",
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
