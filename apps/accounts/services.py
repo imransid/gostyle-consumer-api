@@ -46,14 +46,20 @@ def tokens_for(user):
     return {"access": str(refresh.access_token), "refresh": str(refresh)}
 
 
-def request_otp(destination, destination_type, purpose, ip):
+def request_otp(destination, destination_type, purpose, ip, enforce_limits=True):
     """Issue and deliver a one-time code for (destination, purpose).
 
     Rate limits are enforced in Redis before any database work. The behaviour
     and return value never depend on whether an account exists for the
     destination, so this cannot be used to enumerate accounts.
+
+    `enforce_limits=False` is for callers that have ALREADY called
+    enforce_request_otp for this same (destination, purpose). Without it the
+    limiter runs twice in one request: the first call writes the cooldown key
+    and the second trips over it, so the request 429s itself every time.
     """
-    ratelimit.enforce_request_otp(destination, purpose, ip)
+    if enforce_limits:
+        ratelimit.enforce_request_otp(destination, purpose, ip)
 
     raw_code = f"{secrets.randbelow(1_000_000):06d}"
 
@@ -101,19 +107,18 @@ def request_otp_for_user(user, destination_type, purpose, ip):
         ip=ip,
     )
 
+
 def resend_otp_for_user(destination, destination_type, purpose, ip):
     """Like request_otp, but the destination is always the caller's own
     contact on file — never a client-supplied value. Prevents an
     authenticated user from spamming OTPs to someone else's email/phone.
     """
-    field = _account_field(destination_type) 
     request_otp(
         destination=destination,
         destination_type=destination_type,
         purpose=purpose,
         ip=ip,
     )
-
 
 
 def verify_otp_for_user(user, destination_type, purpose, code, ip):
@@ -221,7 +226,9 @@ def request_password_reset(destination, destination_type, ip):
     only delivery is skipped when there is nobody to deliver to.
 
     Rate limiting runs BEFORE the account lookup, so timing does not leak the
-    answer either.
+    answer either. request_otp is then called with enforce_limits=False: the
+    limit for this request has already been spent above, and letting it run a
+    second time would 429 every registered address.
     """
     ratelimit.enforce_request_otp(destination, Purpose.PASSWORD_RESET, ip)
 
@@ -234,6 +241,7 @@ def request_password_reset(destination, destination_type, ip):
         destination_type=destination_type,
         purpose=Purpose.PASSWORD_RESET,
         ip=ip,
+        enforce_limits=False,
     )
 
 
