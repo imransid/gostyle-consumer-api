@@ -17,11 +17,12 @@ years of production data and never from a fixture written this morning.
 """
 
 import math
+import zoneinfo
 from decimal import Decimal
 
 from django.test import SimpleTestCase
 
-from apps.salons import translate
+from apps.salons import timezones, translate
 from apps.salons.geo import bounding_box, format_distance, radius_box
 from apps.salons.hours import is_within, resolve
 from apps.salons.params import ParamError, parse_discovery
@@ -657,3 +658,61 @@ class DiscoveryParamsTests(SimpleTestCase):
         self.assertEqual(parse_discovery({"search": "  iron razor "})["search"], "iron razor")
         with self.assertRaises(ParamError):
             parse_discovery({"search": "x" * 101})
+
+
+class BranchTimezoneTests(SimpleTestCase):
+    """
+    The fallback that used to be invisible.
+
+    These pin the LOG LINE, not the timezone. The timezone behaviour is
+    deliberately unchanged — a test that only asserted the returned ZoneInfo
+    would have passed against the `or "Asia/Dubai"` this replaced, and so
+    would have proved nothing about the change.
+    """
+
+    LOGGER = "apps.salons.timezones"
+
+    def test_a_set_timezone_is_used_and_says_nothing(self):
+        """
+        The quiet path has to stay quiet. A warning per salon per request on a
+        fifteen-card page is affordable only while it means something.
+        """
+        with self.assertNoLogs(self.LOGGER, level="WARNING"):
+            tz = timezones.resolve("Europe/London", "salon-1")
+        self.assertEqual(str(tz), "Europe/London")
+
+    def test_a_null_timezone_warns_and_names_the_salon(self):
+        """
+        Naming the salon is the whole point: "some branch somewhere has no
+        timezone" is not actionable, and the id is what turns the warning into
+        a row somebody can go and fix.
+        """
+        with self.assertLogs(self.LOGGER, level="WARNING") as caught:
+            tz = timezones.resolve(None, "3333-abc")
+
+        self.assertEqual(str(tz), timezones.DEFAULT_TIMEZONE)
+        self.assertEqual(len(caught.records), 1)
+        self.assertIn("3333-abc", caught.output[0])
+        self.assertIn(timezones.DEFAULT_TIMEZONE, caught.output[0])
+        # Also a structured field, so Loki can count these without grepping
+        # the message. See config/observability.py.
+        self.assertEqual(caught.records[0].salon_id, "3333-abc")
+
+    def test_an_empty_string_falls_back_the_same_way(self):
+        """
+        `"" or DEFAULT` fell back before this helper existed, so `""` has to
+        keep falling back now. A version that checked `is None` would leave
+        empty-string rows constructing ZoneInfo("") and raising.
+        """
+        with self.assertLogs(self.LOGGER, level="WARNING"):
+            tz = timezones.resolve("", "salon-2")
+        self.assertEqual(str(tz), timezones.DEFAULT_TIMEZONE)
+
+    def test_a_broken_timezone_still_raises(self):
+        """
+        A branch whose timezone reads "GMT+4" is a broken row, not a missing
+        one. Rounding it to Dubai here would hide a data error behind the same
+        fallback that hides an absent value, and the two want different fixes.
+        """
+        with self.assertRaises(zoneinfo.ZoneInfoNotFoundError):
+            timezones.resolve("Definitely/Not_A_Zone", "salon-3")

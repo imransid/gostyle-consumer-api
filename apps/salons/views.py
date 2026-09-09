@@ -1,4 +1,3 @@
-import zoneinfo
 from datetime import datetime
 
 from django.db.models import F
@@ -11,6 +10,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import timezones
 from .hours import resolve as resolve_hours
 from .money import major
 from .params import ParamError, parse_discovery
@@ -245,7 +245,7 @@ class SalonProfileView(APIView):
         # The clock lives HERE, at the edge, and nowhere else. hours.resolve
         # is pure and takes the local time it should reason about, the same
         # discipline the platform's domain services use.
-        tz = zoneinfo.ZoneInfo(salon.branch_timezone or "Asia/Dubai")
+        tz = timezones.resolve(salon.branch_timezone, salon.id)
         now = datetime.now(tz)
 
         hours = resolve_hours(

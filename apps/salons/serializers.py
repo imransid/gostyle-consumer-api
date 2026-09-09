@@ -1,9 +1,8 @@
 from datetime import datetime
-import zoneinfo
 
 from rest_framework import serializers
 
-from . import translate
+from . import timezones, translate
 from .geo import format_distance
 from .hours import resolve as resolve_hours
 from .snapshot import field as snap_field
@@ -87,7 +86,7 @@ class SalonCardSerializer(serializers.Serializer):
         """
         cached = getattr(obj, "_resolved_hours", None)
         if cached is None:
-            tz = zoneinfo.ZoneInfo(getattr(obj, "branch_timezone", None) or "Asia/Dubai")
+            tz = timezones.resolve(getattr(obj, "branch_timezone", None), obj.pk)
             now = datetime.now(tz)
             published = getattr(obj, "published_hours", None) or {}
             cached = resolve_hours(
