@@ -4,6 +4,7 @@ import zoneinfo
 from rest_framework import serializers
 
 from . import translate
+from .geo import format_distance
 from .hours import resolve as resolve_hours
 from .snapshot import field as snap_field
 from .snapshot import items as snap_items
@@ -36,23 +37,37 @@ class SalonCardSerializer(serializers.Serializer):
     exactly how they would.
     """
 
+    # ── the mobile card contract ─────────────────────────────────────
     id = serializers.UUIDField()
-    slug = serializers.CharField()
-    name = serializers.CharField(source="branch_name")
-    city = serializers.CharField(source="branch_city", allow_null=True)
+    name = serializers.SerializerMethodField()
     category = serializers.SerializerMethodField()
+    logo_url = serializers.CharField(allow_null=True)
     rating = serializers.SerializerMethodField()
-    review_count = serializers.IntegerField(allow_null=True)
+    review_count = serializers.SerializerMethodField()
+    distance = serializers.SerializerMethodField()
+    open = serializers.SerializerMethodField()
+    opens_at = serializers.SerializerMethodField()
+    closes_at = serializers.SerializerMethodField()
+    has_story = serializers.BooleanField()
+    gallery = serializers.SerializerMethodField()
+
+    # ── everything else the card and its neighbours render ───────────
+    slug = serializers.CharField()
+    city = serializers.CharField(source="branch_city", allow_null=True)
     coordinate = serializers.SerializerMethodField()
-    is_open_now = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
     hours_today = serializers.SerializerMethodField()
+    status_line = serializers.SerializerMethodField()
     cover_url = serializers.CharField(allow_null=True)
-    logo_url = serializers.CharField(allow_null=True)
     hijab_certified = serializers.BooleanField()
     deposit = serializers.SerializerMethodField()
     free_cancellation = serializers.SerializerMethodField()
-    closes_at = serializers.SerializerMethodField()
+
+    # ── DEPRECATED: the older spelling of three fields above ─────────
+    # Kept for one release so a client on the current build does not break the
+    # day this ships. Delete them, and this block, once the app is on `open`,
+    # `distance` and `gallery`. See docs/DISCOVERY_API.md.
+    is_open_now = serializers.SerializerMethodField()
     distance_km = serializers.SerializerMethodField()
     gallery_urls = serializers.ListField(
         child=serializers.CharField(),
@@ -64,10 +79,11 @@ class SalonCardSerializer(serializers.Serializer):
         """
         Resolve once per salon and cache the answer on the instance.
 
-        Four fields ask the same question. resolve() is pure Python over data
-        already fetched, so it is cheap, but running it four times per card on
-        a fifteen-row page is sixty needless calls and four chances for the
-        fields to disagree if the clock ticks between them.
+        SEVEN fields ask the same question. resolve() is pure Python over data
+        already fetched, so it is cheap, but running it seven times per card on
+        a fifteen-row page is a hundred needless calls and seven chances for
+        the fields to disagree if the clock ticks between them — which is how
+        a card ends up reading "Open" above "Opens at 9:00 AM".
         """
         cached = getattr(obj, "_resolved_hours", None)
         if cached is None:
@@ -87,42 +103,138 @@ class SalonCardSerializer(serializers.Serializer):
             obj._resolved_hours = cached
         return cached
 
-    def get_distance_km(self, obj):
+    def get_name(self, obj) -> str | None:
+        """
+        The name the salon PUBLISHED, falling back to the branch's own.
+
+        Same order the profile screen uses, and that is the whole point. A
+        salon that published "Iron Razor" over a branch recorded as "Al Quoz
+        Branch 2" used to appear under one name on the card and the other one
+        tap later. A salon that never filled IDENTITY still has to render with
+        something, which is what the fallback is for.
+        """
+        return getattr(obj, "published_name", None) or obj.branch_name
+
+    def get_distance(self, obj) -> str | None:
+        """
+        "2.0 km", "850 m", or null when the caller sent no location.
+
+        NULL and not "0 km". Without a latitude and longitude there is no
+        distance to report, and printing zero would put every salon on the
+        customer's doorstep.
+        """
+        return format_distance(getattr(obj, "distance_km", None))
+
+    def get_open(self, obj) -> bool | None:
+        """
+        True, False, or NULL when the salon has published no hours at all.
+
+        Null rather than False, and the difference matters: False is "this
+        salon is shut right now", null is "nobody has told us when this salon
+        opens". Collapsing the second into the first would have the app print
+        "Closed" under a salon that may well be serving customers.
+        """
+        return self._hours(obj)["is_open"]
+
+    def get_opens_at(self, obj) -> str | None:
+        return self._hours(obj)["opens_at"]
+
+    def get_status_line(self, obj) -> str | None:
+        """
+        "Closes at 10:00 PM" / "Opens at 9:00 AM".
+
+        This is what `closes_at` used to hold. It moved here when `closes_at`
+        became an actual closing time, because one key cannot mean both a time
+        and a sentence about a different time.
+        """
+        return self._hours(obj)["status_line"]
+
+    def get_gallery(self, obj) -> list[str]:
+        """
+        Always a list. "No gallery photos" is a fact, and it is `[]`.
+
+        Null would be the app writing a guard around every map() for a case
+        that is ordinary rather than exceptional.
+        """
+        return getattr(obj, "gallery_urls", None) or []
+
+    def get_distance_km(self, obj) -> float | None:
+        """DEPRECATED. The numeric form of `distance`."""
         d = getattr(obj, "distance_km", None)
         if d is None:
             return None
         return round(d, 1)
 
-    def get_category(self, obj):
+    def get_category(self, obj) -> str | None:
+        """
+        "gents", "ladies", "unisex", or null.
+
+        THREE VALUES, not two. The `category` FILTER offers gents/ladies/all,
+        but a unisex salon is a real thing in the data and it comes back under
+        `all`, so the field has to be able to say so. Forcing it into gents or
+        ladies would be reporting something the salon never said about itself.
+
+        Null when the platform's salon.gender is empty, which is its own
+        answer: this salon has not declared one.
+        """
         raw = getattr(obj, "category", None)
         if not raw:
             return None
         value = raw.lower()
         return CATEGORY_ALIASES.get(value, value)
 
-    def get_rating(self, obj):
+    def get_rating(self, obj) -> str | None:
+        """
+        "4.5", or NULL when nobody has reviewed this salon.
+
+        A STRING, matching the mobile contract, which is the one place this
+        serializer formats a number it could have sent raw.
+
+        Never "0.0". A salon with no reviews has no average — the question has
+        no answer yet — and answering it with zero renders a brand-new salon
+        as though the market had judged it and put it at the bottom of the
+        scale. `review_count` says "0" beside it, which is the real fact.
+        """
         if obj.avg_rating is None:
             return None
-        return round(float(obj.avg_rating), 1)
+        return f"{float(obj.avg_rating):.1f}"
 
-    def get_coordinate(self, obj):
+    def get_review_count(self, obj) -> str:
+        """
+        "0", "1", "128". A string, per the contract, and never null.
+
+        Coalesced to zero in SQL, because unlike the rating this one always
+        has an answer: nobody having reviewed a salon yet IS a count.
+        """
+        return str(getattr(obj, "review_count", 0) or 0)
+
+    def get_coordinate(self, obj) -> dict | None:
         if obj.lat is None or obj.lng is None:
             return None
         return {"latitude": obj.lat, "longitude": obj.lng}
 
-    def get_is_open_now(self, obj):
+    def get_is_open_now(self, obj) -> bool | None:
+        """DEPRECATED. The older spelling of `open`."""
         return self._hours(obj)["is_open"]
 
-    def get_status(self, obj):
+    def get_status(self, obj) -> str | None:
         # OPEN, BUSY, WALK_INS, SPECIAL_HOURS or CLOSED. is_open_now cannot
         # carry "Busy", which is a state no grid can compute and the reason
         # the salon set it by hand.
         return self._hours(obj)["status"]
 
-    def get_hours_today(self, obj):
+    def get_hours_today(self, obj) -> str | None:
         return self._hours(obj)["hours_today"]
 
-    def get_closes_at(self, obj):
+    def get_closes_at(self, obj) -> str | None:
+        """
+        Today's closing time, "10:00 PM".
+
+        CHANGED. This used to hold the sentence "Closes at 10:00 PM", or
+        "Opens at 9:00 AM" when the salon was shut — one key doing two jobs,
+        which is why there was nowhere to put an opening time. The sentence
+        now lives in `status_line`.
+        """
         return self._hours(obj)["closes_at"]
 
     def _total_amount(self):
@@ -138,7 +250,7 @@ class SalonCardSerializer(serializers.Serializer):
         except ValueError:
             return None
 
-    def get_deposit(self, obj):
+    def get_deposit(self, obj) -> dict | None:
         mode = getattr(obj, "deposit_mode", None)
         if mode is None:
             return None
@@ -159,7 +271,7 @@ class SalonCardSerializer(serializers.Serializer):
             "amount": amount,
         }
 
-    def get_free_cancellation(self, obj):
+    def get_free_cancellation(self, obj) -> bool:
         hours = getattr(obj, "cancel_window_hours", None)
         return hours is not None and hours > 0
 

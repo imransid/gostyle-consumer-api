@@ -146,7 +146,9 @@ REST_FRAMEWORK = {
         "login": "10/min",
     },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "DEFAULT_PAGINATION_CLASS": "config.pagination.ClientPageNumberPagination",
+    # The DEFAULT page size. Clients override it per request with ?page_size=,
+    # up to the cap in that class.
     "PAGE_SIZE": 15,
 }
 

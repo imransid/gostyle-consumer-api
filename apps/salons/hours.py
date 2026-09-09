@@ -52,6 +52,22 @@ def _pretty(hhmm):
     return f"{h % 12 or 12}:{m:02d} {suffix}"
 
 
+def _status_line(is_open, opens_at, closes_at):
+    """
+    The one-line prose the card used to return under the key `closes_at`.
+
+    Still here because it is genuinely the sentence the design asks for, but
+    under its own name: `closes_at` now means a closing time, and a field that
+    holds "10:00 PM" on an open salon and "Opens at 9:00 AM" on a shut one is
+    two fields wearing one key.
+    """
+    if is_open is True:
+        return f"Closes at {closes_at}" if closes_at else None
+    if is_open is False:
+        return f"Opens at {opens_at}" if opens_at else None
+    return None
+
+
 def weekly_row(weekly, weekday_index):
     """
     Pick today's row out of the weekly grid.
@@ -97,9 +113,17 @@ def resolve(weekly, exception, state, weekday_index, now_hhmm):
     weekday_index Python weekday(), Monday = 0
     now_hhmm      current local time as "HH:MM"
 
-    Returns a dict: is_open, status, hours_today, closes_at.
-    is_open is None when nothing is known, so the caller can hide the row
-    rather than claiming a salon is shut.
+    Returns a dict: is_open, status, hours_today, opens_at, closes_at,
+    status_line. is_open is None when nothing is known, so the caller can hide
+    the row rather than claiming a salon is shut.
+
+    opens_at and closes_at describe TODAY'S window and nothing else. At 11pm
+    on a salon that shut at 10, opens_at is still this morning's time, not
+    tomorrow's, and that is deliberate: a next-opening time has to cross
+    midnight, skip closed days, and honour dated exceptions for days this
+    schema version cannot read yet. Half of that answer would be worse than
+    none, and the platform console does not compute it either. See the
+    handoff doc.
     """
     # Step 1: which hours apply today. An exception REPLACES the weekly row.
     if isinstance(exception, dict):
@@ -116,31 +140,31 @@ def resolve(weekly, exception, state, weekday_index, now_hhmm):
 
     # Step 2: compute open/closed from those hours.
     if row is None:
-        is_open, hours_today, closes_at = None, None, None
+        is_open, hours_today, opens_at, closes_at = None, None, None, None
     elif row.get("closed"):
-        is_open, hours_today, closes_at = False, "Closed", None
+        is_open, hours_today, opens_at, closes_at = False, "Closed", None, None
     else:
         opens, closes = row.get("open"), row.get("close")
         is_open = is_within(opens, closes, now_hhmm)
-        o, c = _pretty(opens), _pretty(closes)
-        hours_today = f"{o} - {c}" if o and c else None
-        if is_open is True:
-            closes_at = f"Closes at {c}" if c else None
-        elif is_open is False:
-            closes_at = f"Opens at {o}" if o else None
-        else:
-            closes_at = None
+        opens_at, closes_at = _pretty(opens), _pretty(closes)
+        hours_today = f"{opens_at} - {closes_at}" if opens_at and closes_at else None
 
     # Step 3: a manual state overrules the computed answer.
     status = state if state in STATES else ("OPEN" if is_open else "CLOSED" if is_open is False else None)
     if state in STATES:
         is_open = state in OPEN_STATES
         if state == "CLOSED":
-            hours_today, closes_at = "Closed", None
+            # Shut by hand, so today's published window is no longer what
+            # happens today. Leaving the times in place would print "Closes at
+            # 10:00 PM" next to a CLOSED badge, which is the exact
+            # contradiction the manual state exists to resolve.
+            hours_today, opens_at, closes_at = "Closed", None, None
 
     return {
         "is_open": is_open,
         "status": status,
         "hours_today": hours_today,
+        "opens_at": opens_at,
         "closes_at": closes_at,
+        "status_line": _status_line(is_open, opens_at, closes_at),
     }

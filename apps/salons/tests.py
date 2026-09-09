@@ -16,13 +16,15 @@ network is switched off. Those are exactly the shapes that arrive from four
 years of production data and never from a fixture written this morning.
 """
 
+import math
 from decimal import Decimal
 
 from django.test import SimpleTestCase
 
 from apps.salons import translate
-from apps.salons.geo import bounding_box
+from apps.salons.geo import bounding_box, format_distance, radius_box
 from apps.salons.hours import is_within, resolve
+from apps.salons.params import ParamError, parse_discovery
 from apps.salons.money import bps_to_percent, major
 from apps.salons.snapshot import field, items, normalize
 
@@ -184,7 +186,86 @@ class HoursTests(SimpleTestCase):
     def test_twelve_hour_formatting(self):
         result = resolve(self.MON, None, None, 0, "14:00")
         self.assertEqual(result["hours_today"], "9:00 AM - 10:00 PM")
-        self.assertEqual(result["closes_at"], "Closes at 10:00 PM")
+        self.assertEqual(result["opens_at"], "9:00 AM")
+        self.assertEqual(result["closes_at"], "10:00 PM")
+        self.assertEqual(result["status_line"], "Closes at 10:00 PM")
+
+    def test_closed_right_now_still_returns_both_times(self):
+        """
+        The bug this locks down: `closes_at` used to be derived from the live
+        answer, so it held "Closes at 10:00 PM" when open and "Opens at 9:00
+        AM" when shut — one key meaning two things, and never both. A salon
+        shut at 8am therefore reported no closing time at all.
+
+        Both fields now come off today's grid row, so a shut salon still says
+        when it closes and an open one still says when it opened.
+        """
+        shut = resolve(self.MON, None, None, 0, "08:00")
+        self.assertFalse(shut["is_open"])
+        self.assertEqual(shut["opens_at"], "9:00 AM")
+        self.assertEqual(shut["closes_at"], "10:00 PM")
+
+        # The other half of the same bug, from the open side.
+        openn = resolve(self.MON, None, None, 0, "14:00")
+        self.assertTrue(openn["is_open"])
+        self.assertEqual(openn["opens_at"], "9:00 AM")
+        self.assertEqual(openn["closes_at"], "10:00 PM")
+
+        # Unchanged behaviour, asserted so a later edit cannot quietly fold
+        # the prose back into closes_at.
+        self.assertEqual(shut["status_line"], "Opens at 9:00 AM")
+        self.assertEqual(openn["status_line"], "Closes at 10:00 PM")
+        self.assertEqual(openn["hours_today"], "9:00 AM - 10:00 PM")
+
+    def test_overnight_window_fills_both_times(self):
+        """
+        A salon open 18:00 to 02:00 closes on the NEXT calendar day.
+
+        Reading the two times straight off the row is what makes the wrap a
+        non-event for them: only is_open has to reason about midnight, and it
+        is checked at all four interesting moments — before opening, in the
+        evening, after midnight while still open, and after closing.
+
+        Worth pinning because the obvious "next opening time" implementation
+        gets this wrong: at 01:00 the salon is open, and a field that tried to
+        report the next opening would have to say 6:00 PM *today*, which is
+        both in the future and not when this shift started.
+        """
+        night = [{"day": "fri", "closed": False, "open": "18:00", "close": "02:00"}]
+
+        for now, is_open in (("10:00", False), ("19:00", True), ("01:00", True), ("03:00", False)):
+            result = resolve(night, None, None, 4, now)
+            self.assertIs(result["is_open"], is_open, msg=now)
+            self.assertEqual(result["opens_at"], "6:00 PM", msg=now)
+            self.assertEqual(result["closes_at"], "2:00 AM", msg=now)
+            self.assertEqual(result["hours_today"], "6:00 PM - 2:00 AM", msg=now)
+
+    def test_unknown_hours_leave_every_time_field_empty(self):
+        """
+        No row for today means no times, and no sentence about times either.
+        A status_line here would be prose invented out of nothing.
+        """
+        result = resolve(self.MON, None, None, 1, "14:00")
+        self.assertIsNone(result["opens_at"])
+        self.assertIsNone(result["closes_at"])
+        self.assertIsNone(result["status_line"])
+
+    def test_manual_close_clears_todays_times(self):
+        """
+        Shut by hand, so the published window is not what happens today.
+        Leaving 10:00 PM in closes_at would print "Closes at 10:00 PM" beside
+        a CLOSED badge — the exact contradiction the manual state resolves.
+        """
+        result = resolve(self.MON, None, "CLOSED", 0, "14:00")
+        self.assertEqual(result["hours_today"], "Closed")
+        self.assertIsNone(result["opens_at"])
+        self.assertIsNone(result["closes_at"])
+        self.assertIsNone(result["status_line"])
+
+    def test_closed_day_has_no_times(self):
+        result = resolve([{"day": "sun", "closed": True}], None, None, 6, "14:00")
+        self.assertIsNone(result["opens_at"])
+        self.assertIsNone(result["closes_at"])
 
     def test_midnight_and_noon_format_as_twelve(self):
         weekly = [{"day": "mon", "closed": False, "open": "00:00", "close": "12:00"}]
@@ -351,3 +432,228 @@ class BoundingBoxTests(SimpleTestCase):
             bounding_box(24.55, 90.40, -0.12, -0.12),
             bounding_box(24.55, 90.40, 0.12, 0.12),
         )
+
+
+class RadiusBoxTests(SimpleTestCase):
+    """
+    The prefilter behind ?radius=. Same reasoning as BoundingBoxTests above:
+    pure arithmetic, no platform tables, so it is the one part of the radius
+    filter a test can actually reach.
+    """
+
+    # Dubai. Far enough from the equator that the cos(latitude) correction is
+    # visible — about 10% — and close enough that a bug there is easy to miss.
+    DUBAI = (25.19, 55.26)
+
+    def test_longitude_span_is_wider_than_latitude_span(self):
+        """
+        THE ONE THING THIS FUNCTION EXISTS TO GET RIGHT. A degree of longitude
+        is shorter than a degree of latitude everywhere but the equator, so
+        covering the same distance east-west takes MORE degrees. A version
+        that reused the latitude span for both would fail here.
+        """
+        sw_lat, sw_lng, ne_lat, ne_lng = radius_box(*self.DUBAI, 10.0)
+        lat_span = ne_lat - sw_lat
+        lng_span = ne_lng - sw_lng
+        self.assertGreater(lng_span, lat_span)
+        # 1/cos(25.19 deg) is about 1.105.
+        self.assertAlmostEqual(lng_span / lat_span, 1.105, places=2)
+
+    @staticmethod
+    def _haversine_km(lat1, lng1, lat2, lng2):
+        """
+        Distance between two points, written out longhand.
+
+        Deliberately the asin form while radius_box and with_distance use the
+        acos one. A test that reproduces the implementation's own arithmetic
+        proves only that the code equals itself; this is a second opinion.
+        """
+        radius = 6371.0
+        p1, p2 = math.radians(lat1), math.radians(lat2)
+        a = (
+            math.sin((p2 - p1) / 2) ** 2
+            + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lng2 - lng1) / 2) ** 2
+        )
+        return 2 * radius * math.asin(math.sqrt(a))
+
+    def test_the_northern_edge_sits_exactly_the_radius_away(self):
+        lat, lng = self.DUBAI
+        _, _, ne_lat, _ = radius_box(lat, lng, 10.0)
+        self.assertAlmostEqual(self._haversine_km(lat, lng, ne_lat, lng), 10.0, places=6)
+
+    def test_the_box_contains_the_circle(self):
+        """
+        A prefilter that cuts INSIDE the radius drops real results, and does
+        it silently: the haversine behind it never sees the row, so a salon
+        4.9 km away simply is not in a 5 km search. Every edge has to sit at
+        or beyond the radius, east and west included — that is the edge the
+        cos(latitude) term is there to push out far enough.
+        """
+        lat, lng = self.DUBAI
+        sw_lat, sw_lng, ne_lat, ne_lng = radius_box(lat, lng, 5.0)
+        for point in ((ne_lat, lng), (sw_lat, lng), (lat, ne_lng), (lat, sw_lng)):
+            self.assertGreaterEqual(
+                self._haversine_km(lat, lng, *point), 5.0 - 1e-6, msg=f"edge {point}"
+            )
+
+    def test_missing_component_means_no_box(self):
+        """Read by the caller as "no radius filter", not "a radius of zero"."""
+        self.assertIsNone(radius_box(None, 55.26, 5.0))
+        self.assertIsNone(radius_box(25.19, None, 5.0))
+        self.assertIsNone(radius_box(25.19, 55.26, None))
+
+    def test_non_positive_radius_is_not_a_radius(self):
+        self.assertIsNone(radius_box(*self.DUBAI, 0))
+        self.assertIsNone(radius_box(*self.DUBAI, -5))
+
+    def test_a_pole_does_not_divide_by_zero(self):
+        """cos(90 deg) is 0. Every meridian is within any radius up there."""
+        _, sw_lng, _, ne_lng = radius_box(90.0, 0.0, 5.0)
+        self.assertEqual((sw_lng, ne_lng), (-180.0, 180.0))
+
+    def test_spans_stay_on_the_globe(self):
+        """A radius larger than the planet clamps rather than overflowing."""
+        sw_lat, sw_lng, ne_lat, ne_lng = radius_box(0.0, 0.0, 40000.0)
+        self.assertEqual((sw_lat, ne_lat), (-90.0, 90.0))
+        self.assertEqual((sw_lng, ne_lng), (-180.0, 180.0))
+
+
+class FormatDistanceTests(SimpleTestCase):
+    def test_kilometres_get_one_decimal(self):
+        self.assertEqual(format_distance(2.04), "2.0 km")
+        self.assertEqual(format_distance(12.35), "12.3 km")
+
+    def test_under_a_kilometre_reads_in_metres(self):
+        """"0.4 km" is not how anyone describes a four-minute walk."""
+        self.assertEqual(format_distance(0.4), "400 m")
+        self.assertEqual(format_distance(0.085), "85 m")
+
+    def test_just_under_a_kilometre_does_not_print_1000_m(self):
+        """0.9996 km rounds to 1000 metres, which has to read as 1.0 km."""
+        self.assertEqual(format_distance(0.9996), "1.0 km")
+
+    def test_absent_or_nonsense_stays_none(self):
+        """
+        Null means "no location was sent". "0 km" would put every salon on the
+        customer's doorstep.
+        """
+        self.assertIsNone(format_distance(None))
+        self.assertIsNone(format_distance("nearby"))
+        self.assertIsNone(format_distance(-3))
+
+
+class DiscoveryParamsTests(SimpleTestCase):
+    """
+    The /discover query string. The rule under test throughout: ABSENT is not
+    INVALID. A parameter nobody sent is no filter; a parameter somebody sent
+    and got wrong is an error naming it, never a filter that quietly did
+    nothing.
+    """
+
+    def test_empty_query_is_all_filters_off(self):
+        p = parse_discovery({})
+        self.assertIsNone(p["latitude"])
+        self.assertIsNone(p["category"])
+        self.assertIsNone(p["search"])
+        self.assertFalse(p["is_top_rated"])
+        self.assertFalse(p["is_open_now"])
+
+    def test_both_coordinate_spellings_work(self):
+        """The endpoint shipped with lat/lng; the app asks for the long ones."""
+        self.assertEqual(parse_discovery({"lat": "25.19", "lng": "55.26"})["latitude"], 25.19)
+        self.assertEqual(parse_discovery({"latitude": "25.19", "longitude": "55.26"})["longitude"], 55.26)
+
+    def test_empty_string_is_absent_not_broken(self):
+        """
+        The app sends `latitude=` with nothing after it when the customer
+        denies location permission. That is a list request, not a 422.
+        """
+        p = parse_discovery({"latitude": "", "longitude": "", "search": "  "})
+        self.assertIsNone(p["latitude"])
+        self.assertIsNone(p["search"])
+
+    def test_unreadable_number_is_an_error_naming_it(self):
+        """
+        The old view caught ValueError and carried on, so a comma decimal from
+        a European locale dropped the location and returned the national list
+        with a 200.
+        """
+        with self.assertRaises(ParamError) as ctx:
+            parse_discovery({"latitude": "25,19", "longitude": "55.26"})
+        self.assertEqual(ctx.exception.param, "latitude")
+
+    def test_nan_and_infinity_are_rejected(self):
+        """float() accepts both, and both poison every comparison downstream."""
+        for bad in ("nan", "inf", "-inf"):
+            with self.assertRaises(ParamError):
+                parse_discovery({"latitude": bad, "longitude": "55.26"})
+
+    def test_impossible_coordinates_are_rejected(self):
+        with self.assertRaises(ParamError):
+            parse_discovery({"latitude": "500", "longitude": "55.26"})
+
+    def test_half_a_coordinate_is_not_a_location(self):
+        """
+        Defaulting the missing half to zero would sort the whole country by
+        its distance from a point in the Atlantic.
+        """
+        with self.assertRaises(ParamError) as ctx:
+            parse_discovery({"latitude": "25.19"})
+        self.assertEqual(ctx.exception.param, "longitude")
+
+    def test_radius_is_kilometres_and_must_be_positive(self):
+        p = parse_discovery({"latitude": "25.19", "longitude": "55.26", "radius": "7.5"})
+        self.assertEqual(p["radius_km"], 7.5)
+        with self.assertRaises(ParamError):
+            parse_discovery({"latitude": "25.19", "longitude": "55.26", "radius": "0"})
+
+    def test_radius_without_a_centre_is_an_error(self):
+        """"Within 5 km" of nowhere is not a question with an answer."""
+        with self.assertRaises(ParamError) as ctx:
+            parse_discovery({"radius": "5"})
+        self.assertEqual(ctx.exception.param, "radius")
+
+    def test_all_is_the_absence_of_the_category_filter(self):
+        self.assertIsNone(parse_discovery({"category": "all"})["category"])
+        self.assertEqual(parse_discovery({"category": "GENTS"})["category"], "gents")
+
+    def test_unknown_category_is_rejected_not_ignored(self):
+        """
+        Ignoring it returns every salon under a chip the customer tapped,
+        which looks exactly like a filter that works and finds a lot.
+        """
+        with self.assertRaises(ParamError) as ctx:
+            parse_discovery({"category": "girls"})
+        self.assertEqual(ctx.exception.param, "category")
+
+    def test_booleans_accept_the_spellings_an_api_actually_receives(self):
+        for raw in ("1", "true", "TRUE", "yes", "on"):
+            self.assertTrue(parse_discovery({"is_open_now": raw})["is_open_now"])
+        for raw in ("0", "false", "no", "off"):
+            self.assertFalse(parse_discovery({"is_open_now": raw})["is_open_now"])
+
+    def test_a_boolean_that_is_neither_is_an_error(self):
+        """
+        Reading `maybe` as false would hide every open salon and look like
+        empty inventory rather than a bad request.
+        """
+        with self.assertRaises(ParamError):
+            parse_discovery({"is_top_rated": "maybe"})
+
+    def test_deprecated_boolean_spelling_still_works(self):
+        self.assertTrue(parse_discovery({"open_now": "1"})["is_open_now"])
+        self.assertTrue(parse_discovery({"hijab_mode": "1"})["hijab_only"])
+
+    def test_sorting_by_distance_needs_a_location(self):
+        """
+        Falling back to rating order is the trap: the list comes back looking
+        sorted, just not by what was asked for, and says nothing about it.
+        """
+        with self.assertRaises(ParamError) as ctx:
+            parse_discovery({"sort": "distance"})
+        self.assertEqual(ctx.exception.param, "sort")
+
+    def test_search_is_trimmed_and_length_capped(self):
+        self.assertEqual(parse_discovery({"search": "  iron razor "})["search"], "iron razor")
+        with self.assertRaises(ParamError):
+            parse_discovery({"search": "x" * 101})

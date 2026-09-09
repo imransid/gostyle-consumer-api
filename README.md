@@ -119,7 +119,8 @@ for customer visibility. They do not format, round, translate or decide.
 | [snapshot.py](apps/salons/snapshot.py)   | "What did this salon publish?" — safe reads of the JSONB snapshot, with every section guaranteed present      |
 | [hours.py](apps/salons/hours.py)         | "Is it open?" — the weekly grid, dated exceptions, and manual states like `BUSY`, including overnight windows |
 | [money.py](apps/salons/money.py)         | Minor units → `Decimal`, in one place                                                                         |
-| [geo.py](apps/salons/geo.py)             | Map region (centre + span) → bounding box, so the map endpoint has something testable without a database      |
+| [geo.py](apps/salons/geo.py)             | Map region → bounding box, radius → bounding box, and metres-or-kilometres formatting                          |
+| [params.py](apps/salons/params.py)       | "What did the client ask for?" — the `/discover` query string, with absent treated as no filter and unreadable as a 422 |
 | [translate.py](apps/salons/translate.py) | Platform vocabulary → app vocabulary (amenities, price tiers, social handles → URLs)                          |
 
 These import nothing from Django. No fixtures, no test database, no transactions,
@@ -304,7 +305,7 @@ All routes are under `/api/v1/`. Auth is JWT (`rest_framework_simplejwt`):
 | `POST /auth/otp/request`, `/auth/otp/resend`, `/auth/otp/verify`            | JWT    | Verifies the caller's OWN contact on file; any `destination` in the body is validated and then ignored                |
 | `POST /auth/register`, `/auth/login`, `/auth/logout`, `/auth/token/refresh` | —      | Register creates the account and returns tokens immediately; login then requires a verified contact                   |
 | `GET/PATCH /auth/me`                                                        | JWT    |                                                                                                                       |
-| `GET /discover`                                                             | Public | Salon cards. Filters: `lat`/`lng`, `sort`, `rating_min`, `city`, `category`, `hijab_mode`, `open_now`, `total_amount` |
+| `GET /discover`                                                             | Public | Salon cards, paginated. `latitude`/`longitude`, `radius` (km), `category`, `search`, `is_top_rated`, `is_open_now`, `hijab_mode`, `page_size`, `sort`, `city`, `rating_min`, `total_amount` |
 | `GET /discover/map`                                                         | Public | Lightweight markers for a map viewport (center + delta)                                                               |
 | `GET /discover/<uuid>`                                                      | Public | One card                                                                                                              |
 | `GET /salon/<uuid>`                                                         | Public | Profile header, info card, check-in card                                                                              |
@@ -314,10 +315,26 @@ All routes are under `/api/v1/`. Auth is JWT (`rest_framework_simplejwt`):
 | `GET /salon/<uuid>/products`                                                | Public | Retail only                                                                                                           |
 | `GET /salons/`                                                              | Public | **410 Gone.** Served fixture data, never real salons. Use `/discover`                                                  |
 
-`open_now` cannot be a SQL filter — whether a salon is open depends on its own
-timezone and a JSONB grid — so it is computed in Python and fed back as an id
-list, which costs one extra queryset evaluation and only runs when the flag is
-set.
+Three things about `/discover` are worth knowing before changing it.
+
+`is_open_now` cannot be a SQL filter — whether a salon is open depends on its
+own timezone and a JSONB grid — so it is computed in Python and fed back as an
+id list. That costs one extra queryset evaluation, only runs when the flag is
+set, and runs *after* the SQL filters so it walks the smallest set possible.
+`page_size` does not bound it: pagination slices what the filter returns.
+
+Query parameters are parsed in [params.py](apps/salons/params.py) and nowhere
+else. Absent or empty means no filter — the app sends `latitude=` with nothing
+after it when location permission is denied. Sent-but-unreadable is a 422
+naming the parameter, because the alternative is what this endpoint used to
+do: catch `ValueError`, drop the filter, and return the national list with a
+200 that looked filtered.
+
+The ORDER BY ends in `id`. Without a unique tiebreaker Postgres may order
+equally-ranked rows differently between page 1 and page 2, which shows up as
+cards duplicating and vanishing mid-scroll. `avg_rating` also sorts
+`nulls_last`: plain `DESC` puts NULLs first in Postgres, so unreviewed salons
+used to lead the list.
 
 Further reading, all in [docs/](docs/):
 

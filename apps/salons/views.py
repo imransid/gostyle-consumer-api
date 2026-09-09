@@ -1,8 +1,10 @@
 import zoneinfo
 from datetime import datetime
 
+from django.db.models import F
 from django.http import Http404
 from drf_spectacular.utils import OpenApiParameter, extend_schema
+from rest_framework.exceptions import ValidationError
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework import status
 from rest_framework.permissions import AllowAny
@@ -11,9 +13,13 @@ from rest_framework.views import APIView
 
 from .hours import resolve as resolve_hours
 from .money import major
+from .params import ParamError, parse_discovery
 from .selectors import (
     discoverable_salons,
     filter_by_category,
+    filter_by_radius,
+    filter_by_search,
+    filter_top_rated,
     map_venues,
     salon_categories,
     salon_packages,
@@ -22,7 +28,7 @@ from .selectors import (
     salon_services,
     salon_stylists,
     with_distance,
-    with_published_hours,
+    with_published_card_fields,
 )
 from .serializers import (
     MapVenueSerializer,
@@ -64,77 +70,137 @@ class SalonListView(APIView):
 
 @extend_schema(
     parameters=[
-        OpenApiParameter("lat", float, description="User latitude, e.g. 25.19"),
-        OpenApiParameter("lng", float, description="User longitude, e.g. 55.26"),
-        OpenApiParameter("sort", str, description="Sort order", enum=["distance", "rating"]),
-        OpenApiParameter("rating_min", float, description="Minimum average rating, e.g. 4.5"),
-        OpenApiParameter("city", str, description="Filter by city name, e.g. Dubai"),
-        OpenApiParameter("category", str, description="Filter by salon category", enum=["gents", "ladies", "unisex"]),
-        OpenApiParameter("hijab_mode", str, description="1 to show only hijab-certified salons", enum=["1"]),
-        OpenApiParameter("open_now", str, description="1 to show only currently open salons", enum=["1"]),
+        OpenApiParameter("latitude", float, description="User latitude, e.g. 25.19. Send with longitude."),
+        OpenApiParameter("longitude", float, description="User longitude, e.g. 55.26. Send with latitude."),
+        OpenApiParameter("radius", float, description="Only salons within this many KILOMETRES of latitude/longitude."),
+        OpenApiParameter("category", str, description="Salon category. 'all' means no filter.", enum=["all", "gents", "ladies", "unisex"]),
+        OpenApiParameter("search", str, description="Free text over the salon name and city."),
+        OpenApiParameter("is_top_rated", bool, description="Only well-reviewed salons. See TOP_RATED_* in selectors.py."),
+        OpenApiParameter("is_open_now", bool, description="Only salons open right now, in their own timezone."),
+        OpenApiParameter("hijab_mode", bool, description="Only hijab-certified salons."),
+        OpenApiParameter("page_size", int, description="Cards per page, up to 50. Defaults to 15."),
+        OpenApiParameter("sort", str, description="Sort order. 'distance' needs latitude/longitude.", enum=["distance", "rating"]),
+        OpenApiParameter("city", str, description="Filter by city name, e.g. Dubai. Exact, case-insensitive."),
+        OpenApiParameter("rating_min", float, description="Minimum average rating, e.g. 4.5."),
         OpenApiParameter("total_amount", float, description="Booking total used to compute deposit.amount, e.g. 250"),
+        OpenApiParameter("lat", float, deprecated=True, description="Deprecated spelling of latitude."),
+        OpenApiParameter("lng", float, deprecated=True, description="Deprecated spelling of longitude."),
+        OpenApiParameter("open_now", bool, deprecated=True, description="Deprecated spelling of is_open_now."),
     ],
     responses=SalonCardSerializer(many=True),
 )
 class SalonDiscoveryListView(ListAPIView):
-    """Figma discovery list + map screen. Public platform salons."""
+    """
+    Figma discovery list + map screen. Public platform salons.
+
+    Every query parameter is parsed in one place, by params.parse_discovery,
+    and an unreadable one is a 422 naming it rather than a filter that
+    silently did nothing. See that module for why.
+    """
 
     serializer_class = SalonCardSerializer
     permission_classes = [AllowAny]
 
     def get_queryset(self):
-        # with_published_hours adds the storefront's PUBLISHED hours and its
-        # manual state. Without it the card falls back to null for every time
-        # field, because branch.opening_hours is no longer read here: that
-        # column is the salon-build value and not what the manager published.
-        qs = with_published_hours(discoverable_salons())
+        # with_published_card_fields adds the storefront's PUBLISHED hours and
+        # name plus its manual state. Without it the card falls back to null
+        # for every time field, because branch.opening_hours is no longer read
+        # here: that column is the salon-build value and not what the manager
+        # published.
+        qs = with_published_card_fields(discoverable_salons())
+        params = self._parsed()
 
-        lat = self.request.query_params.get("lat")
-        lng = self.request.query_params.get("lng")
-        if lat and lng:
-            try:
-                qs = with_distance(qs, float(lat), float(lng))
-                qs = qs.filter(lat__isnull=False, lng__isnull=False)
-            except ValueError:
-                pass
+        if params["latitude"] is not None:
+            qs = with_distance(qs, params["latitude"], params["longitude"])
+            # A salon whose branch has no pin cannot have a distance, and
+            # showing it in a list sorted by distance would put it anywhere.
+            qs = qs.filter(lat__isnull=False, lng__isnull=False)
+            if params["radius_km"] is not None:
+                qs = filter_by_radius(
+                    qs, params["latitude"], params["longitude"], params["radius_km"]
+                )
 
-        rating_min = self.request.query_params.get("rating_min")
-        hijab_mode = self.request.query_params.get("hijab_mode")
-        if hijab_mode in ("1", "true"):
+        if params["hijab_only"]:
             qs = qs.filter(hijab_certified=True)
+        if params["is_top_rated"]:
+            qs = filter_top_rated(qs)
+        if params["rating_min"] is not None:
+            qs = qs.filter(avg_rating__gte=params["rating_min"])
+        if params["city"]:
+            qs = qs.filter(branch_city__iexact=params["city"])
 
-        self._filter_open_now = self.request.query_params.get("open_now") in ("1", "true")
+        # Both no-op when their parameter is absent, so no `if` here.
+        qs = filter_by_category(qs, params["category"])
+        qs = filter_by_search(qs, params["search"])
 
-        if rating_min:
-            qs = qs.filter(avg_rating__gte=float(rating_min))
+        return qs.order_by(*self._ordering(params))
 
-        city = self.request.query_params.get("city")
-        if city:
-            qs = qs.filter(branch_city__iexact=city)
+    def _parsed(self):
+        """
+        The query string, read once per request and cached.
 
-        category = self.request.query_params.get("category")
-        if category in ("gents", "ladies", "unisex"):
-            qs = filter_by_category(qs, category)
+        get_queryset and filter_queryset both need it, and parsing twice would
+        mean two chances to raise two different errors for one request.
+        """
+        cached = getattr(self, "_discovery_params", None)
+        if cached is None:
+            try:
+                cached = parse_discovery(self.request.query_params)
+            except ParamError as exc:
+                # Lands in the project's error envelope as a field-level
+                # error naming the parameter. See accounts.exceptions.
+                raise ValidationError({exc.param: [exc.message]}) from exc
+            self._discovery_params = cached
+        return cached
 
-        sort = self.request.query_params.get("sort")
-        if sort == "distance" and lat and lng:
-            return qs.order_by("distance_km")
-        return qs.order_by("-avg_rating")
+    @staticmethod
+    def _ordering(params):
+        """
+        The ORDER BY, and it ends in `id` on purpose.
+
+        WITHOUT A UNIQUE TIEBREAKER, PAGINATION LIES. Postgres is free to
+        return equally-ranked rows in any order it likes, and it does not have
+        to pick the same order for page 1 and page 2. Two salons on 4.5 stars
+        can therefore both appear on page 1, both vanish from page 2, or one
+        of each — which reads as cards duplicating and disappearing while the
+        customer scrolls, and is close to unreproducible once reported.
+
+        nulls_last is the other half. `-avg_rating` alone emits plain DESC,
+        and Postgres sorts NULLs FIRST on a descending column, so every salon
+        that nobody has reviewed yet led the discovery list ahead of the
+        five-star ones.
+        """
+        # The DEFAULT stays rating, even when a location was sent. Nearest
+        # first is a plausible default for a discovery screen and it is not
+        # this one's, so switching it here would change what every existing
+        # client sees without anybody asking for it. `sort=distance` opts in.
+        if params["sort"] == "distance":
+            return ("distance_km", "id")
+        return (
+            F("avg_rating").desc(nulls_last=True),
+            # Among salons on the same score, the one more people rated.
+            "-review_count",
+            "id",
+        )
 
     def filter_queryset(self, queryset):
         queryset = super().filter_queryset(queryset)
-        if getattr(self, "_filter_open_now", False):
-            # open_now cannot be a SQL filter: whether a salon is open depends
-            # on its own timezone and on a JSONB grid, so it is computed in
-            # Python and fed back as an id list. That evaluates the queryset
-            # once extra, which is why it only happens when the flag is set.
-            serializer = SalonCardSerializer()
-            open_ids = [
-                obj.pk for obj in queryset
-                if serializer.get_is_open_now(obj)
-            ]
-            return queryset.filter(pk__in=open_ids)
-        return queryset
+        if not self._parsed()["is_open_now"]:
+            return queryset
+
+        # open_now cannot be a SQL filter: whether a salon is open depends on
+        # its own timezone and on a JSONB grid, so it is computed in Python
+        # and fed back as an id list. That evaluates the queryset once extra,
+        # which is why it only happens when the flag is set — and why it runs
+        # HERE, after category, search and radius have already cut the set
+        # down in SQL, rather than over every public salon in the country.
+        #
+        # Note that ?page_size= does not bound this. Pagination slices what
+        # comes back from this method, so the Python pass has already visited
+        # every matching row whatever page the customer asked for.
+        serializer = SalonCardSerializer()
+        open_ids = [obj.pk for obj in queryset if serializer.get_open(obj)]
+        return queryset.filter(pk__in=open_ids)
 
 
 @extend_schema(
@@ -151,7 +217,7 @@ class SalonDiscoveryDetailView(RetrieveAPIView):
     lookup_field = "pk"
 
     def get_queryset(self):
-        return with_published_hours(discoverable_salons())
+        return with_published_card_fields(discoverable_salons())
 
 
 class SalonProfileView(APIView):
