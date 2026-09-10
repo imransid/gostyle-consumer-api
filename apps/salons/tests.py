@@ -1,30 +1,12 @@
-"""
-Tests for the pure modules behind the salon profile endpoints.
-
-NO DATABASE in the SimpleTestCase classes below. They run against snapshot.py,
-hours.py, money.py and translate.py directly, which is possible because those
-four modules import nothing from Django. That is the payoff of keeping them
-pure: no fixtures, no transactions, no test database, and a full run in
-milliseconds. There is no longer an exception to that rule — see
-BoundingBoxTests at the bottom for why the map tests stopped needing one.
-
-WHAT IS WORTH TESTING HERE. Not the happy path, which the seeded salon already
-proves end to end. These cover the cases the seed CANNOT reach: a snapshot
-published before a section existed, a weekly grid with today's row missing, a
-manual state overruling real opening hours, a social payload where every
-network is switched off. Those are exactly the shapes that arrive from four
-years of production data and never from a fixture written this morning.
-"""
-
 import math
 import zoneinfo
 from decimal import Decimal
-
+from datetime import datetime
 from django.test import SimpleTestCase
 
 from apps.salons import timezones, translate
 from apps.salons.geo import bounding_box, format_distance, radius_box
-from apps.salons.hours import is_within, resolve
+from apps.salons.hours import is_within, next_opening, next_opening_at, resolve
 from apps.salons.money import bps_to_percent, major
 from apps.salons.snapshot import field, items, normalize
 
@@ -742,6 +724,7 @@ class BranchTimezoneTests(SimpleTestCase):
         with self.assertRaises(zoneinfo.ZoneInfoNotFoundError):
             timezones.resolve("Definitely/Not_A_Zone", "salon-3")
 
+
 class MapParamsTests(SimpleTestCase):
     def test_radius_metres_becomes_kilometres(self):
         result = parse_map({"latitude": "25.2", "longitude": "55.27", "radius": "5000"})
@@ -813,3 +796,51 @@ class RenamedParamResponseTests(SimpleTestCase):
         for old, new in (("lat", "latitude"), ("lng", "longitude"), ("lon", "longitude")):
             with self.subTest(old):
                 self.assert_renamed("/api/v1/discover/map", old, new)
+
+
+class NextOpeningTests(SimpleTestCase):
+    """
+    When does this salon open next?
+
+    Only asked when the salon is shut. The answer walks FORWARD from tomorrow,
+    never today: today is already known to be closed, so including it would
+    hand back a time that has passed or never happens.
+    """
+
+    WEEK = [
+        {"day": "mon", "closed": True},
+        {"day": "tue", "closed": False, "open": "09:00", "close": "21:00"},
+        {"day": "wed", "closed": False, "open": "10:00", "close": "20:00"},
+        {"day": "thu", "closed": True},
+        {"day": "fri", "closed": True},
+        {"day": "sat", "closed": True},
+        {"day": "sun", "closed": True},
+    ]
+
+    def test_opens_tomorrow(self):
+        # Monday, closed. Tuesday is open.
+        self.assertEqual(next_opening(self.WEEK, 0), (1, "09:00"))
+
+    def test_skips_closed_days(self):
+        # Thursday closed. Fri, Sat, Sun, Mon closed too. Next is Tuesday,
+        # five days out, which is what makes the week wrap worth a test: a
+        # version that stopped at Sunday would return nothing at all.
+        self.assertEqual(next_opening(self.WEEK, 3), (5, "09:00"))
+
+    def test_closed_all_week(self):
+        """
+        None, not a guess. A salon shut every day has no next opening, and
+        inventing one would print a time nobody can turn up at.
+        """
+        shut = [{"day": d, "closed": True} for d in
+                ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]]
+        self.assertIsNone(next_opening(shut, 0))
+
+    def test_next_opening_at_gives_a_real_datetime(self):
+        # Thursday 10 Sept 2026, 2pm Dubai. Thu, Fri, Sat, Sun, Mon are all
+        # closed in WEEK, so the next opening is Tuesday the 15th at 9am.
+        dubai = zoneinfo.ZoneInfo("Asia/Dubai")
+        now = datetime(2026, 9, 10, 14, 0, tzinfo=dubai)
+
+        result = next_opening_at(self.WEEK, now)
+        self.assertEqual(result.isoformat(), "2026-09-15T09:00:00+04:00")

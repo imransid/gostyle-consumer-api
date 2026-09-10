@@ -4,7 +4,7 @@ from rest_framework import serializers
 
 from . import timezones, translate
 from .geo import format_distance
-from .hours import resolve as resolve_hours
+from .hours import next_opening_at, resolve as resolve_hours
 from .snapshot import field as snap_field
 from .snapshot import items as snap_items
 
@@ -47,6 +47,7 @@ class SalonCardSerializer(serializers.Serializer):
     open = serializers.SerializerMethodField()
     opens_at = serializers.SerializerMethodField()
     closes_at = serializers.SerializerMethodField()
+    next_opening = serializers.SerializerMethodField()
     has_story = serializers.BooleanField()
     gallery = serializers.SerializerMethodField()
 
@@ -89,6 +90,32 @@ class SalonCardSerializer(serializers.Serializer):
             )
             obj._resolved_hours = cached
         return cached
+
+    def get_next_opening(self, obj) -> str | None:
+        """
+        When the salon next opens, as a full timestamp carrying its offset.
+
+        ONLY when the salon is shut. `is_open is not False` rather than
+        `not is_open`, because null is a third answer: null means nobody has
+        published hours at all, and a salon whose hours we do not know today
+        is one whose next opening we cannot claim to know either.
+
+        A TIMESTAMP, not "Tomorrow 9:00 AM". The server does not know which
+        language the customer picked and the app does, so the app formats it.
+        Sending the English word would leave the Arabic build with nothing it
+        can translate.
+
+        The offset is the part that fails quietly if it goes missing: without
+        it the app reads the time in the phone's own zone, and a Dubai salon
+        opening at 9am shows as 5am to a customer whose phone is on UTC.
+        """
+        if self._hours(obj)["is_open"] is not False:
+            return None
+
+        published = getattr(obj, "published_hours", None) or {}
+        tz = timezones.resolve(getattr(obj, "branch_timezone", None), obj.pk)
+        when = next_opening_at(published.get("weekly"), datetime.now(tz))
+        return when.isoformat() if when else None
 
     def get_name(self, obj) -> str | None:
         """

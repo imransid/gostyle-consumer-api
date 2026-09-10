@@ -1,25 +1,4 @@
-# apps/salons/hours.py
-"""
-Opening hours: the weekly grid, today's exception, and the manual state.
 
-Ported from gostyle-platform's opening-hours.ts and daily-status-rules.ts so
-Django and the salon's own console give the SAME answer for the same salon.
-A customer seeing "Open" while the console says "Closed" is a support ticket.
-
-PURE. No Django, no database, no clock. Every function takes the local time it
-should reason about rather than asking what time it is. The messy part (which
-timezone, and what date is it there) happens once, at the edge, in views.
-
-The two overrides stack and they are NOT the same kind of thing:
-  - an EXCEPTION changes the HOURS for one dated day. Open/closed is still
-    computed from it, exactly as it would be from the grid.
-  - a MANUAL STATE replaces the ANSWER outright. "Busy" is not a time and no
-    grid can produce it.
-So the exception feeds the calculation, and the state overrules the result.
-"""
-
-# Monday first, matching the platform's HOURS section DAYS order.
-# Python's weekday() also returns Monday as 0, so the two line up by index.
 DAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 # Mirrors the platform's StorefrontStatusState enum.
@@ -27,7 +6,7 @@ STATES = ("OPEN", "BUSY", "WALK_INS", "SPECIAL_HOURS", "CLOSED")
 
 # Which states mean "a customer can come in right now".
 OPEN_STATES = ("OPEN", "BUSY", "WALK_INS")
-
+from datetime import datetime, timedelta
 
 def _minutes(hhmm):
     """'14:30' -> 870. None for anything malformed."""
@@ -83,6 +62,34 @@ def weekly_row(weekly, weekday_index):
             return row
     return None
 
+def next_opening(weekly, weekday_index):
+    """
+    The next day the salon opens, looking forward from tomorrow.
+
+    Returns (days_ahead, "HH:MM"), or None if it is closed all week.
+    """
+    for ahead in range(1, 8):
+        row = weekly_row(weekly, (weekday_index + ahead) % 7)
+        if row and not row.get("closed") and row.get("open"):
+            return ahead, row["open"]
+    return None
+
+def next_opening_at(weekly, now):
+    """
+    When the salon next opens, as a real datetime in its own timezone.
+
+    `now` is the current time in the salon's timezone.
+    Returns a datetime, or None if closed all week.
+    """
+    found = next_opening(weekly, now.weekday())
+    if found is None:
+        return None
+
+    days_ahead, hhmm = found
+    hour, minute = int(hhmm[:2]), int(hhmm[3:])
+    day = now.date() + timedelta(days=days_ahead)
+    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=now.tzinfo)
+
 
 def is_within(open_hhmm, close_hhmm, now_hhmm):
     """
@@ -104,27 +111,7 @@ def is_within(open_hhmm, close_hhmm, now_hhmm):
 
 
 def resolve(weekly, exception, state, weekday_index, now_hhmm):
-    """
-    The one function that answers the whole question.
 
-    weekly        snapshot HOURS.weekly, or None
-    exception     today's storefront_status_exception as a dict, or None
-    state         today's manual state string, or None
-    weekday_index Python weekday(), Monday = 0
-    now_hhmm      current local time as "HH:MM"
-
-    Returns a dict: is_open, status, hours_today, opens_at, closes_at,
-    status_line. is_open is None when nothing is known, so the caller can hide
-    the row rather than claiming a salon is shut.
-
-    opens_at and closes_at describe TODAY'S window and nothing else. At 11pm
-    on a salon that shut at 10, opens_at is still this morning's time, not
-    tomorrow's, and that is deliberate: a next-opening time has to cross
-    midnight, skip closed days, and honour dated exceptions for days this
-    schema version cannot read yet. Half of that answer would be worse than
-    none, and the platform console does not compute it either. See the
-    handoff doc.
-    """
     # Step 1: which hours apply today. An exception REPLACES the weekly row.
     if isinstance(exception, dict):
         if exception.get("closed"):
