@@ -13,7 +13,7 @@ from rest_framework.views import APIView
 from . import timezones
 from .hours import resolve as resolve_hours
 from .money import major
-from .params import ParamError, parse_discovery
+from .params import ParamError, parse_discovery, parse_map
 from .selectors import (
     discoverable_salons,
     filter_by_category,
@@ -459,12 +459,17 @@ class SalonProductsView(APIView):
 
 
 class DiscoverMapView(APIView):
-    """Map viewport endpoint — returns lightweight venue markers.
+    """Map viewport endpoint, returns lightweight venue markers.
 
-    ``GET /api/v1/discover/map?latitude=…&longitude=…&latitudeDelta=…&longitudeDelta=…[&category=…]``
+    ``GET /api/v1/discover/map?latitude=…&longitude=…&latitudeDelta=…&longitudeDelta=…[&category=…&radius=…]``
 
     All parameters are optional. Bounding-box filtering replaces pagination.
     A hard ``LIMIT`` inside the selector acts as a safety valve.
+
+    NOTE ON UNITS: ``radius`` is in METRES on this endpoint, because the map
+    sends a viewport size in metres. ``/discover`` takes kilometres. The
+    conversion happens once, inside ``parse_map``, so everything below this
+    view speaks kilometres only.
     """
 
     permission_classes = [AllowAny]
@@ -479,6 +484,10 @@ class DiscoverMapView(APIView):
                              description="Latitude delta span"),
             OpenApiParameter("longitudeDelta", float, required=False,
                              description="Longitude delta span"),
+            OpenApiParameter("radius", float, required=False,
+                             description="Search radius in METRES (100 to 50000)"),
+            OpenApiParameter("limit", int, required=False,
+                             description="Max venues to return, capped by the selector"),
             OpenApiParameter("zoom", int, required=False,
                              description="Current map zoom level"),
             OpenApiParameter("category", str, required=False,
@@ -488,38 +497,20 @@ class DiscoverMapView(APIView):
         responses={200: MapVenueSerializer(many=True)},
     )
     def get(self, request):
-        params = request.query_params
-
-        def parse_float(param_name: str) -> float | None:
-            val = params.get(param_name)
-            if val is not None and val != "":
-                try:
-                    return float(val)
-                except ValueError:
-                    pass
-            return None
-
-        latitude = parse_float("latitude") or parse_float("lat")
-        longitude = parse_float("longitude") or parse_float("lng")
-        latitude_delta = (
-            parse_float("latitudeDelta")
-            or parse_float("latitude_delta")
-            or parse_float("lat_delta")
-        )
-        longitude_delta = (
-            parse_float("longitudeDelta")
-            or parse_float("longitude_delta")
-            or parse_float("lng_delta")
-        )
-
-        category = params.get("category", "all")
+        try:
+            params = parse_map(request.query_params)
+        except ParamError as exc:
+            # Raised, not returned. The project's exception handler turns this
+            # into the same field-level envelope /discover produces, so one
+            # client-side error reader works for both endpoints.
+            raise ValidationError({exc.param: [exc.message]}) from exc
 
         venues_qs = map_venues(
-            latitude=latitude,
-            longitude=longitude,
-            latitude_delta=latitude_delta,
-            longitude_delta=longitude_delta,
-            category=category,
+            latitude=params["latitude"],
+            longitude=params["longitude"],
+            latitude_delta=params["latitude_delta"],
+            longitude_delta=params["longitude_delta"],
+            category=params["category"],
         )
 
         serializer = MapVenueSerializer(venues_qs, many=True)

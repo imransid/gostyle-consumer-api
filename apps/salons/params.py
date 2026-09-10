@@ -184,3 +184,36 @@ def parse_discovery(params):
         "is_open_now": _boolean(params, "is_open_now", "open_now"),
         "hijab_only": _boolean(params, "hijab_mode", "hijab_only"),
     }
+
+
+
+def parse_map(params):
+    """
+    The /discover/map query string, settled.
+
+    radius arrives in METRES here, unlike /discover which takes
+    kilometres, because the map sends a viewport size. It is
+    converted once, right here, so nothing downstream sees metres.
+    """
+    latitude = _number(params, "latitude", "lat", minimum=-90, maximum=90)
+    longitude = _number(params, "longitude", "lng", "lon", minimum=-180, maximum=180)
+
+    if (latitude is None) != (longitude is None):
+        missing = "longitude" if longitude is None else "latitude"
+        raise ParamError(missing, "Send latitude and longitude together.")
+
+    radius_m = _number(params, "radius", minimum=100, maximum=50000)
+    if radius_m is not None and latitude is None:
+        raise ParamError("radius", "Needs latitude and longitude to measure from.")
+
+    category = _choice(params, "category", choices=CATEGORY_CHOICES)
+
+    return {
+        "latitude": latitude,
+        "longitude": longitude,
+        "radius_km": None if radius_m is None else radius_m / 1000.0,
+        "latitude_delta": _number(params, "latitudeDelta", "latitude_delta", "lat_delta"),
+        "longitude_delta": _number(params, "longitudeDelta", "longitude_delta", "lng_delta"),
+        "category": None if category == "all" else category,
+        "limit": _number(params, "limit", minimum=1),
+    }

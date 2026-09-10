@@ -25,9 +25,10 @@ from django.test import SimpleTestCase
 from apps.salons import timezones, translate
 from apps.salons.geo import bounding_box, format_distance, radius_box
 from apps.salons.hours import is_within, resolve
-from apps.salons.params import ParamError, parse_discovery
 from apps.salons.money import bps_to_percent, major
 from apps.salons.snapshot import field, items, normalize
+
+from apps.salons.params import ParamError, parse_discovery, parse_map
 
 
 # SimpleTestCase, not TestCase: it refuses database access outright. If someone
@@ -716,3 +717,33 @@ class BranchTimezoneTests(SimpleTestCase):
         """
         with self.assertRaises(zoneinfo.ZoneInfoNotFoundError):
             timezones.resolve("Definitely/Not_A_Zone", "salon-3")
+
+class MapParamsTests(SimpleTestCase):
+    def test_radius_metres_becomes_kilometres(self):
+        result = parse_map({"latitude": "25.2", "longitude": "55.27", "radius": "5000"})
+        self.assertEqual(result["radius_km"], 5.0)
+
+    def test_broken_latitude_is_an_error(self):
+        with self.assertRaises(ParamError):
+            parse_map({"latitude": "abc", "longitude": "55.27"})
+
+    def test_comma_decimal_is_an_error(self):
+        with self.assertRaises(ParamError):
+            parse_map({"latitude": "25,19", "longitude": "55.27"})
+
+    def test_latitude_out_of_range_is_an_error(self):
+        with self.assertRaises(ParamError):
+            parse_map({"latitude": "500", "longitude": "55.27"})
+
+    def test_half_a_coordinate_is_an_error(self):
+        with self.assertRaises(ParamError):
+            parse_map({"latitude": "25.2"})
+
+    def test_radius_without_coordinates_is_an_error(self):
+        with self.assertRaises(ParamError):
+            parse_map({"radius": "5000"})
+
+    def test_empty_request_is_fine(self):
+        result = parse_map({})
+        self.assertIsNone(result["latitude"])
+        self.assertIsNone(result["radius_km"])

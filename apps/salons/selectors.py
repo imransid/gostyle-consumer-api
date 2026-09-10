@@ -387,10 +387,13 @@ def with_distance(qs, user_lat, user_lng):
     """
     return qs.annotate(
         distance_km=Value(EARTH_RADIUS_KM) * ACos(
-            Cos(Radians(Value(user_lat)))
-            * Cos(Radians(F("lat")))
-            * Cos(Radians(F("lng")) - Radians(Value(user_lng)))
-            + Sin(Radians(Value(user_lat))) * Sin(Radians(F("lat")))
+            Least(
+                Cos(Radians(Value(user_lat)))
+                * Cos(Radians(F("lat")))
+                * Cos(Radians(F("lng")) - Radians(Value(user_lng)))
+                + Sin(Radians(Value(user_lat))) * Sin(Radians(F("lat"))),
+                Value(1.0),
+            )
         )
     )
 
