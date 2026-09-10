@@ -1,6 +1,6 @@
 from django.db.models import QuerySet
 from django.db.models import Avg, Count, Exists, F, FloatField, Func, OuterRef, Q, Subquery, TextField, Value
-from django.db.models.functions import ACos, Coalesce, Cos, Lower, Now, Radians, Sin
+from django.db.models.functions import ACos, Coalesce, Cos, Least, Lower, Now, Radians, Sin
 from django.contrib.postgres.aggregates import ArrayAgg
 from django.contrib.postgres.fields import ArrayField
 from apps.platform_data.models import Product, ProductVariant
@@ -384,6 +384,14 @@ def with_distance(qs, user_lat, user_lng):
     different Earth than the distance it wraps would drop salons sitting on
     the boundary — one salon vanishing from a 5 km search and nothing in the
     logs to say why.
+
+    THE Least() IS NOT DECORATION. When a salon sits on the exact point the
+    customer tapped, the argument to ACos should be exactly 1.0 and the
+    distance exactly zero. Double-precision rounding across four trig calls
+    can land it a hair above 1.0 instead, and Postgres raises "input is out
+    of range" rather than returning: a 500 for tapping your own pin. Clamping
+    the top costs nothing and removes the case. The bottom is not clamped
+    because -1 needs two points on exact opposite sides of the planet.
     """
     return qs.annotate(
         distance_km=Value(EARTH_RADIUS_KM) * ACos(
@@ -649,6 +657,8 @@ def map_venues(
     latitude_delta: float | None = None,
     longitude_delta: float | None = None,
     category: str = "all",
+    radius_km: float | None = None,
+    limit: int | None = None,
 ) -> "QuerySet[Storefront]":
     """Return discoverable storefronts inside the viewport bounding box.
 
@@ -663,6 +673,14 @@ def map_venues(
         latitude_delta: Latitude span of the visible region.
         longitude_delta: Longitude span of the visible region.
         category: ``"all"`` | ``"gents"`` | ``"ladies"``. Default ``"all"``.
+        radius_km: Optional circle around the centre, in KILOMETRES. The view
+            receives metres and converts; nothing below the parser sees them.
+            Applied ON TOP of the box when both are sent, which is the
+            intersection of the two, and is what a map that has both a
+            viewport and a "within X" control actually means.
+        limit: Optional caller ceiling on rows, itself capped by
+            MAP_VENUE_LIMIT. A public endpoint cannot let the caller pick the
+            number.
 
     Returns:
         A lightweight queryset of ``Storefront`` instances annotated with
@@ -722,10 +740,29 @@ def map_venues(
     # unrecognised as no filter at all.
     qs = filter_by_category(qs, category)
 
+    # with_distance FIRST, always. filter_by_radius reads the distance_km
+    # annotation and raises FieldError without it, which is the correct
+    # failure but only if the two are never separated.
+    if radius_km is not None and latitude is not None and longitude is not None:
+        qs = with_distance(qs, latitude, longitude)
+        qs = filter_by_radius(qs, latitude, longitude, radius_km)
+
+    # ORDER BY BEFORE THE SLICE, and this is not tidiness. A LIMIT with no
+    # ordering lets Postgres return whichever rows it reaches first, and it is
+    # free to reach them in a different order on the next request: the same
+    # viewport could hand back a different set of pins twice in a row.
+    if radius_km is not None and latitude is not None:
+        qs = qs.order_by("distance_km", "id")
+    else:
+        qs = qs.order_by("id")
+
+    # The caller may ask for fewer, never for more.
+    cap = MAP_VENUE_LIMIT if limit is None else min(int(limit), MAP_VENUE_LIMIT)
+
     # NO try/except HERE, deliberately. This used to swallow every exception
     # and fall back to the local `salons_salon` demo table, which meant a
     # schema drift, a missing column or a denied SELECT under the read-only
     # `consumer_app` grant all came back as three fake salons with a 200 and
     # nothing in the log. A map that is broken must look broken: let it raise,
     # let django.request log it, let the 500 be visible.
-    return qs[:MAP_VENUE_LIMIT]
+    return qs[:cap]

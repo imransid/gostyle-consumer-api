@@ -511,8 +511,9 @@ class DiscoverMapView(APIView):
             latitude_delta=params["latitude_delta"],
             longitude_delta=params["longitude_delta"],
             category=params["category"],
+            radius_km=params["radius_km"],
+            limit=params["limit"],
         )
-
         serializer = MapVenueSerializer(venues_qs, many=True)
         venues = serializer.data
 
