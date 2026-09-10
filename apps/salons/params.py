@@ -53,9 +53,9 @@ def _raw(params, *names):
     """
     The first accepted spelling that was actually sent, as (name, value).
 
-    /discover shipped with `lat`/`lng`; the app asks for `latitude`/
-    `longitude`. Both work. The name comes back alongside the value so an
-    error message can blame the parameter the caller actually typed rather
+    A few parameters accept more than one spelling (`search` or `q`,
+    `hijab_mode` or `hijab_only`). The name comes back alongside the value so
+    an error message can blame the parameter the caller actually typed rather
     than the one this file happens to prefer.
     """
     for name in names:
@@ -121,6 +121,28 @@ def _text(params, *names, max_length=None):
     return raw
 
 
+# Spellings removed on 2026-09-10. Sending one is a 422 naming its
+# replacement rather than a silent no-op: an old build sending `lat` would
+# otherwise get the national list with a 200 and a location filter that
+# looked applied, which is the failure described at the top of this module.
+#
+# An EMPTY value still counts as absent, same as everywhere else here: `lat=`
+# from a build whose customer denied location asked for no filter, and gets
+# none.
+RENAMED_COORDINATES = {
+    "lat": "latitude",
+    "lng": "longitude",
+    "lon": "longitude",
+}
+RENAMED_DISCOVERY = {**RENAMED_COORDINATES, "open_now": "is_open_now"}
+
+
+def _reject_renamed(params, renamed):
+    for old, new in renamed.items():
+        if _raw(params, old)[1] is not None:
+            raise ParamError(old, f"{old} was renamed to {new}.")
+
+
 def parse_discovery(params):
     """
     The whole /discover query string, settled.
@@ -143,8 +165,10 @@ def parse_discovery(params):
     absence of the category filter — and turning it into None here means no
     caller downstream has to remember that.
     """
-    latitude = _number(params, "latitude", "lat", minimum=-90, maximum=90)
-    longitude = _number(params, "longitude", "lng", "lon", minimum=-180, maximum=180)
+    _reject_renamed(params, RENAMED_DISCOVERY)
+
+    latitude = _number(params, "latitude", minimum=-90, maximum=90)
+    longitude = _number(params, "longitude", minimum=-180, maximum=180)
 
     # Half a coordinate is not a location. Guessing the other half would put
     # the customer on the prime meridian and sort the whole country by their
@@ -181,7 +205,7 @@ def parse_discovery(params):
         "sort": sort,
         "rating_min": _number(params, "rating_min", minimum=0, maximum=5),
         "is_top_rated": _boolean(params, "is_top_rated", "top_rated"),
-        "is_open_now": _boolean(params, "is_open_now", "open_now"),
+        "is_open_now": _boolean(params, "is_open_now"),
         "hijab_only": _boolean(params, "hijab_mode", "hijab_only"),
     }
 
@@ -195,8 +219,10 @@ def parse_map(params):
     kilometres, because the map sends a viewport size. It is
     converted once, right here, so nothing downstream sees metres.
     """
-    latitude = _number(params, "latitude", "lat", minimum=-90, maximum=90)
-    longitude = _number(params, "longitude", "lng", "lon", minimum=-180, maximum=180)
+    _reject_renamed(params, RENAMED_COORDINATES)
+
+    latitude = _number(params, "latitude", minimum=-90, maximum=90)
+    longitude = _number(params, "longitude", minimum=-180, maximum=180)
 
     if (latitude is None) != (longitude is None):
         missing = "longitude" if longitude is None else "latitude"

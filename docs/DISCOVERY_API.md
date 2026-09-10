@@ -29,7 +29,7 @@ GET /api/v1/discover
 | `hijab_mode`   | bool   | true     | Hijab-certified salons only.                                   |
 | `page`         | int    | 2        | Page number.                                                   |
 | `page_size`    | int    | 30       | Cards per page. Default 15, **capped at 50**.                  |
-| `sort`         | enum   | distance | `distance` (needs lat/lng) or `rating`. Default `rating`.      |
+| `sort`         | enum   | distance | `distance` (needs a location) or `rating`. Default `rating`.   |
 | `city`         | string | Dubai    | Exact match, case-insensitive.                                 |
 | `rating_min`   | float  | 4.5      | Average rating floor, 0–5.                                     |
 | `total_amount` | float  | 250      | Basket total, used to fill in `deposit.amount`.                |
@@ -96,7 +96,7 @@ type Salon = {
   logo_url: string | null;
   rating: string | null;         // "4.5" — null when nobody has reviewed it
   review_count: string;          // "0", "12" — always present
-  distance: string | null;       // "3.5 km" / "850 m" — null without lat/lng
+  distance: string | null;       // "3.5 km" / "850 m" — null without latitude/longitude
   open: boolean | null;          // null when the salon published no hours
   opens_at: string | null;       // "10:00 AM" — TODAY's opening time
   closes_at: string | null;      // "10:00 PM" — TODAY's closing time
@@ -111,7 +111,7 @@ type Salon = {
 
 ## Breaking changes in this release
 
-Three fields changed meaning or type. Nothing was removed.
+Three fields changed meaning or type.
 
 | Field          | Was                       | Now                                     |
 | -------------- | ------------------------- | --------------------------------------- |
@@ -126,17 +126,27 @@ carries `"Opens at 9:00 AM"` when the salon is shut.
 name. The profile screen always used the published name; the card used the
 branch name, so one salon could appear under two names one tap apart.
 
-### Deprecated, still sent
+### Removed on 2026-09-10
 
-Delete these from your code and tell backend; they go in the next release.
+Deprecated in the previous release. No longer sent, no longer read.
 
-| Deprecated     | Use instead |
-| -------------- | ----------- |
-| `is_open_now`  | `open`      |
-| `distance_km`  | `distance`  |
-| `gallery_urls` | `gallery`   |
-| `lat` / `lng`  | `latitude` / `longitude` |
-| `open_now`     | `is_open_now` |
+| Removed               | Kind           | Use instead              |
+| --------------------- | -------------- | ------------------------ |
+| `is_open_now`         | response field | `open`                   |
+| `distance_km`         | response field | `distance`               |
+| `gallery_urls`        | response field | `gallery`                |
+| `lat` / `lng` / `lon` | query param    | `latitude` / `longitude` |
+| `open_now`            | query param    | `is_open_now`            |
+
+`is_open_now` is still the **query parameter**; only the response field of that
+name is gone. `lat`, `lng` and `lon` are gone from `/discover/map` as well.
+
+Sending a removed parameter is a **422** naming its replacement, not a silent
+no-op. Sent empty (`?lat=`) it counts as absent, like any other parameter.
+
+```json
+{ "field": "lat", "code": "invalid", "message": "lat was renamed to latitude." }
+```
 
 ---
 
@@ -159,7 +169,7 @@ error envelope, naming the parameter:
 }
 ```
 
-This is a behaviour change. Previously `?lat=25,19` (comma decimal) silently
+This is a behaviour change. Previously `?latitude=25,19` (comma decimal) silently
 dropped the location and returned the national list with a `200`. Cases that
 now 422:
 
@@ -169,6 +179,7 @@ now 422:
 - `category` outside the four allowed values
 - a boolean that is neither true-ish nor false-ish (`is_open_now=maybe`)
 - `sort=distance` without a location
+- a removed parameter: `lat`, `lng`, `lon` or `open_now` (see above)
 
 ---
 

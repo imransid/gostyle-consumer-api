@@ -84,9 +84,6 @@ class SalonListView(APIView):
         OpenApiParameter("city", str, description="Filter by city name, e.g. Dubai. Exact, case-insensitive."),
         OpenApiParameter("rating_min", float, description="Minimum average rating, e.g. 4.5."),
         OpenApiParameter("total_amount", float, description="Booking total used to compute deposit.amount, e.g. 250"),
-        OpenApiParameter("lat", float, deprecated=True, description="Deprecated spelling of latitude."),
-        OpenApiParameter("lng", float, deprecated=True, description="Deprecated spelling of longitude."),
-        OpenApiParameter("open_now", bool, deprecated=True, description="Deprecated spelling of is_open_now."),
     ],
     responses=SalonCardSerializer(many=True),
 )
@@ -189,7 +186,7 @@ class SalonDiscoveryListView(ListAPIView):
         if not self._parsed()["is_open_now"]:
             return queryset
 
-        # open_now cannot be a SQL filter: whether a salon is open depends on
+        # is_open_now cannot be a SQL filter: whether a salon is open depends on
         # its own timezone and on a JSONB grid, so it is computed in Python
         # and fed back as an id list. That evaluates the queryset once extra,
         # which is why it only happens when the flag is set — and why it runs

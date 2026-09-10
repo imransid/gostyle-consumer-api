@@ -560,10 +560,35 @@ class DiscoveryParamsTests(SimpleTestCase):
         self.assertFalse(p["is_top_rated"])
         self.assertFalse(p["is_open_now"])
 
-    def test_both_coordinate_spellings_work(self):
-        """The endpoint shipped with lat/lng; the app asks for the long ones."""
-        self.assertEqual(parse_discovery({"lat": "25.19", "lng": "55.26"})["latitude"], 25.19)
+    def test_coordinates_are_read_from_the_long_names(self):
         self.assertEqual(parse_discovery({"latitude": "25.19", "longitude": "55.26"})["longitude"], 55.26)
+
+    def test_renamed_params_are_an_error_naming_the_new_name(self):
+        """
+        lat, lng, lon and open_now were removed on 2026-09-10. Ignoring them
+        would hand an old build the national list with a 200 and a filter
+        that looked applied.
+        """
+        for old, new in (
+            ("lat", "latitude"),
+            ("lng", "longitude"),
+            ("lon", "longitude"),
+            ("open_now", "is_open_now"),
+        ):
+            with self.subTest(old):
+                with self.assertRaises(ParamError) as ctx:
+                    parse_discovery({old: "1"})
+                self.assertEqual(ctx.exception.param, old)
+                self.assertEqual(ctx.exception.message, f"{old} was renamed to {new}.")
+
+    def test_a_renamed_param_sent_empty_is_still_absent(self):
+        """
+        `lat=` is what an old build sends when location is denied. It asked
+        for no filter, and an empty value is absent everywhere else here.
+        """
+        p = parse_discovery({"lat": "", "lng": "", "open_now": ""})
+        self.assertIsNone(p["latitude"])
+        self.assertFalse(p["is_open_now"])
 
     def test_empty_string_is_absent_not_broken(self):
         """
@@ -642,8 +667,7 @@ class DiscoveryParamsTests(SimpleTestCase):
         with self.assertRaises(ParamError):
             parse_discovery({"is_top_rated": "maybe"})
 
-    def test_deprecated_boolean_spelling_still_works(self):
-        self.assertTrue(parse_discovery({"open_now": "1"})["is_open_now"])
+    def test_hijab_mode_sets_hijab_only(self):
         self.assertTrue(parse_discovery({"hijab_mode": "1"})["hijab_only"])
 
     def test_sorting_by_distance_needs_a_location(self):
@@ -747,3 +771,45 @@ class MapParamsTests(SimpleTestCase):
         result = parse_map({})
         self.assertIsNone(result["latitude"])
         self.assertIsNone(result["radius_km"])
+
+    def test_renamed_coordinates_are_an_error(self):
+        """Removed 2026-09-10, same as on /discover."""
+        for old in ("lat", "lng", "lon"):
+            with self.subTest(old):
+                with self.assertRaises(ParamError) as ctx:
+                    parse_map({old: "25.2"})
+                self.assertEqual(ctx.exception.param, old)
+
+
+class RenamedParamResponseTests(SimpleTestCase):
+    """
+    The 422 itself, through the real views and the project's error envelope.
+
+    Still no database: both views parse the query string before they run a
+    query, and a renamed param stops them there. SimpleTestCase refuses a
+    connection outright, so if either view ever starts querying before it
+    parses, these fail rather than quietly passing.
+    """
+
+    def assert_renamed(self, url, old, new):
+        response = self.client.get(url, {old: "25.2"})
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(
+            response.json()["errors"],
+            [{"field": old, "code": "invalid", "message": f"{old} was renamed to {new}."}],
+        )
+
+    def test_discover(self):
+        for old, new in (
+            ("lat", "latitude"),
+            ("lng", "longitude"),
+            ("lon", "longitude"),
+            ("open_now", "is_open_now"),
+        ):
+            with self.subTest(old):
+                self.assert_renamed("/api/v1/discover", old, new)
+
+    def test_discover_map(self):
+        for old, new in (("lat", "latitude"), ("lng", "longitude"), ("lon", "longitude")):
+            with self.subTest(old):
+                self.assert_renamed("/api/v1/discover/map", old, new)

@@ -62,25 +62,13 @@ class SalonCardSerializer(serializers.Serializer):
     deposit = serializers.SerializerMethodField()
     free_cancellation = serializers.SerializerMethodField()
 
-    # ── DEPRECATED: the older spelling of three fields above ─────────
-    # Kept for one release so a client on the current build does not break the
-    # day this ships. Delete them, and this block, once the app is on `open`,
-    # `distance` and `gallery`. See docs/DISCOVERY_API.md.
-    is_open_now = serializers.SerializerMethodField()
-    distance_km = serializers.SerializerMethodField()
-    gallery_urls = serializers.ListField(
-        child=serializers.CharField(),
-        allow_null=True,
-        required=False,
-    )
-
     def _hours(self, obj):
         """
         Resolve once per salon and cache the answer on the instance.
 
-        SEVEN fields ask the same question. resolve() is pure Python over data
-        already fetched, so it is cheap, but running it seven times per card on
-        a fifteen-row page is a hundred needless calls and seven chances for
+        SIX fields ask the same question. resolve() is pure Python over data
+        already fetched, so it is cheap, but running it six times per card on
+        a fifteen-row page is ninety needless calls and six chances for
         the fields to disagree if the clock ticks between them — which is how
         a card ends up reading "Open" above "Opens at 9:00 AM".
         """
@@ -157,13 +145,6 @@ class SalonCardSerializer(serializers.Serializer):
         """
         return getattr(obj, "gallery_urls", None) or []
 
-    def get_distance_km(self, obj) -> float | None:
-        """DEPRECATED. The numeric form of `distance`."""
-        d = getattr(obj, "distance_km", None)
-        if d is None:
-            return None
-        return round(d, 1)
-
     def get_category(self, obj) -> str | None:
         """
         "gents", "ladies", "unisex", or null.
@@ -212,12 +193,8 @@ class SalonCardSerializer(serializers.Serializer):
             return None
         return {"latitude": obj.lat, "longitude": obj.lng}
 
-    def get_is_open_now(self, obj) -> bool | None:
-        """DEPRECATED. The older spelling of `open`."""
-        return self._hours(obj)["is_open"]
-
     def get_status(self, obj) -> str | None:
-        # OPEN, BUSY, WALK_INS, SPECIAL_HOURS or CLOSED. is_open_now cannot
+        # OPEN, BUSY, WALK_INS, SPECIAL_HOURS or CLOSED. `open` cannot
         # carry "Busy", which is a state no grid can compute and the reason
         # the salon set it by hand.
         return self._hours(obj)["status"]

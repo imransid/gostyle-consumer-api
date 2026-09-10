@@ -382,9 +382,8 @@ Durations are integer minutes.
 Two things on the existing discovery endpoint moved while this was
 built:
 
-1. `photo_url` was replaced by `cover_url`, `logo_url` and
-   `gallery_urls`. The `DISCOVERY_API.md` doc still shows the old field.
-2. `hours_today`, `closes_at` and `is_open_now` now come from the
+1. `photo_url` was replaced by `cover_url`, `logo_url` and `gallery`.
+2. `hours_today`, `closes_at` and `open` now come from the
    salon's **published** storefront hours rather than an internal
    onboarding value, and a new `status` field carries the five states
    described above. Salons open past midnight also report correctly now;
