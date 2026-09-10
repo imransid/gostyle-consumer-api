@@ -10,6 +10,7 @@ from .views import (
     SalonProfileView,
     SalonServicesView,
     SalonStylistsView,
+    SalonStoriesView
 )
 
 
@@ -23,4 +24,5 @@ urlpatterns = [
     path("salon/<uuid:salon_id>/stylists", SalonStylistsView.as_view(), name="salon-stylists"),
     path("salon/<uuid:salon_id>/packages", SalonPackagesView.as_view(), name="salon-packages"),
     path("salon/<uuid:salon_id>/products", SalonProductsView.as_view(), name="salon-products"),
+    path("salon/<uuid:salon_id>/stories", SalonStoriesView.as_view(), name="salon-stories"),
 ]

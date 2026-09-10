@@ -766,3 +766,34 @@ def map_venues(
     # nothing in the log. A map that is broken must look broken: let it raise,
     # let django.request log it, let the 500 be visible.
     return qs[:cap]
+
+def salon_stories(storefront_id):
+    """
+    Active stories for one salon.
+
+    Same lifecycle rule as the has_story flag on the card: not deleted, not
+    expired. If the two ever disagree, a ring appears over nothing.
+
+    Now() rather than a Python timestamp, so expiry is judged by Postgres at
+    execution time and not at the moment the queryset was built.
+
+    media_id is a bare UUID with no URL on the row, so the image comes from a
+    subquery into StorefrontMedia. NOT filtered on moderation status: nothing
+    on the platform sets APPROVED yet, so checking it here would return an
+    empty list for every salon. That gap is a platform ticket, and the check
+    belongs there once approval actually happens.
+    """
+    return (
+        StorefrontStory.objects.filter(
+            storefront_id=storefront_id,
+            deleted_at__isnull=True,
+            expires_at__gt=Now(),
+        )
+        .annotate(
+            media_url=Subquery(
+                StorefrontMedia.objects.filter(id=OuterRef("media_id")).values("url")[:1],
+                output_field=TextField(),
+            ),
+        )
+        .order_by("sort_order", "-created_at")
+    )

@@ -26,6 +26,7 @@ from .selectors import (
     salon_products,
     salon_profile,
     salon_services,
+    salon_stories,
     salon_stylists,
     with_distance,
     with_published_card_fields,
@@ -458,6 +459,49 @@ class SalonProductsView(APIView):
         return Response({"products": products})
 
 
+class SalonStoriesView(APIView):
+    """
+    GET /api/v1/salon/<uuid>/stories
+
+    What the story ring opens. Public, because the card already tells every
+    caller whether a salon has one.
+
+    Lifecycle only: not deleted, not expired — the SAME rule as the has_story
+    flag on the card. If the two ever diverge, a ring appears over an empty
+    viewer, which is the one failure mode worth designing against here.
+
+    Deliberately NOT filtered on media moderation. Nothing on the platform
+    sets APPROVED yet, so the check would empty every ring on the app. That
+    gap is a platform ticket and the fix belongs there, not as a second
+    opinion in this file.
+
+    A story whose media row is missing is skipped rather than sent with a
+    null url: the app would otherwise render a blank frame the customer
+    cannot dismiss.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, salon_id):
+        salon = salon_profile(salon_id)
+        if salon is None:
+            raise Http404("Salon not found")
+
+        stories = [
+            {
+                "id": str(s.id),
+                "media_url": s.media_url,
+                "caption": s.caption_en,
+                "link_url": s.link_url,
+                "expires_at": s.expires_at,
+            }
+            for s in salon_stories(salon.id)
+            if s.media_url
+        ]
+
+        return Response({"stories": stories})
+
+
 class DiscoverMapView(APIView):
     """Map viewport endpoint, returns lightweight venue markers.
 
@@ -514,6 +558,7 @@ class DiscoverMapView(APIView):
             radius_km=params["radius_km"],
             limit=params["limit"],
         )
+
         serializer = MapVenueSerializer(venues_qs, many=True)
         venues = serializer.data
 
