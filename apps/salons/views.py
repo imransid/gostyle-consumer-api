@@ -35,6 +35,7 @@ from .serializers import (
     MapVenueSerializer,
     SalonCardSerializer,
     SalonProfileSerializer,
+    StorySalonSerializer,
 )
 from .snapshot import read_snapshot
 
@@ -564,3 +565,23 @@ class DiscoverMapView(APIView):
             "count": len(venues),
             "venues": venues,
         })
+
+class DiscoverStoryListView(ListAPIView):
+    """
+    GET /api/v1/discover/story
+
+    The story rail: salons with a live story right now, paginated.
+
+    Filters on the SAME has_story flag the card carries, so the rail and the
+    ring can never disagree about which salons have something to show.
+    """
+
+    serializer_class = StorySalonSerializer
+    permission_classes = [AllowAny]
+
+    def get_queryset(self):
+        return (
+            with_published_card_fields(discoverable_salons())
+            .filter(has_story=True)
+            .order_by("id")
+        )

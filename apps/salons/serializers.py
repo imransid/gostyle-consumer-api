@@ -404,3 +404,13 @@ class SalonProfileSerializer(serializers.Serializer):
     def get_active_booking(self, obj):
         # Needs the consumer-to-customer link that does not exist yet.
         return None
+
+class StorySalonSerializer(serializers.Serializer):
+    """Salons with a live story, for the story rail on the discovery screen."""
+
+    id = serializers.UUIDField()
+    name = serializers.SerializerMethodField()
+    logo_url = serializers.CharField(allow_null=True)
+
+    def get_name(self, obj) -> str | None:
+        return getattr(obj, "published_name", None) or obj.branch_name
