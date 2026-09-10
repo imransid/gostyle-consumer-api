@@ -1,6 +1,6 @@
 from django.db.models import QuerySet
-from django.db.models import Avg, Count, Exists, F, FloatField, Func, OuterRef, Q, Subquery, TextField, Value
-from django.db.models.functions import ACos, Coalesce, Cos, Least, Lower, Now, Radians, Sin
+from django.db.models import Avg, Count, DateField, Exists, F, FloatField, Func, OuterRef, Q, Subquery, TextField, Value
+from django.db.models.functions import ACos, Coalesce, Cos, Least, Lower, Now, NullIf, Radians, Sin
 from django.contrib.postgres.aggregates import ArrayAgg
 from django.contrib.postgres.fields import ArrayField
 from apps.platform_data.models import Product, ProductVariant
@@ -21,7 +21,6 @@ from apps.platform_data.models import (
     StorefrontReview,
 )
 
-from datetime import date
 from apps.platform_data.models import (
     StorefrontStatus,
     StorefrontStatusException,
@@ -39,6 +38,7 @@ from apps.platform_data.models import FileItem, StaffProfile, UserAccount
 
 from .geo import EARTH_RADIUS_KM, bounding_box, radius_box
 from .serializers import CATEGORY_ALIASES
+from .timezones import DEFAULT_TIMEZONE
 
 
 # The three categories that are actual categories. "all" is not one of them:
@@ -129,12 +129,8 @@ def with_published_card_fields(qs):
             .values("name")[:1],
             output_field=TextField(),
         ),
-        manual_state=Subquery(
-            StorefrontStatus.objects
-            .filter(storefront_id=OuterRef("pk"))
-            .values("state")[:1],
-            output_field=TextField(),
-        ),
+        # Today's manual state, when one applies. See live_manual_state().
+        manual_state=live_manual_state(),
     )
 
 
@@ -142,6 +138,64 @@ def with_published_card_fields(qs):
 # started carrying the published NAME; anything still importing the old one
 # keeps working.
 with_published_hours = with_published_card_fields
+
+
+class TodayIn(Func):
+    """
+    Today's calendar date in a timezone, computed by POSTGRES:
+
+        (NOW() AT TIME ZONE <tz>)::date
+
+    NOW() is a timestamptz, an absolute instant. AT TIME ZONE turns it into the
+    wall-clock time in that zone, and ::date keeps the calendar date. So a
+    Dubai branch at 01:00 local on the 11th reads the 11th here, while the
+    server's UTC date is still the 10th.
+    """
+
+    template = "(NOW() AT TIME ZONE %(expressions)s)::date"
+    arity = 1
+    output_field = DateField()
+
+
+def live_manual_state():
+    """
+    Today's manual state for each salon, or NULL when none applies.
+
+    The platform's manualStateApplies() rule, as SQL: a storefront_status row
+    counts only when source is MANUAL and applies_on is TODAY in the branch's
+    own timezone. Anything else is not a live override:
+
+      - source AUTO is what the platform writes when a salon CLEARS its state.
+        The state column still reads 'CLOSED' then, because it is NOT NULL,
+        and honouring it would shut every salon that ever cleared a status.
+      - applies_on in the past is an expired state. The platform lets it lapse
+        at local midnight with no job to clean it up, so the row stays and only
+        this comparison stops it applying. Without it, a salon that set
+        WALK_INS on the 3rd was still WALK_INS a week later.
+
+    "Today" is computed per row, by Postgres, in the branch's timezone: see
+    TodayIn. The zone falls back exactly as timezones.resolve() does, None and
+    "" both becoming DEFAULT_TIMEZONE, so this compares against the same day
+    the card's hours are read for.
+
+    REQUIRES the `branch_timezone` annotation, i.e. a queryset built on
+    discoverable_salons(). Without it this raises FieldError, which is the
+    right failure: quietly comparing against the server's date instead is the
+    bug this replaced.
+    """
+    branch_zone = Coalesce(
+        NullIf(OuterRef("branch_timezone"), Value(""), output_field=TextField()),
+        Value(DEFAULT_TIMEZONE),
+        output_field=TextField(),
+    )
+    return Subquery(
+        StorefrontStatus.objects.filter(
+            storefront_id=OuterRef("pk"),
+            source="MANUAL",
+            applies_on=TodayIn(branch_zone),
+        ).values("state")[:1],
+        output_field=TextField(),
+    )
 
 
 def salon_products(storefront):
@@ -349,8 +403,6 @@ def salon_profile(storefront_id):
     Returns None when the salon does not exist or is not public, so the view
     can 404 rather than the query raising.
     """
-    today = date.today()
-
     return (
         discoverable_salons()
         .annotate(
@@ -360,14 +412,10 @@ def salon_profile(storefront_id):
                 )[:1],
                 output_field=TextField(),
             ),
-            # The manual state, but ONLY when it applies to today. A state
-            # left over from last week is not today's answer.
-             manual_state=Subquery(
-                StorefrontStatus.objects.filter(
-                    storefront_id=OuterRef("pk"),
-                ).values("state")[:1],
-                output_field=TextField(),
-            ),
+            # The manual state, but ONLY when it applies to today, in the
+            # branch's own timezone. A state left over from last week is not
+            # today's answer. See live_manual_state().
+            manual_state=live_manual_state(),
             
         )
         .filter(id=storefront_id)
