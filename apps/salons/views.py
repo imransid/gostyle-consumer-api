@@ -9,6 +9,7 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from .snapshot import field as snap_field
 
 from . import timezones
 from .hours import resolve as resolve_hours
@@ -485,12 +486,20 @@ class SalonStoriesView(APIView):
         if salon is None:
             raise Http404("Salon not found")
 
+        # The PUBLISHED name, read the same way the profile screen reads it.
+        # published_name is not available here: that annotation comes from
+        # with_published_card_fields, which salon_profile() does not apply, so
+        # reading it would silently fall through to the branch name and this
+        # screen would call the salon something the card never calls it.
+        snapshot = read_snapshot(salon)
+
         stories = [
             {
                 "id": str(s.id),
                 "media_url": s.media_url,
                 "caption": s.caption_en,
                 "link_url": s.link_url,
+                "publish_time": s.created_at,
                 "expires_at": s.expires_at,
             }
             for s in salon_stories(salon.id)
@@ -498,11 +507,10 @@ class SalonStoriesView(APIView):
         ]
 
         return Response({
-            "name": getattr(salon, "published_name", None) or salon.branch_name,
+            "name": snap_field(snapshot, "IDENTITY", "nameEn") or salon.branch_name,
             "logo_url": salon.logo_url,
             "stories": stories,
         })
-
 
 class DiscoverMapView(APIView):
     """Map viewport endpoint, returns lightweight venue markers.
