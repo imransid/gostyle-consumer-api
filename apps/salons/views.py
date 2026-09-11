@@ -641,6 +641,11 @@ class FavouriteListView(SalonDiscoveryListView):
             args = (wrapped,) + args[1:]
         return super().get_serializer(*args, **kwargs)
 
+    @extend_schema(
+        parameters=[],
+        request={"application/json": {"type": "object", "properties": {"salon_id": {"type": "string"}}, "required": ["salon_id"]}},
+        responses={200: None},
+    )
     def post(self, request, *args, **kwargs):
         """
         The heart. Same URL as the list because it is the same resource:
