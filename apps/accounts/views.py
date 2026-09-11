@@ -7,8 +7,8 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
-from drf_spectacular.utils import extend_schema
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
 
 from .models import Favourite
 
@@ -284,7 +284,7 @@ class PasswordResetView(APIView):
             status=status.HTTP_200_OK,
         )
 
-
+@extend_schema_view(post=extend_schema(parameters=[]))
 class FavouriteToggleView(APIView):
     """
     POST /api/v1/favourite
