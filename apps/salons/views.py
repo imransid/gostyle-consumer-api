@@ -1,7 +1,7 @@
 from datetime import datetime, timezone as dt_timezone
 from django.db.models import F
 from django.http import Http404
-from drf_spectacular.utils import OpenApiParameter, extend_schema
+from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
 from rest_framework.exceptions import ValidationError
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework import status
@@ -11,7 +11,6 @@ from .snapshot import field as snap_field
 
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from apps.accounts.models import Favourite
-from .serializers import FavouriteSerializer
 
 from . import timezones
 from .hours import resolve as resolve_hours
@@ -35,6 +34,7 @@ from .selectors import (
     with_published_card_fields,
 )
 from .serializers import (
+    FavouriteSerializer,
     MapVenueSerializer,
     SalonCardSerializer,
     SalonProfileSerializer,
@@ -495,6 +495,11 @@ class SalonStoriesView(APIView):
         # screen would call the salon something the card never calls it.
         snapshot = read_snapshot(salon)
 
+        # The two timestamps are stored WITHOUT a zone by the platform, and
+        # they are UTC: checked against now() on the server, a story created
+        # minutes earlier reads minutes earlier. Labelling them here is what
+        # stops the app reading them in the phone's own zone and showing a
+        # story as expired hours early.
         stories = [
             {
                 "id": str(s.id),
@@ -513,6 +518,7 @@ class SalonStoriesView(APIView):
             "logo_url": salon.logo_url,
             "stories": stories,
         })
+
 
 class DiscoverMapView(APIView):
     """Map viewport endpoint, returns lightweight venue markers.
@@ -580,6 +586,7 @@ class DiscoverMapView(APIView):
             "venues": venues,
         })
 
+
 class DiscoverStoryListView(ListAPIView):
     """
     GET /api/v1/discover/story
@@ -600,56 +607,122 @@ class DiscoverStoryListView(ListAPIView):
             .order_by("id")
         )
 
-class FavouriteListView(SalonDiscoveryListView):
+
+@extend_schema_view(
+    get=extend_schema(
+        parameters=[
+            OpenApiParameter("category", str, description="Salon category. 'all' means no filter.", enum=["all", "gents", "ladies", "unisex"]),
+            OpenApiParameter("is_top_rated", bool, description="Only well-reviewed salons."),
+            OpenApiParameter("is_open_now", bool, description="Only salons open right now, in their own timezone."),
+            OpenApiParameter("search", str, description="Free text over the salon name and city."),
+            OpenApiParameter("page", int, description="Page number."),
+            OpenApiParameter("page_size", int, description="Cards per page, up to 50. Defaults to 15."),
+        ],
+        responses=FavouriteSerializer(many=True),
+    ),
+    post=extend_schema(
+        parameters=[],
+        request={
+            "application/json": {
+                "type": "object",
+                "properties": {"salon_id": {"type": "string", "format": "uuid"}},
+                "required": ["salon_id"],
+            }
+        },
+        responses={200: None},
+    ),
+)
+class FavouriteListView(ListAPIView):
     """
-    GET /api/v1/favourite
+    GET  /api/v1/favourite  the customer's saved salons, paginated
+    POST /api/v1/favourite  the heart, a toggle, body {"salon_id": "..."}
 
-    The customer's saved salons, with the same filters as /discover.
+    NOT inheriting SalonDiscoveryListView, although it started that way and
+    the filtering below is close to a copy of it. Inheriting also inherits
+    that view's CLASS-LEVEL @extend_schema, which cannot be overridden per
+    method: the POST, which reads nothing but a request body, was documented
+    as taking a dozen query filters, and a frontend reading the docs sent the
+    wrong thing. Repeating four filter calls is the cheaper mistake.
 
-    INHERITS the discovery view rather than repeating it. Category, search,
-    is_top_rated, is_open_now, ordering and pagination all already work there,
-    and a second copy would drift the first time one of them changes.
-
-    The only difference is the queryset: narrowed to the ids this customer
-    saved, newest save first.
+    Same URL for both methods because it is one resource: GET reads your
+    favourites, POST changes them.
     """
 
     serializer_class = FavouriteSerializer
     permission_classes = [IsAuthenticated]
 
+    def _parsed(self):
+        """The query string, read once per request and cached."""
+        cached = getattr(self, "_favourite_params", None)
+        if cached is None:
+            try:
+                cached = parse_discovery(self.request.query_params)
+            except ParamError as exc:
+                raise ValidationError({exc.param: [exc.message]}) from exc
+            self._favourite_params = cached
+        return cached
+
     def get_queryset(self):
+        # The saved rows first, keyed by salon id: the serializer needs the
+        # favourite's own id beside the salon, and holding them here avoids a
+        # second query per card to find it again.
         saved = Favourite.objects.filter(account=self.request.user)
-        by_salon = {str(f.storefront_id): f for f in saved}
+        self._favourites = {str(f.storefront_id): f for f in saved}
 
-        qs = super().get_queryset().filter(id__in=by_salon.keys())
+        qs = with_published_card_fields(discoverable_salons()).filter(
+            id__in=self._favourites.keys()
+        )
 
-        # Each salon carries its favourite row, so the serializer can send the
-        # favourite's own id alongside the salon without a second query.
-        self._favourites = by_salon
-        return qs
+        params = self._parsed()
+        if params["is_top_rated"]:
+            qs = filter_top_rated(qs)
+
+        # Both no-op when their parameter is absent.
+        qs = filter_by_category(qs, params["category"])
+        qs = filter_by_search(qs, params["search"])
+
+        # Ordered by id, not by when it was saved. Newest-first would be
+        # nicer, but the ordering has to be on the SALON queryset and the
+        # save time lives on the favourite row. A unique tiebreaker is the
+        # part that actually matters: without one, pagination can repeat a
+        # card between pages.
+        return qs.order_by("id")
+
+    def filter_queryset(self, queryset):
+        if not self._parsed()["is_open_now"]:
+            return queryset
+
+        # Same reasoning as the discovery list: open/closed depends on the
+        # salon's own timezone and a JSONB grid, so it cannot be SQL. Runs
+        # last, over the already-narrowed favourites, which is a small set by
+        # definition here.
+        card = SalonCardSerializer()
+        open_ids = [obj.pk for obj in queryset if card.get_open(obj)]
+        return queryset.filter(pk__in=open_ids)
 
     def get_serializer(self, *args, **kwargs):
-        # The list endpoint serializes salons; the contract wants favourites.
-        # Wrap each salon in its favourite row here rather than changing the
-        # queryset, which would lose every filter the parent applies.
+        # The queryset yields SALONS; the contract wants {id, salon}. Wrapping
+        # happens here rather than in the queryset so every filter above still
+        # applies to the salon rows themselves.
         if args and hasattr(args[0], "__iter__"):
             wrapped = []
             for salon in args[0]:
-                fav = self._favourites[str(salon.id)]
-                fav.salon = salon
-                wrapped.append(fav)
+                favourite = self._favourites[str(salon.id)]
+                favourite.salon = salon
+                wrapped.append(favourite)
             args = (wrapped,) + args[1:]
         return super().get_serializer(*args, **kwargs)
 
-    @extend_schema(
-        parameters=[],
-        request={"application/json": {"type": "object", "properties": {"salon_id": {"type": "string"}}, "required": ["salon_id"]}},
-        responses={200: None},
-    )
     def post(self, request, *args, **kwargs):
         """
-        The heart. Same URL as the list because it is the same resource:
-        GET reads your favourites, POST changes them.
+        Tap the heart. Already saved means remove, otherwise add.
+
+        A TOGGLE rather than separate add and delete endpoints, because that
+        is what the heart button is. The response says which way it went, so
+        the app sets the icon from the answer instead of guessing.
+
+        The salon is not checked for existence: that is one extra query on
+        every tap to catch an id the app got from this same API.
         """
         salon_id = request.data.get("salon_id")
         if not salon_id:
