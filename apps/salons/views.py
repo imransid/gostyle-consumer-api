@@ -497,7 +497,11 @@ class SalonStoriesView(APIView):
             if s.media_url
         ]
 
-        return Response({"stories": stories})
+        return Response({
+            "name": getattr(salon, "published_name", None) or salon.branch_name,
+            "logo_url": salon.logo_url,
+            "stories": stories,
+        })
 
 
 class DiscoverMapView(APIView):
