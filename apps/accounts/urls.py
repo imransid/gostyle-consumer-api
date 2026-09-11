@@ -12,8 +12,7 @@ from .views import (
     PasswordResetView,
     PasswordVerifyView,
     RegisterView,
-    OtpReSendView,
-    FavouriteToggleView
+    OtpReSendView
 )
 
 urlpatterns = [
