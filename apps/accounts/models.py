@@ -201,3 +201,38 @@ class Device(models.Model):
 
     def __str__(self):
         return f"{self.platform} device for {self.account_id}"
+
+
+class Favourite(models.Model):
+    """
+    A salon a customer saved.
+
+    storefront_id is a PLAIN UUID, not a ForeignKey. The salon lives in the
+    platform database, which this service only reads, so a real foreign key
+    would be a constraint across two databases that Postgres cannot enforce
+    and Django cannot migrate.
+
+    UNIQUE on (account, storefront_id): tapping the heart twice must not
+    create two rows. The toggle relies on there being at most one.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    account = models.ForeignKey(
+        ConsumerAccount,
+        on_delete=models.CASCADE,
+        related_name="favourites",
+    )
+    storefront_id = models.UUIDField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "favourite"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["account", "storefront_id"],
+                name="favourite_account_storefront_unique",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["account", "-created_at"]),
+        ]

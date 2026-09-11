@@ -5,10 +5,13 @@ from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework.exceptions import ValidationError
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework import status
-from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from .snapshot import field as snap_field
+
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from apps.accounts.models import Favourite
+from .serializers import FavouriteSerializer
 
 from . import timezones
 from .hours import resolve as resolve_hours
@@ -596,3 +599,44 @@ class DiscoverStoryListView(ListAPIView):
             .filter(has_story=True)
             .order_by("id")
         )
+
+class FavouriteListView(SalonDiscoveryListView):
+    """
+    GET /api/v1/favourite
+
+    The customer's saved salons, with the same filters as /discover.
+
+    INHERITS the discovery view rather than repeating it. Category, search,
+    is_top_rated, is_open_now, ordering and pagination all already work there,
+    and a second copy would drift the first time one of them changes.
+
+    The only difference is the queryset: narrowed to the ids this customer
+    saved, newest save first.
+    """
+
+    serializer_class = FavouriteSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        saved = Favourite.objects.filter(account=self.request.user)
+        by_salon = {str(f.storefront_id): f for f in saved}
+
+        qs = super().get_queryset().filter(id__in=by_salon.keys())
+
+        # Each salon carries its favourite row, so the serializer can send the
+        # favourite's own id alongside the salon without a second query.
+        self._favourites = by_salon
+        return qs
+
+    def get_serializer(self, *args, **kwargs):
+        # The list endpoint serializes salons; the contract wants favourites.
+        # Wrap each salon in its favourite row here rather than changing the
+        # queryset, which would lose every filter the parent applies.
+        if args and hasattr(args[0], "__iter__"):
+            wrapped = []
+            for salon in args[0]:
+                fav = self._favourites[str(salon.id)]
+                fav.salon = salon
+                wrapped.append(fav)
+            args = (wrapped,) + args[1:]
+        return super().get_serializer(*args, **kwargs)

@@ -2,6 +2,8 @@ from django.urls import path
 
 from .views import (
     DiscoverMapView,
+    DiscoverStoryListView,
+    FavouriteListView,
     SalonDiscoveryDetailView,
     SalonDiscoveryListView,
     SalonListView,
@@ -9,11 +11,9 @@ from .views import (
     SalonProductsView,
     SalonProfileView,
     SalonServicesView,
-    SalonStylistsView,
     SalonStoriesView,
-    DiscoverStoryListView
+    SalonStylistsView,
 )
-
 
 urlpatterns = [
     path("salons/", SalonListView.as_view()),
@@ -27,4 +27,5 @@ urlpatterns = [
     path("salon/<uuid:salon_id>/products", SalonProductsView.as_view(), name="salon-products"),
     path("salon/<uuid:salon_id>/stories", SalonStoriesView.as_view(), name="salon-stories"),
     path("discover/story", DiscoverStoryListView.as_view(), name="discover-story"),
+    path("favourite", FavouriteListView.as_view(), name="favourite-list"),
 ]

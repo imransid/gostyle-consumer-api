@@ -10,6 +10,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from drf_spectacular.utils import extend_schema
 from rest_framework.permissions import AllowAny, IsAuthenticated
 
+from .models import Favourite
+
 from . import ratelimit, services
 from .serializers import (
     DetailSerializer,
@@ -281,3 +283,33 @@ class PasswordResetView(APIView):
             {"detail": "Password reset. Please sign in."},
             status=status.HTTP_200_OK,
         )
+
+
+class FavouriteToggleView(APIView):
+    """
+    POST /api/v1/favourite
+
+    Tap the heart. Already favourited means remove, otherwise add.
+
+    A TOGGLE rather than separate add and delete endpoints, because that is
+    what the heart button actually is. The response says which way it went,
+    so the app can set the icon from the answer instead of guessing.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        salon_id = request.data.get("salon_id")
+        if not salon_id:
+            raise ValidationError({"salon_id": ["This field is required."]})
+
+        deleted, _ = Favourite.objects.filter(
+            account=request.user,
+            storefront_id=salon_id,
+        ).delete()
+
+        if deleted:
+            return Response({"is_favorite": False})
+
+        Favourite.objects.create(account=request.user, storefront_id=salon_id)
+        return Response({"is_favorite": True})

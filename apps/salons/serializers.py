@@ -414,3 +414,41 @@ class StorySalonSerializer(serializers.Serializer):
 
     def get_name(self, obj) -> str | None:
         return getattr(obj, "published_name", None) or obj.branch_name
+
+class FavouriteSalonSerializer(SalonCardSerializer):
+    """
+    The salon inside a favourite row.
+
+    INHERITS SalonCardSerializer so every field is computed the same way it
+    is on the discovery card. A second implementation of "is this salon open"
+    is how two screens start disagreeing about the same salon.
+
+    Only the nine fields the app asked for are kept. `coordinates` is spelled
+    with an s here because that is what the favourites contract says, while
+    the card sends `coordinate`. Worth settling on one later.
+    """
+
+    coordinates = serializers.SerializerMethodField()
+
+    class Meta:
+        fields = (
+            "id", "logo_url", "name", "open", "next_opening",
+            "closes_at", "rating", "review_count", "coordinates",
+        )
+
+    def get_coordinates(self, obj) -> dict | None:
+        return self.get_coordinate(obj)
+
+    def to_representation(self, obj):
+        full = super().to_representation(obj)
+        return {key: full[key] for key in self.Meta.fields}
+
+
+class FavouriteSerializer(serializers.Serializer):
+    """One favourite row: the favourite's own id, and the salon inside."""
+
+    id = serializers.CharField()
+    salon = serializers.SerializerMethodField()
+
+    def get_salon(self, obj) -> dict:
+        return FavouriteSalonSerializer(obj.salon, context=self.context).data
