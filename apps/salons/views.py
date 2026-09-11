@@ -640,3 +640,23 @@ class FavouriteListView(SalonDiscoveryListView):
                 wrapped.append(fav)
             args = (wrapped,) + args[1:]
         return super().get_serializer(*args, **kwargs)
+
+    def post(self, request, *args, **kwargs):
+        """
+        The heart. Same URL as the list because it is the same resource:
+        GET reads your favourites, POST changes them.
+        """
+        salon_id = request.data.get("salon_id")
+        if not salon_id:
+            raise ValidationError({"salon_id": ["This field is required."]})
+
+        deleted, _ = Favourite.objects.filter(
+            account=request.user,
+            storefront_id=salon_id,
+        ).delete()
+
+        if deleted:
+            return Response({"is_favorite": False})
+
+        Favourite.objects.create(account=request.user, storefront_id=salon_id)
+        return Response({"is_favorite": True})
