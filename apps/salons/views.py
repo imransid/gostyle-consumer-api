@@ -1,5 +1,4 @@
-from datetime import datetime
-
+from datetime import datetime, timezone as dt_timezone
 from django.db.models import F
 from django.http import Http404
 from drf_spectacular.utils import OpenApiParameter, extend_schema
@@ -499,8 +498,8 @@ class SalonStoriesView(APIView):
                 "media_url": s.media_url,
                 "caption": s.caption_en,
                 "link_url": s.link_url,
-                "publish_time": s.created_at,
-                "expires_at": s.expires_at,
+                "publish_time": s.created_at.replace(tzinfo=dt_timezone.utc).isoformat(),
+                "expires_at": s.expires_at.replace(tzinfo=dt_timezone.utc).isoformat(),
             }
             for s in salon_stories(salon.id)
             if s.media_url
