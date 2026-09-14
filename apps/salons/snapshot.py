@@ -1,21 +1,4 @@
 
-"""
-One safe way to read a storefront's published content.
-
-The public profile (name, tagline, bio, amenities, hours, socials, address,
-policy) is NOT in columns. It lives in storefront_version.snapshot, a JSONB
-blob keyed by section, reached through storefront.live_version_id.
-
-Three things can be missing at any time:
-  1. live_version_id is null      -> salon has never published
-  2. a section key is absent      -> snapshot predates that section
-  3. a field inside it is absent  -> salon left the box empty
-
-Every caller must handle all three. Doing that inline in each serializer
-means writing the same null checks seven times and getting some wrong.
-So it happens here, once.
-"""
-
 from apps.platform_data.models import StorefrontVersion
 
 # Every section the platform can write. Order matches gostyle-platform's

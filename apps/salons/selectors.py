@@ -85,34 +85,7 @@ def filter_by_category(qs, category):
 
 
 def with_published_card_fields(qs):
-    """
-    Annotate each salon with what it PUBLISHED: its hours and its name.
 
-    THE CARD USED TO READ branch.opening_hours, which is the wrong source:
-    that column is written once by nest-build at salon provisioning and never
-    touched again. The hours a customer sees are the ones the manager
-    PUBLISHED on their storefront card, which live in the live version's
-    snapshot. The two drift the moment a salon edits its hours, and the card
-    has been showing the onboarding value ever since.
-
-    The NAME has the same disease and it was showing on two screens at once.
-    The profile reads IDENTITY.nameEn from the snapshot and falls back to the
-    branch name; the card read the branch name and stopped there. A salon that
-    published "Iron Razor" over a branch recorded as "Al Quoz Branch 2"
-    therefore appeared under two different names depending on which screen the
-    customer was looking at. Reading the published name here settles it, and
-    it is also the name `filter_by_search` has to match: searching a name the
-    customer cannot see is a search box that looks broken.
-
-    Two keys are extracted, not the whole snapshot. Pulling all thirteen
-    sections per salon to read two of them would multiply the response size of
-    a fifteen-row page for nothing.
-
-    KeyTextTransform rather than KeyTransform for the name, because the name
-    is compared and printed as TEXT. KeyTransform would hand back a JSON
-    string, quotes and all, and `icontains` against it would be matching
-    against `"Iron Razor"` with the quote marks included.
-    """
     return qs.annotate(
         published_hours=Subquery(
             StorefrontVersion.objects
@@ -158,31 +131,6 @@ class TodayIn(Func):
 
 
 def live_manual_state():
-    """
-    Today's manual state for each salon, or NULL when none applies.
-
-    The platform's manualStateApplies() rule, as SQL: a storefront_status row
-    counts only when source is MANUAL and applies_on is TODAY in the branch's
-    own timezone. Anything else is not a live override:
-
-      - source AUTO is what the platform writes when a salon CLEARS its state.
-        The state column still reads 'CLOSED' then, because it is NOT NULL,
-        and honouring it would shut every salon that ever cleared a status.
-      - applies_on in the past is an expired state. The platform lets it lapse
-        at local midnight with no job to clean it up, so the row stays and only
-        this comparison stops it applying. Without it, a salon that set
-        WALK_INS on the 3rd was still WALK_INS a week later.
-
-    "Today" is computed per row, by Postgres, in the branch's timezone: see
-    TodayIn. The zone falls back exactly as timezones.resolve() does, None and
-    "" both becoming DEFAULT_TIMEZONE, so this compares against the same day
-    the card's hours are read for.
-
-    REQUIRES the `branch_timezone` annotation, i.e. a queryset built on
-    discoverable_salons(). Without it this raises FieldError, which is the
-    right failure: quietly comparing against the server's date instead is the
-    bug this replaced.
-    """
     branch_zone = Coalesce(
         NullIf(OuterRef("branch_timezone"), Value(""), output_field=TextField()),
         Value(DEFAULT_TIMEZONE),
@@ -199,23 +147,6 @@ def live_manual_state():
 
 
 def salon_products(storefront):
-    """
-    Retail products a customer may buy.
-
-    TYPE IS THE IMPORTANT FILTER. product_type is RETAIL, PROFESSIONAL or
-    CONSUMABLE, and only RETAIL is for sale: PROFESSIONAL is salon-use stock
-    like developer and bleach, CONSUMABLE is towels and foils. Selling either
-    in the app shop would be wrong, so type is not optional here.
-
-    NOT BRANCH-SCOPED, and that is a schema fact rather than a choice: product
-    carries tenant_id only. A multi-branch tenant therefore shows the same
-    shop at every branch. Stock is tracked per branch in stock_lot, so a
-    per-branch shop is possible later, but it is a different query.
-
-    The price comes from the LOWEST-POSITION variant, which is the one the
-    salon ordered first and so the one they treat as default. Cheapest would
-    be a guess about intent; position is the salon's own answer.
-    """
     default_variant = ProductVariant.objects.filter(
         product_id=OuterRef("pk"),
         deleted_at__isnull=True,
@@ -240,19 +171,6 @@ def salon_products(storefront):
 
 
 def salon_packages(storefront):
-    """
-    Bundles a customer may buy at one salon.
-
-    price_before is the sum of the member services at their own prices times
-    quantity, which is what the customer would pay buying them separately.
-    That is derived rather than stored, and deliberately not taken from
-    discount_bps: a FIXED-price package has no discount percentage at all, so
-    reading the discount would give nothing for exactly the packages the app
-    most wants to show a saving on.
-
-    The two aggregates are done as subqueries rather than a join so the
-    package rows are not multiplied by their items.
-    """
     availability = ServicePackageBranchAvailability.objects.filter(
         package_id=OuterRef("pk"),
         branch_id=storefront.branch_id,
@@ -298,20 +216,7 @@ def salon_packages(storefront):
 
 
 def salon_stylists(storefront):
-    """
-    Staff a customer may see for one salon.
 
-    TWO status columns, and both are required. employment_status says whether
-    the person still works here; onboarding_state says whether they ever
-    finished joining. A row that is ACTIVE and INVITED is an unaccepted
-    invitation, which is a real person who has never worked a shift, and
-    showing them on a public profile would be wrong.
-
-    rating, review_count, years_experience and day_off are NOT selected here
-    because no column holds them: storefront_review has no staff_id, and
-    neither staff_profile nor user_account records experience. They are sent
-    as null by the serializer. See the platform tickets.
-    """
     user = UserAccount.objects.filter(id=OuterRef("user_id"))
 
     return (
@@ -339,18 +244,6 @@ def salon_stylists(storefront):
 
 
 def salon_services(storefront):
-    """
-    Bookable services for one salon, with the branch price override applied.
-
-    Filtered on what a CUSTOMER may book, which is narrower than what the
-    salon's own console lists: published, not deleted, online booking on, and
-    available at this branch. A service hidden on a schedule (hide_from /
-    auto_show_after) is deliberately NOT handled here yet; that is a second
-    filter and belongs with the rest of the visibility rules.
-
-    price_minor is COALESCEd: service_branch_availability may carry a per-branch
-    price, and when it does it wins over the catalogue price.
-    """
     availability = ServiceBranchAvailability.objects.filter(
         service_id=OuterRef("pk"),
         branch_id=storefront.branch_id,
@@ -388,21 +281,7 @@ def salon_categories(tenant_id):
     return {row["id"]: row for row in rows}
 
 def salon_profile(storefront_id):
-    """
-    One salon for the profile screen.
 
-    Builds on discoverable_salons() so the media, rating and policy columns
-    are identical to what /discover already serves: two endpoints describing
-    the same salon must not disagree about its rating.
-
-    Adds three things the card did not need:
-      - live_version_id, so the snapshot can be read
-      - today's manual state and dated exception, for the hours resolver
-      - the tenant currency
-
-    Returns None when the salon does not exist or is not public, so the view
-    can 404 rather than the query raising.
-    """
     return (
         discoverable_salons()
         .annotate(
@@ -424,23 +303,7 @@ def salon_profile(storefront_id):
 
 
 def with_distance(qs, user_lat, user_lng):
-    """
-    Annotate distance_km from the user's location using the haversine formula.
 
-    EARTH_RADIUS_KM is shared with geo.radius_box on purpose. The box is a
-    prefilter for exactly this expression, and a box built on a marginally
-    different Earth than the distance it wraps would drop salons sitting on
-    the boundary — one salon vanishing from a 5 km search and nothing in the
-    logs to say why.
-
-    THE Least() IS NOT DECORATION. When a salon sits on the exact point the
-    customer tapped, the argument to ACos should be exactly 1.0 and the
-    distance exactly zero. Double-precision rounding across four trig calls
-    can land it a hair above 1.0 instead, and Postgres raises "input is out
-    of range" rather than returning: a 500 for tapping your own pin. Clamping
-    the top costs nothing and removes the case. The bottom is not clamped
-    because -1 needs two points on exact opposite sides of the planet.
-    """
     return qs.annotate(
         distance_km=Value(EARTH_RADIUS_KM) * ACos(
             Least(
@@ -632,13 +495,13 @@ def discoverable_salons():
                     deleted_at__isnull=True,
                 )
             ),
-            # Does this salon have a live story behind its avatar ring?
-            #
-            # Now() and not timezone.now(): the expiry is compared by POSTGRES
-            # at execution time. A Python timestamp would be frozen at the
-            # moment the queryset was built, which under a long-lived gunicorn
-            # worker with CONN_MAX_AGE is not the same thing as "now".
-            #
+            is_favorite=Exists(
+                StorefrontCertification.objects.filter(
+                    storefront_id=OuterRef("pk"),
+                    deleted_at__isnull=True,
+                    expires_at__gt=Now(),
+                )
+            )
             # Gated on the STORY's own lifecycle only — not deleted, not
             # expired — and deliberately not on the moderation status of the
             # media it points at. That check belongs to the endpoint that

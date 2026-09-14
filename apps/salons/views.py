@@ -223,17 +223,6 @@ class SalonDiscoveryDetailView(RetrieveAPIView):
 
 
 class SalonProfileView(APIView):
-    """
-    GET /api/v1/salon/<uuid>
-
-    APIView, not RetrieveAPIView, because the response is an object and the
-    project's default pagination class would otherwise wrap list endpoints in
-    an envelope the app does not expect.
-
-    AllowAny explicitly: the project default is IsAuthenticated. With AllowAny
-    the JWT still populates request.user when a token is sent, which is what
-    the user-specific fields will need, and does not 401 when it is absent.
-    """
 
     permission_classes = [AllowAny]
 
@@ -244,9 +233,6 @@ class SalonProfileView(APIView):
 
         snapshot = read_snapshot(salon)
 
-        # The clock lives HERE, at the edge, and nowhere else. hours.resolve
-        # is pure and takes the local time it should reason about, the same
-        # discipline the platform's domain services use.
         tz = timezones.resolve(salon.branch_timezone, salon.id)
         now = datetime.now(tz)
 
