@@ -501,7 +501,7 @@ def discoverable_salons():
                     deleted_at__isnull=True,
                     expires_at__gt=Now(),
                 )
-            )
+            ),
             # Gated on the STORY's own lifecycle only — not deleted, not
             # expired — and deliberately not on the moderation status of the
             # media it points at. That check belongs to the endpoint that
