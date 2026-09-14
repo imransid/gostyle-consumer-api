@@ -10,6 +10,9 @@ from apps.platform_data.models import Category, Service, ServiceBranchAvailabili
 from django.db.models.fields.json import KeyTextTransform, KeyTransform
 from apps.platform_data.models import StorefrontStory, StorefrontVersion
 
+from django.db.models import Value, BooleanField
+from apps.accounts.models import Favourite
+
 
 from apps.platform_data.models import (
     Branch,
@@ -280,9 +283,9 @@ def salon_categories(tenant_id):
 
     return {row["id"]: row for row in rows}
 
-def salon_profile(storefront_id):
+def salon_profile(storefront_id, user=None):
 
-    return (
+    qs = (
         discoverable_salons()
         .annotate(
             currency=Subquery(
@@ -291,16 +294,25 @@ def salon_profile(storefront_id):
                 )[:1],
                 output_field=TextField(),
             ),
-            # The manual state, but ONLY when it applies to today, in the
-            # branch's own timezone. A state left over from last week is not
-            # today's answer. See live_manual_state().
             manual_state=live_manual_state(),
-            
         )
-        .filter(id=storefront_id)
-        .first()
     )
 
+    return with_is_favorite(qs, user).filter(id=storefront_id).first()
+def with_is_favorite(qs, user):
+    if user is None or not user.is_authenticated:
+        return qs.annotate(
+            is_favorite=Value(False, output_field=BooleanField())
+        )
+
+    return qs.annotate(
+        is_favorite=Exists(
+            Favourite.objects.filter(
+                account=user,
+                storefront_id=OuterRef("pk"),
+            )
+        )
+    )
 
 def with_distance(qs, user_lat, user_lng):
 

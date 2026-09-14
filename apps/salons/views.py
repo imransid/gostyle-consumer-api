@@ -227,7 +227,7 @@ class SalonProfileView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, salon_id):
-        salon = salon_profile(salon_id)
+        salon = salon_profile(salon_id, user=request.user)
         if salon is None:
             raise Http404("Salon not found")
 

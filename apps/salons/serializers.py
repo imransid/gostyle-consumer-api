@@ -326,6 +326,8 @@ class SalonProfileSerializer(serializers.Serializer):
     is_open = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
     hours_today = serializers.SerializerMethodField()
+    has_story = serializers.BooleanField(read_only=True)
+    is_favorite = serializers.BooleanField(read_only=True)
 
     # Agreed as not-yet-available. Present so the app's shape is stable and
     # null means "hide this element". See the platform tickets for the two
