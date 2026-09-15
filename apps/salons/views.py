@@ -8,7 +8,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from .snapshot import field as snap_field
-from .params import ParamError, parse_discovery, parse_map, parse_stylists
+from .params import ParamError, parse_discovery, parse_map, parse_services, parse_stylists
 
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from apps.accounts.models import Favourite
@@ -259,15 +259,6 @@ class SalonProfileView(APIView):
 
 
 class SalonServicesView(APIView):
-    """
-    GET /api/v1/salon/<uuid>/services
-
-    Two levels out of a one-level table. A category with a parent becomes a
-    GROUP under that parent's chip; a category without one is its own chip and
-    its own group. Tenants do not populate parent_id today, so this reads as a
-    flat list now and becomes a real tree the moment they do, with no change
-    to the response shape or to the app.
-    """
 
     permission_classes = [AllowAny]
 
@@ -366,7 +357,7 @@ class SalonStylistsView(APIView):
         return Response({"stylists": stylist_rows(salon)})
 
 
-        
+
 
 @extend_schema(
     parameters=[
@@ -396,6 +387,43 @@ class StylistListView(APIView):
 
         # 3. Return the same list as the old URL
         return Response({"stylists": stylist_rows(salon)})
+
+
+@extend_schema(
+    parameters=[
+        OpenApiParameter("tenant_id", str, required=True),
+        OpenApiParameter("branch_id", str, required=True),
+        OpenApiParameter("category_id", str, required=False),
+    ],
+)
+class ServiceListView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        try:
+            params = parse_services(request.query_params)
+        except ParamError as exc:
+            raise ValidationError({exc.param: [exc.message]}) from exc
+
+        salon = discoverable_salons().filter(
+            tenant_id=params["tenant_id"],
+            branch_id=params["branch_id"],
+        ).first()
+        if salon is None:
+            raise Http404("Salon not found")
+
+        data = SalonServicesView().get(request, salon.id).data
+
+        if params["category_id"]:
+            wanted = str(params["category_id"])
+            data["service_groups"] = [
+                g for g in data["service_groups"]
+                if wanted in (g["id"], g["category_id"])
+            ]
+
+        return Response(data)
+
+
 
 class SalonPackagesView(APIView):
     """
