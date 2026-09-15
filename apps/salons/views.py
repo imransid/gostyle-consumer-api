@@ -13,6 +13,8 @@ from .params import ParamError, parse_discovery, parse_map, parse_services, pars
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from apps.accounts.models import Favourite
 
+from apps.platform_data.models import Service
+
 from . import timezones
 from .hours import resolve as resolve_hours
 from .money import major
@@ -44,18 +46,7 @@ from .snapshot import read_snapshot
 
 
 class SalonListView(APIView):
-    """
-    GET /api/v1/salons/ — GONE.
-
-    This read the `salons_salon` table, which is a fixture: three invented
-    salons written by the `seed_salons` command. It never touched the platform
-    database, so it returned the same demo list on every environment including
-    production, which is exactly how it went unnoticed.
-
-    410 rather than deletion, and rather than 404. A client on an old build
-    calling this needs to be told the resource is gone for good and where the
-    real one is; a 404 reads as a typo or an outage and invites a retry.
-    """
+    
 
     permission_classes = [AllowAny]
 
@@ -391,39 +382,68 @@ class StylistListView(APIView):
 
 @extend_schema(
     parameters=[
-        OpenApiParameter("tenant_id", str, required=True),
-        OpenApiParameter("branch_id", str, required=True),
-        OpenApiParameter("category_id", str, required=False),
+        OpenApiParameter("tenant_id", str, required=True, description="Tenant UUID"),
+        OpenApiParameter("category_id", str, required=False, description="Omit for every category"),
     ],
 )
 class ServiceListView(APIView):
+    """GET /api/v1/services?tenant_id=...&category_id=..."""
+
     permission_classes = [AllowAny]
 
     def get(self, request):
+        # 1. Check the params
         try:
             params = parse_services(request.query_params)
         except ParamError as exc:
             raise ValidationError({exc.param: [exc.message]}) from exc
 
-        salon = discoverable_salons().filter(
-            tenant_id=params["tenant_id"],
-            branch_id=params["branch_id"],
-        ).first()
-        if salon is None:
+        tenant_id = params["tenant_id"]
+
+        # 2. The tenant must have a public salon
+        if not discoverable_salons().filter(tenant_id=tenant_id).exists():
             raise Http404("Salon not found")
 
-        data = SalonServicesView().get(request, salon.id).data
+        # 3. All published services of this tenant (no branch check)
+        services = Service.objects.filter(
+            tenant_id=tenant_id,
+            status="PUBLISHED",
+            deleted_at__isnull=True,
+            online_booking_enabled=True,
+        ).order_by("name")
 
         if params["category_id"]:
-            wanted = str(params["category_id"])
-            data["service_groups"] = [
-                g for g in data["service_groups"]
-                if wanted in (g["id"], g["category_id"])
-            ]
+            services = services.filter(category_0_id=params["category_id"])
 
-        return Response(data)
+        # 4. Group by category
+        categories = salon_categories(tenant_id)
+        groups = {}
+        for svc in services:
+            cat = categories.get(svc.category_0_id)
+            key = str(cat["id"]) if cat else "other"
+            if key not in groups:
+                groups[key] = {
+                    "id": key,
+                    "name": cat["name_en"] if cat else "Other",
+                    "services": [],
+                }
+            groups[key]["services"].append({
+                "id": str(svc.id),
+                "name": svc.name,
+                "description": svc.description,
+                "price": major(svc.price_minor),
+                "duration_min": svc.duration_minutes,
+                "duration_max": svc.duration_minutes,
+            })
+
+        return Response({
+            "service_categories": [{"id": "all", "label": "All"}]
+            + [{"id": g["id"], "label": g["name"]} for g in groups.values()],
+            "service_groups": list(groups.values()),
+        })
 
 
+        
 
 class SalonPackagesView(APIView):
     """

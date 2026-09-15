@@ -120,22 +120,14 @@ def _reject_renamed(params, renamed):
         if _raw(params, old)[1] is not None:
             raise ParamError(old, f"{old} was renamed to {new}.")
 
-
 def parse_services(params):
     tenant_id = _uuid(params, "tenant_id")
-    branch_id = _uuid(params, "branch_id")
     category_id = _uuid(params, "category_id")   # optional
 
     if tenant_id is None:
         raise ParamError("tenant_id", "This parameter is required.")
-    if branch_id is None:
-        raise ParamError("branch_id", "This parameter is required.")
 
-    return {
-        "tenant_id": tenant_id,
-        "branch_id": branch_id,
-        "category_id": category_id,
-    }
+    return {"tenant_id": tenant_id, "category_id": category_id}
 
 def parse_discovery(params):
     """
