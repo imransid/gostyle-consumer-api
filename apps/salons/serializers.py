@@ -53,6 +53,8 @@ class SalonCardSerializer(serializers.Serializer):
 
     # ── everything else the card and its neighbours render ───────────
     slug = serializers.CharField()
+    branch_id = serializers.UUIDField()
+    tenant_id = serializers.UUIDField()
     city = serializers.CharField(source="branch_city", allow_null=True)
     coordinate = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
