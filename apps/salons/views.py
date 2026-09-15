@@ -8,6 +8,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from .snapshot import field as snap_field
+from .params import ParamError, parse_discovery, parse_map, parse_stylists
 
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from apps.accounts.models import Favourite
@@ -15,7 +16,6 @@ from apps.accounts.models import Favourite
 from . import timezones
 from .hours import resolve as resolve_hours
 from .money import major
-from .params import ParamError, parse_discovery, parse_map
 from .selectors import (
     discoverable_salons,
     filter_by_category,
@@ -334,17 +334,27 @@ class SalonServicesView(APIView):
             "duration_max": svc.duration_minutes,
         }
 
+def stylist_rows(salon):
+    """Every stylist of one salon, in the mobile app's shape."""
+    return [
+        {
+            "id": str(s.id),
+            "tenant_id": str(s.tenant_id),
+            "branch_id": str(s.branch_id) if s.branch_id else None,
+            "name": " ".join(filter(None, [s.first_name, s.last_name])) or None,
+            "role": s.position or s.job_title,
+            "avatar_url": s.avatar_url,
+            "rating": None,
+            "review_count": None,
+            "years_experience": None,
+            "day_off": None,
+        }
+        for s in salon_stylists(salon)
+    ]
+
 
 class SalonStylistsView(APIView):
-    """
-    GET /api/v1/salon/<uuid>/stylists
-
-    Four fields the mobile contract asks for have no source in this schema and
-    are sent as null: rating and review_count (storefront_review carries no
-    staff_id, so a review is of the salon and not the person), years_experience
-    (no column anywhere) and day_off (derivable from shift_roster later, but
-    never stored as a fact). Null means hide the element.
-    """
+    """GET /api/v1/salon/<uuid>/stylists"""
 
     permission_classes = [AllowAny]
 
@@ -353,25 +363,39 @@ class SalonStylistsView(APIView):
         if salon is None:
             raise Http404("Salon not found")
 
-        stylists = [
-            {
-                "id": str(s.id),
-                # position is the salon's own label for the seat; job_title is
-                # what the person calls themselves. Prefer position, since it
-                # is the one a manager sets deliberately per branch.
-                "name": " ".join(filter(None, [s.first_name, s.last_name])) or None,
-                "role": s.position or s.job_title,
-                "avatar_url": s.avatar_url,
-                "rating": None,
-                "review_count": None,
-                "years_experience": None,
-                "day_off": None,
-            }
-            for s in salon_stylists(salon)
-        ]
+        return Response({"stylists": stylist_rows(salon)})
 
-        return Response({"stylists": stylists})
 
+        
+
+@extend_schema(
+    parameters=[
+        OpenApiParameter("tenant_id", str, required=True, description="Tenant UUID"),
+        OpenApiParameter("branch_id", str, required=True, description="Branch UUID"),
+    ],
+)
+class StylistListView(APIView):
+    """GET /api/v1/stylists?tenant_id=...&branch_id=..."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        # 1. Read and check the two ids
+        try:
+            params = parse_stylists(request.query_params)
+        except ParamError as exc:
+            raise ValidationError({exc.param: [exc.message]}) from exc
+
+        # 2. Find the public salon for this branch
+        salon = discoverable_salons().filter(
+            tenant_id=params["tenant_id"],
+            branch_id=params["branch_id"],
+        ).first()
+        if salon is None:
+            raise Http404("Salon not found")
+
+        # 3. Return the same list as the old URL
+        return Response({"stylists": stylist_rows(salon)})
 
 class SalonPackagesView(APIView):
     """
@@ -592,6 +616,8 @@ class DiscoverStoryListView(ListAPIView):
             .filter(has_story=True)
             .order_by("id")
         )
+
+
 
 
 @extend_schema_view(

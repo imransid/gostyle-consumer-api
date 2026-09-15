@@ -1,26 +1,4 @@
-"""
-Reading the /discover query string.
-
-PURE. No Django, no database, no clock. It takes anything that answers
-`.get(name)` — a QueryDict, a plain dict — and returns a settled dict of
-Python values, or raises ParamError naming the parameter at fault. That is the
-reason it is a module and not twenty lines inside the view: query strings are
-where the interesting mistakes live (a radius with no centre, a boolean
-spelled "yes", a latitude of 500), and none of them are reachable by a test
-that would first need the platform tables to exist.
-
-ABSENT IS NOT INVALID, and that distinction is the whole design here:
-
-  * A parameter that was not sent, or was sent empty, means "no filter". The
-    app sends `latitude=` with nothing after it when the customer denies
-    location permission, and that must not be an error.
-  * A parameter that WAS sent and cannot be read is a 422 naming it. The old
-    view caught ValueError and carried on, so `lat=25,19` — a comma, from a
-    European locale — quietly dropped the location and returned the national
-    list with a 200 and a filter that looked applied. That is the failure mode
-    this repo already refuses elsewhere; see the closing comment in
-    selectors.map_venues.
-"""
+import uuid
 
 
 class ParamError(ValueError):
@@ -243,3 +221,28 @@ def parse_map(params):
         "category": None if category == "all" else category,
         "limit": _number(params, "limit", minimum=1),
     }
+
+
+
+
+
+def _uuid(params, name):
+    value = params.get(name)
+    if not value or not value.strip():
+        return None
+    try:
+        return uuid.UUID(value.strip())
+    except ValueError:
+        raise ParamError(name, "Must be a valid UUID.")
+
+
+def parse_stylists(params):
+    tenant_id = _uuid(params, "tenant_id")
+    branch_id = _uuid(params, "branch_id")
+
+    if tenant_id is None:
+        raise ParamError("tenant_id", "This parameter is required.")
+    if branch_id is None:
+        raise ParamError("branch_id", "This parameter is required.")
+
+    return {"tenant_id": tenant_id, "branch_id": branch_id}
