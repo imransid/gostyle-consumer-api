@@ -30,7 +30,7 @@ from apps.platform_data.models import (
     Tenant,
 )
 
-from django.db.models import F, IntegerField, Sum
+from django.db.models import F, IntegerField, Sum, DateTimeField
 from apps.platform_data.models import (
     ServicePackage,
     ServicePackageBranchAvailability,
