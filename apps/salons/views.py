@@ -315,7 +315,7 @@ class SalonServicesView(APIView):
         # service_variant rows with differing durations; until the app reads
         # those, sending one value twice is honest and lets the app collapse
         # "20 - 20 mins" to "20 mins" itself.
-        price_minor = svc.branch_price_minor or svc.price_minor
+        price_minor = getattr(svc, "branch_price_minor", None) or svc.price_minor
         return {
             "id": str(svc.id),
             "name": svc.name,
