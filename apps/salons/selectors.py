@@ -484,7 +484,7 @@ def discoverable_salons():
                     kind="COVER",
                 )
                 .order_by("-created_at")
-                .values("created_at")[:1],
+                .values("url")[:1],
                 output_field=TextField(),
             ),
             logo_url=Subquery(
