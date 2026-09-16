@@ -495,7 +495,7 @@ def discoverable_salons():
                     moderation_status="APPROVED",
                     kind="LOGO",
                 )
-                .order_by("-is_featured", "sort_order")
+                .order_by("-created_at")
                 .values("url")[:1],
                 output_field=TextField(),
             ),
