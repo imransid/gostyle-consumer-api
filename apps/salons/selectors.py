@@ -246,27 +246,29 @@ def salon_stylists(storefront):
     )
 
 
-def salon_services(storefront):
-    availability = ServiceBranchAvailability.objects.filter(
-        service_id=OuterRef("pk"),
-        branch_id=storefront.branch_id,
+BRANCH_AVAILABILITY_ENABLED = False
+
+
+def salon_services(storefront, branch_id=None):
+    qs = Service.objects.filter(
+        tenant_id=storefront.tenant_id,
+        status="PUBLISHED",
+        deleted_at__isnull=True,
+        online_booking_enabled=True,
     )
 
-    return (
-        Service.objects.filter(
-            tenant_id=storefront.tenant_id,
-            status="PUBLISHED",
-            deleted_at__isnull=True,
-            online_booking_enabled=True,
+    if BRANCH_AVAILABILITY_ENABLED:
+        branch_id = branch_id or storefront.branch_id
+        availability = ServiceBranchAvailability.objects.filter(
+            service_id=OuterRef("pk"),
+            branch_id=branch_id,
         )
-        .annotate(
+        qs = qs.annotate(
             branch_available=Subquery(availability.values("available")[:1]),
             branch_price_minor=Subquery(availability.values("price_minor")[:1]),
-        )
-        .filter(branch_available=True)
-        .order_by("name")
-    )
+        ).filter(branch_available=True)
 
+    return qs.order_by("name")
 
 def salon_categories(tenant_id):
     """

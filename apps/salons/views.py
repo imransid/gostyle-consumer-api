@@ -405,11 +405,9 @@ class ServiceListView(APIView):
         except ParamError as exc:
             raise ValidationError({exc.param: [exc.message]}) from exc
 
-        filters = {"tenant_id": params["tenant_id"]}
-        if params.get("branch_id"):
-            filters["branch_id"] = params["branch_id"]
-
-        salon = discoverable_salons().filter(**filters).first()
+        salon = discoverable_salons().filter(
+            tenant_id=params["tenant_id"],
+        ).first()
         if salon is None:
             raise Http404("Salon not found")
 
@@ -423,6 +421,7 @@ class ServiceListView(APIView):
             ]
 
         return Response(data)
+
 
 class SalonPackagesView(APIView):
     """
