@@ -218,18 +218,20 @@ def salon_packages(storefront):
     )
 
 
-def salon_stylists(storefront):
-
+def salon_stylists(storefront, branch_id=None):
     user = UserAccount.objects.filter(id=OuterRef("user_id"))
 
+    filters = dict(
+        tenant_id=storefront.tenant_id,
+        employment_status="ACTIVE",
+        onboarding_state="ACTIVE",
+        deleted_at__isnull=True,
+    )
+    if BRANCH_AVAILABILITY_ENABLED:
+        filters["branch_id"] = branch_id or storefront.branch_id
+
     return (
-        StaffProfile.objects.filter(
-            tenant_id=storefront.tenant_id,
-            branch_id=storefront.branch_id,
-            employment_status="ACTIVE",
-            onboarding_state="ACTIVE",
-            deleted_at__isnull=True,
-        )
+        StaffProfile.objects.filter(**filters)
         .annotate(
             first_name=Subquery(user.values("first_name")[:1], output_field=TextField()),
             last_name=Subquery(user.values("last_name")[:1], output_field=TextField()),
@@ -244,7 +246,6 @@ def salon_stylists(storefront):
         )
         .order_by("created_at")
     )
-
 
 BRANCH_AVAILABILITY_ENABLED = False
 

@@ -362,33 +362,28 @@ class SalonStylistsView(APIView):
 @extend_schema(
     parameters=[
         OpenApiParameter("tenant_id", str, required=True, description="Tenant UUID"),
-        OpenApiParameter("branch_id", str, required=True, description="Branch UUID"),
+        OpenApiParameter("branch_id", str, required=False, description="Branch UUID"),
     ],
 )
 class StylistListView(APIView):
-    """GET /api/v1/stylists?tenant_id=...&branch_id=..."""
-
     permission_classes = [AllowAny]
 
     def get(self, request):
-        # 1. Read and check the two ids
         try:
             params = parse_stylists(request.query_params)
         except ParamError as exc:
             raise ValidationError({exc.param: [exc.message]}) from exc
 
-        # 2. Find the public salon for this branch
         salon = discoverable_salons().filter(
             tenant_id=params["tenant_id"],
-            branch_id=params["branch_id"],
         ).first()
         if salon is None:
             raise Http404("Salon not found")
 
-        # 3. Return the same list as the old URL
         return Response({"stylists": stylist_rows(salon)})
 
 
+        
 @extend_schema(
     parameters=[
         OpenApiParameter("tenant_id", str, required=True),
