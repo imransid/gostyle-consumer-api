@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     "drf_spectacular",
     "apps.salons", 
     "apps.platform_data",
+    "apps.uploads",
 ]
 
 MIDDLEWARE = [
@@ -48,6 +49,9 @@ ROOT_URLCONF = 'config.urls'
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+
+MEDIA_URL = "media/"
+MEDIA_ROOT = BASE_DIR / "media"
 
 
 STORAGES = {

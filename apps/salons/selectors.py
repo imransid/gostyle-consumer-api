@@ -440,7 +440,7 @@ def discoverable_salons():
     return (
         Storefront.objects.filter(
             visibility="PUBLIC",
-            deleted_at__isnull=True,
+            deleted_at__isnull=True
         )
         .annotate(
             avg_rating=Subquery(
@@ -483,9 +483,9 @@ def discoverable_salons():
                     moderation_status="APPROVED",
                     kind="COVER",
                 )
-                .order_by("-is_featured", "sort_order")
-                .values("url")[:1],
-                output_field=TextField(),
+                .order_by("-created_at")
+                .values("created_at")[:1],
+                output_field=DateTimeField(),
             ),
             logo_url=Subquery(
                 StorefrontMedia.objects.filter(
