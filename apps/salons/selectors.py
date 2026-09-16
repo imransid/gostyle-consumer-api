@@ -485,7 +485,7 @@ def discoverable_salons():
                 )
                 .order_by("-created_at")
                 .values("created_at")[:1],
-                output_field=DateTimeField(),
+                output_field=TextField(),
             ),
             logo_url=Subquery(
                 StorefrontMedia.objects.filter(
