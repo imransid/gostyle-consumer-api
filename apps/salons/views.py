@@ -392,7 +392,7 @@ class StylistListView(APIView):
 @extend_schema(
     parameters=[
         OpenApiParameter("tenant_id", str, required=True),
-        OpenApiParameter("branch_id", str, required=True),
+        OpenApiParameter("branch_id", str, required=False),
         OpenApiParameter("category_id", str, required=False),
     ],
 )
@@ -405,10 +405,11 @@ class ServiceListView(APIView):
         except ParamError as exc:
             raise ValidationError({exc.param: [exc.message]}) from exc
 
-        salon = discoverable_salons().filter(
-            tenant_id=params["tenant_id"],
-            branch_id=params["branch_id"],
-        ).first()
+        filters = {"tenant_id": params["tenant_id"]}
+        if params.get("branch_id"):
+            filters["branch_id"] = params["branch_id"]
+
+        salon = discoverable_salons().filter(**filters).first()
         if salon is None:
             raise Http404("Salon not found")
 
@@ -422,8 +423,6 @@ class ServiceListView(APIView):
             ]
 
         return Response(data)
-
-
 
 class SalonPackagesView(APIView):
     """
