@@ -128,8 +128,8 @@ def parse_services(params):
 
     if tenant_id is None:
         raise ParamError("tenant_id", "This parameter is required.")
-    if branch_id is None:
-        raise ParamError("branch_id", "This parameter is required.")
+    # if branch_id is None:
+    #     raise ParamError("branch_id", "This parameter is required.")
 
     return {
         "tenant_id": tenant_id,
