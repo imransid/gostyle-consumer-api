@@ -14,7 +14,8 @@ nowhere else, so the command refuses to run against a non-local host.
 
 import json
 import uuid
-from datetime import datetime, timezone
+import zoneinfo
+from datetime import datetime, time, timedelta, timezone
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
@@ -32,6 +33,9 @@ VERSION_ID = uuid.UUID("44444444-4444-4444-4444-444444444444")
 CAT_HAIR_ID = uuid.UUID("55555555-5555-5555-5555-555555555551")
 CAT_CUTS_ID = uuid.UUID("55555555-5555-5555-5555-555555555552")
 CAT_BEARD_ID = uuid.UUID("55555555-5555-5555-5555-555555555553")
+
+BOOKING_ID = uuid.UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1")
+BOOKING_ITEM_ID = uuid.UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee2")
 
 PKG_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1")
 PKG_AVAIL_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2")
@@ -63,6 +67,12 @@ STAFF = [
     # selector filters on BOTH status columns rather than just employment.
     ("Ghost", "Invitee", "Barber", None, "INVITED"),
 ]
+
+# Minimum notice, in minutes, by service index. Only one service sets it, and
+# that is the point: the Hot Towel Shave cannot be booked for the next two
+# hours while every other service can, so the nearest-available window has
+# something to drop. NULL everywhere else, which is the real-world default.
+SERVICE_LEAD_TIMES = {2: 120}
 
 # WHO CAN DO WHAT. Two skill catalogues that nothing joins: `catalog_skill` is
 # platform-wide reference data a service stage points at, `skill` is the
@@ -109,6 +119,37 @@ STAFF_SKILLS = {
     1: [("haircut", "MASTER"), ("BEARD", "JUNIOR")],   # Darius
     # Ghost Invitee holds nothing, and is filtered out before skills anyway.
 }
+
+# WHEN THEY WORK. A shift belongs to a weekly roster (Monday-based) for one
+# branch; times are plain "HH:MM" strings and `break_time` is the start of a
+# fixed one-hour unpaid break. Dates are relative to the day the seed runs,
+# because a roster written to fixed dates is a roster that is stale tomorrow
+# and an availability endpoint with nothing to offer by next week.
+SHIFT_WEEKS = 2
+
+# staff index -> (start, end, break start or None, weekday to skip or None)
+SHIFTS = {
+    # Opens before the salon does (10:00), which must not become a bookable
+    # 09:00 start: the salon's own hours bound every shift.
+    0: ("09:00", "18:00", "13:00", 1),   # Liam, Tuesdays off, lunch at 13:00
+    # Runs to 23:00 against a 22:00 close on most days — the same clamp at the
+    # other end — and takes no break.
+    1: ("12:00", "23:00", None, None),   # Darius
+    # Ghost Invitee is rostered nowhere, as befits someone who never accepted.
+}
+
+# A seeded appointment, so the day has a hole in it and `bookings_today` is not
+# 0 everywhere. Darius, 15:00-16:00 salon time, on the first day after today
+# the salon is open.
+BOOKED_STAFF_INDEX = 1
+BOOKED_SERVICE_INDEX = 0
+BOOKED_LOCAL_HOUR = 15
+BOOKED_MINUTES = 60
+SALON_TIMEZONE = "Asia/Dubai"
+
+# uuid5 rather than a fixed hex pattern: a shift id has to be derived from the
+# date it falls on, and those dates move with the calendar.
+SEED_NAMESPACE = uuid.UUID("99999999-0000-0000-0000-000000000000")
 
 # (service index, quantity). Members are Gentleman's Cut (199.00, 30m) and
 # Hot Towel Shave (260.00, 35m): 459.00 and 65 minutes bought separately,
@@ -203,6 +244,14 @@ def skill_id(index):
 
 def stage_id(index):
     return uuid.UUID(f"12121212-1212-1212-1212-12121212121{index}")
+
+
+def roster_id(week_start):
+    return uuid.uuid5(SEED_NAMESPACE, f"roster:{BRANCH_ID}:{week_start}")
+
+
+def shift_id(staff_index, day):
+    return uuid.uuid5(SEED_NAMESPACE, f"shift:{staff_index}:{day}")
 
 
 def package_item_id(order):
@@ -319,13 +368,15 @@ class Command(BaseCommand):
                         (id, tenant_id, name, description, duration_minutes,
                          price_minor, currency, status, code, audience,
                          category_id, online_booking_enabled,
-                         created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         lead_time_minutes, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                            %s, %s)
                     ON CONFLICT (id) DO NOTHING
                     """,
                     [service_id(index), TENANT_ID, name,
                      f"{name} at Iron Razor.", minutes, price, "AED",
-                     "PUBLISHED", code, "MALE", cat_id, True, now, now],
+                     "PUBLISHED", code, "MALE", cat_id, True,
+                     SERVICE_LEAD_TIMES.get(index), now, now],
                 )
 
                 # A service is bookable only where it is AVAILABLE, so the row
@@ -461,6 +512,98 @@ class Command(BaseCommand):
                          level, now],
                     )
 
+            # ── Rosters, shifts and one booking ─────────────────────────
+            # Two weeks from the Monday of the current week, so the booking
+            # flow has something to offer today and for a fortnight after.
+            today = datetime.now(timezone.utc).date()
+            monday = today - timedelta(days=today.weekday())
+
+            for week in range(SHIFT_WEEKS):
+                week_start = monday + timedelta(weeks=week)
+                roster = roster_id(week_start)
+                cur.execute(
+                    """
+                    INSERT INTO public.shift_roster
+                        (id, tenant_id, branch_id, week_start_date,
+                         created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (tenant_id, branch_id, week_start_date)
+                        DO NOTHING
+                    """,
+                    [roster, TENANT_ID, BRANCH_ID, week_start, now, now],
+                )
+
+                for index, (start, end, unpaid_break, day_off) in SHIFTS.items():
+                    cur.execute(
+                        """
+                        INSERT INTO public.shift_roster_member
+                            (roster_id, staff_member_id, tenant_id, sort_order,
+                             created_at)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (roster_id, staff_member_id) DO NOTHING
+                        """,
+                        [roster, staff_id(index), TENANT_ID, index, now],
+                    )
+
+                    for offset in range(7):
+                        day = week_start + timedelta(days=offset)
+                        if day.weekday() == day_off:
+                            continue
+                        cur.execute(
+                            """
+                            INSERT INTO public.shift
+                                (id, roster_id, staff_member_id, tenant_id,
+                                 shift_date, start_time, end_time, break_time,
+                                 shift_type, created_at, updated_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (roster_id, staff_member_id, shift_date)
+                                DO NOTHING
+                            """,
+                            [shift_id(index, day), roster, staff_id(index),
+                             TENANT_ID, day, start, end, unpaid_break,
+                             "FIXED", now, now],
+                        )
+
+            # Sunday is closed (see HOURS above), so an appointment seeded onto
+            # one would sit on a day that offers nothing and prove nothing.
+            booked_day = today + timedelta(days=1)
+            if booked_day.weekday() == 6:
+                booked_day += timedelta(days=1)
+
+            # start_at is `timestamp without time zone` holding UTC, so the
+            # salon-local hour is converted here rather than written raw — the
+            # same trap the reading side documents in selectors.booking_rows.
+            local_start = datetime.combine(
+                booked_day, time(hour=BOOKED_LOCAL_HOUR),
+                tzinfo=zoneinfo.ZoneInfo(SALON_TIMEZONE),
+            )
+            starts_at = local_start.astimezone(timezone.utc).replace(tzinfo=None)
+            ends_at = starts_at + timedelta(minutes=BOOKED_MINUTES)
+
+            cur.execute(
+                """
+                INSERT INTO public.booking
+                    (id, tenant_id, branch_id, staff_id, status,
+                     start_at, end_at, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                [BOOKING_ID, TENANT_ID, BRANCH_ID,
+                 staff_id(BOOKED_STAFF_INDEX), "CONFIRMED",
+                 starts_at, ends_at, now, now],
+            )
+            cur.execute(
+                """
+                INSERT INTO public.booking_item
+                    (id, booking_id, tenant_id, service_id, duration_minutes,
+                     sort_order)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                [BOOKING_ITEM_ID, BOOKING_ID, TENANT_ID,
+                 service_id(BOOKED_SERVICE_INDEX), BOOKED_MINUTES, 0],
+            )
+
             # ONE package, inserted after the services it is built from exist.
             # highlights and color_gallery are text[] in Postgres while the
             # stale model calls them TextField; psycopg3 maps a Python list to
@@ -579,6 +722,40 @@ class Command(BaseCommand):
                 [package_item_id(order)],
             )
         cur.execute("DELETE FROM public.service_package WHERE id = %s", [PKG_ID])
+
+        # Every roster and booking at this branch, not just the ids computed
+        # for today: the seed writes them onto dates that move with the
+        # calendar, so a re-seed a week later would otherwise leave last
+        # week's rows behind. The branch is the seed's own creation, so
+        # "everything here" is exactly what this command put here.
+        cur.execute(
+            """
+            DELETE FROM public.shift WHERE roster_id IN (
+                SELECT id FROM public.shift_roster WHERE branch_id = %s
+            )
+            """,
+            [BRANCH_ID],
+        )
+        cur.execute(
+            """
+            DELETE FROM public.shift_roster_member WHERE roster_id IN (
+                SELECT id FROM public.shift_roster WHERE branch_id = %s
+            )
+            """,
+            [BRANCH_ID],
+        )
+        cur.execute(
+            "DELETE FROM public.shift_roster WHERE branch_id = %s", [BRANCH_ID]
+        )
+        cur.execute(
+            """
+            DELETE FROM public.booking_item WHERE booking_id IN (
+                SELECT id FROM public.booking WHERE branch_id = %s
+            )
+            """,
+            [BRANCH_ID],
+        )
+        cur.execute("DELETE FROM public.booking WHERE branch_id = %s", [BRANCH_ID])
 
         # Skills before the staff and services that reference them. The
         # platform-wide catalog_skill rows are deliberately NOT deleted: they

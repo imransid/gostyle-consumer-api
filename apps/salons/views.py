@@ -1,4 +1,4 @@
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime, time, timedelta, timezone as dt_timezone
 from django.db.models import F
 from django.http import Http404
 from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
@@ -12,6 +12,7 @@ from .params import (
     ParamError,
     parse_discovery,
     parse_map,
+    parse_nearest_available,
     parse_service_ids,
     parse_services,
     parse_stylists,
@@ -20,10 +21,12 @@ from .params import (
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from apps.accounts.models import Favourite
 
-from . import timezones
+from . import slots, timezones
 from .hours import resolve as resolve_hours
+from .hours import weekly_row as hours_row
 from .money import major
 from .selectors import (
+    booking_rows,
     discoverable_salons,
     filter_by_category,
     filter_by_radius,
@@ -33,12 +36,15 @@ from .selectors import (
     salon_categories,
     salon_packages,
     salon_products,
+    manual_state_on,
     salon_profile,
     salon_service_ids,
     salon_services,
     salon_stories,
     salon_stylists,
     service_stage_rows,
+    service_timing_rows,
+    shift_rows,
     stylist_service_coverage,
     with_distance,
     with_published_card_fields,
@@ -405,11 +411,16 @@ def _stylist_order(row):
     return (0 if rating is not None else 1, -(rating or 0), row.get("name") or "")
 
 
+def _invalid(exc):
+    """A ParamError as the project's field-level 422, code and all."""
+    return ValidationError({exc.param: [ErrorDetail(exc.message, code=exc.code)]})
+
+
 def _service_ids_or_422(request):
     try:
         return parse_service_ids(request.query_params)
     except ParamError as exc:
-        raise ValidationError({exc.param: [exc.message]}) from exc
+        raise _invalid(exc) from exc
 
 
 def _reject_unbookable(salon, service_ids):
@@ -897,3 +908,215 @@ class FavouriteListView(ListAPIView):
 
         Favourite.objects.create(account=request.user, storefront_id=salon_id)
         return Response({"is_favorite": True})
+
+
+@extend_schema(
+    parameters=[
+        OpenApiParameter(
+            "from", str, required=True,
+            description="Window start, inclusive. ISO 8601 with an offset — "
+                        "encode the + as %2B, e.g. 2026-09-19T10:00:00%2B04:00.",
+        ),
+        OpenApiParameter(
+            "to", str, required=True,
+            description="Window end, exclusive. Same salon-local day as `from`.",
+        ),
+        OpenApiParameter(
+            "service_ids", str, required=False,
+            description="Comma-separated service UUIDs. Required unless "
+                        "`stylist_id` is sent; both together narrow to that "
+                        "stylist for those services.",
+        ),
+        OpenApiParameter(
+            "stylist_id", str, required=False,
+            description="One stylist. Required unless `service_ids` is sent.",
+        ),
+    ],
+)
+class NearestAvailableView(APIView):
+    """GET /api/v1/booking/nearest-available/<uuid> — bookable starts in a window."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, salon_id):
+        salon = salon_profile(salon_id)
+        if salon is None:
+            raise Http404("Salon not found")
+
+        tz = timezones.resolve(salon.branch_timezone, salon.id)
+        try:
+            params = parse_nearest_available(request.query_params, tz)
+        except ParamError as exc:
+            raise _invalid(exc) from exc
+
+        timing = service_timing_rows(salon, params["service_ids"])
+        duration = _appointment_minutes(params["service_ids"], timing)
+
+        return Response({
+            "duration_min": duration,
+            "offers": _offers(
+                salon, tz, params, duration,
+                lead_minutes=max([row["lead_time_minutes"] or 0 for row in timing] or [0]),
+                now=datetime.now(tz),
+            ),
+        })
+
+
+def _appointment_minutes(service_ids, timing):
+    """
+    How long the whole visit takes, padding included.
+
+    Per service the platform's own figure wins: the sum across its stages of
+    pre-buffer, work, impact and post-buffer, which is what has to fit in the
+    diary. A service with no stages falls back to the catalogue duration the
+    services tab already shows the customer, so the number is never zero for a
+    service that exists.
+
+    With no services named there is nothing to measure, and the answer is the
+    browsing default — reported back as `duration_min` so the app never has to
+    guess which number drew the grid.
+    """
+    if not service_ids:
+        return slots.DEFAULT_APPOINTMENT_MINUTES
+
+    return sum(
+        row["stage_minutes"] or row["duration_minutes"] or 0 for row in timing
+    )
+
+
+def _qualified_stylists(salon, service_ids, stylist_id):
+    """
+    Who may take this whole visit.
+
+    ONE stylist for the whole visit, so "qualified" is stricter here than on
+    the Expert step: covering some of the basket is covering none of it. A
+    split visit would be a different response shape entirely, not a flag on
+    this one.
+
+    Anything that simply matches nobody — an unknown stylist, a stylist who
+    does not work here, an id from another salon's menu — comes back as an
+    empty list, which the caller turns into `"offers": []` rather than an
+    error.
+    """
+    staff = list(salon_stylists(salon))
+    if stylist_id is not None:
+        staff = [s for s in staff if s.id == stylist_id]
+
+    if not staff or not service_ids:
+        return staff
+
+    coverage = stylist_service_coverage(salon, service_ids, [s.id for s in staff])
+    # Deduped ids, so "covers all of them" is a length check.
+    return [s for s in staff if len(coverage.get(s.id, ())) == len(service_ids)]
+
+
+def _open_span(salon, tz, day, day_start):
+    """
+    The hours the salon itself is open on that date, or None if it is shut.
+
+    A stylist rostered on a day the salon is closed is not bookable, so this
+    bounds every shift below. Two ways to be shut: the published weekly grid
+    says so, or someone shut the day by hand in the platform.
+
+    Dated opening-hours exceptions are still not readable (see
+    SalonProfileView), so a salon open on its normal hours over a public
+    holiday will offer starts it should not. That gap is the profile's, not
+    this endpoint's, and it closes in one place when the table arrives.
+    """
+    if manual_state_on(salon.id, day) == "CLOSED":
+        return None
+
+    row = hours_row(read_snapshot(salon)["HOURS"].get("weekly"), day.weekday())
+    if not row or row.get("closed"):
+        return None
+
+    return slots.span(day_start, row.get("open"), row.get("close"))
+
+
+def _offers(salon, tz, params, duration, lead_minutes, now):
+    day = params["start"].astimezone(tz).date()
+    day_start = datetime.combine(day, time.min, tzinfo=tz)
+
+    open_span = _open_span(salon, tz, day, day_start)
+    if open_span is None:
+        return []
+
+    staff = _qualified_stylists(salon, params["service_ids"], params["stylist_id"])
+    if not staff:
+        return []
+
+    staff_ids = [s.id for s in staff]
+    shifts = {
+        row["staff_member_id"]: row
+        for row in shift_rows(salon.tenant_id, salon.branch_id, staff_ids, day)
+    }
+
+    # One booking query for both jobs: the blocks that stop a start, and the
+    # count of what each stylist already holds that day. The span runs to the
+    # day after next so an overnight shift's tail is included, since a salon
+    # open past midnight books past midnight too.
+    booked = {}
+    day_end = day_start + timedelta(days=2)
+    for row in booking_rows(salon.tenant_id, staff_ids, day_start, day_end):
+        booked.setdefault(row["staff_id"], []).append(
+            (row["start_at"].astimezone(tz), row["end_at"].astimezone(tz))
+        )
+
+    earliest = now + timedelta(minutes=lead_minutes)
+
+    offers = []
+    for member in staff:
+        shift = shifts.get(member.id)
+        if shift is None:
+            continue  # not rostered here that day
+
+        working = slots.span(day_start, shift["start_time"], shift["end_time"])
+        if working is None:
+            continue
+
+        # The salon's hours bound the stylist's: a shift starting before the
+        # doors open is not bookable time.
+        on_duty = (max(working[0], open_span[0]), min(working[1], open_span[1]))
+        if on_duty[0] >= on_duty[1]:
+            continue
+
+        blocks = list(booked.get(member.id, ()))
+        unpaid_break = slots.break_span(day_start, shift["break_time"])
+        if unpaid_break is not None:
+            blocks.append(unpaid_break)
+
+        free = slots.subtract([on_duty], blocks)
+        bookings_today = sum(
+            1 for start, _ in booked.get(member.id, ()) if start.date() == day
+        )
+
+        for start in slots.starts(
+            free, duration, params["start"], params["end"], earliest, day_start
+        ):
+            offers.append({
+                "start": start.isoformat(),
+                "end": (start + timedelta(minutes=duration)).isoformat(),
+                "bookings_today": bookings_today,
+                "stylist": {
+                    "id": str(member.id),
+                    "name": " ".join(
+                        filter(None, [member.first_name, member.last_name])
+                    ) or None,
+                    # The same `role` the stylists endpoint sends, from the same
+                    # column, so one stylist reads the same on every screen.
+                    "role": member.job_title or None,
+                    "avatar_url": member.avatar_url,
+                },
+                # Sort keys, dropped before the response goes out. Sorting on
+                # the ISO strings would work for `start` and not for the rest.
+                "_order": (start, bookings_today,
+                           " ".join(filter(None, [member.first_name, member.last_name]))),
+            })
+
+    # The soonest start first; then whoever is least busy that day, which
+    # spreads the work rather than filling one diary; then by name so two
+    # equally free stylists do not swap places between refreshes.
+    offers.sort(key=lambda offer: offer["_order"])
+    for offer in offers:
+        del offer["_order"]
+    return offers

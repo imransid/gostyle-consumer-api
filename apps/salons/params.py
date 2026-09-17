@@ -1,12 +1,19 @@
 import uuid
+from datetime import datetime, timedelta
 
 
 class ParamError(ValueError):
-    """One unreadable query parameter, carrying the name to blame."""
+    """One unreadable query parameter, carrying the name to blame.
 
-    def __init__(self, param, message):
+    `code` is the contract the app branches on, so it stays stable even when
+    the wording changes. It defaults to DRF's own "invalid", which is what
+    every parameter here meant before any of them needed a code of its own.
+    """
+
+    def __init__(self, param, message, code="invalid"):
         self.param = param
         self.message = message
+        self.code = code
         super().__init__(f"{param}: {message}")
 
 
@@ -315,3 +322,115 @@ def parse_service_ids(params):
         )
 
     return service_ids
+
+
+def _instant(params, name):
+    """
+    One ISO 8601 instant from the query string, or None if it was not sent.
+
+    Must carry an offset. A naive "2026-09-20T10:00:00" is not a moment in
+    time — it is a moment in an unnamed timezone, and reading it as the
+    salon's own would quietly answer a different question than the caller
+    asked on the one day of the year that matters.
+
+    Remember that a raw `+` in a query string decodes to a SPACE, so
+    `+04:00` has to travel as `%2B04:00`. A caller who forgets sends
+    "2026-09-20T10:00:00 04:00"; the space is put back before parsing so that
+    mistake reads as the time it obviously means rather than as a 422 nobody
+    can decipher from the URL they typed.
+    """
+    raw = params.get(name)
+    if raw is None or not str(raw).strip():
+        return None
+
+    raw = str(raw).strip().replace(" ", "+")
+    try:
+        moment = datetime.fromisoformat(raw)
+    except ValueError:
+        raise ParamError(
+            name,
+            f"Must be an ISO 8601 time with an offset, e.g. "
+            f"2026-09-20T10:00:00+04:00. Got {raw!r}.",
+            code="invalid_window",
+        ) from None
+
+    if moment.tzinfo is None or moment.utcoffset() is None:
+        raise ParamError(
+            name,
+            "Must carry a UTC offset, e.g. 2026-09-20T10:00:00+04:00 or a Z suffix.",
+            code="invalid_window",
+        )
+    return moment
+
+
+def parse_window(params, tz):
+    """
+    The `from`/`to` window, settled against the salon's own clock.
+
+    Returns (start, end) as aware datetimes. `start` is inclusive, `end`
+    exclusive, and both are the instants the caller sent — converting them to
+    the salon's offset is the response's job, not the filter's.
+
+    `tz` is the salon's timezone, needed because "the same day" is a question
+    about the salon's calendar, not the caller's. A customer in London asking
+    a Dubai salon about 22:00-23:00 local is asking about tomorrow morning
+    there, and that window is one salon day, not two.
+    """
+    start = _instant(params, "from")
+    end = _instant(params, "to")
+
+    for name, value in (("from", start), ("to", end)):
+        if value is None:
+            raise ParamError(
+                name, "This parameter is required.", code="invalid_window"
+            )
+
+    if end <= start:
+        raise ParamError(
+            "to",
+            "The end of the window must come after the start.",
+            code="invalid_window",
+        )
+
+    # `end` is EXCLUSIVE, so a window closing at exactly midnight closes the
+    # day it belongs to rather than opening the next one: 20:00 to 00:00 is
+    # one evening, and rejecting it would reject the most obvious "rest of
+    # today" request the app can make.
+    local_start = start.astimezone(tz).date()
+    local_end = (end.astimezone(tz) - timedelta(microseconds=1)).date()
+    if local_start != local_end:
+        raise ParamError(
+            "to",
+            "The window must start and end on the same day at the salon.",
+            code="invalid_window",
+        )
+
+    return start, end
+
+
+def parse_nearest_available(params, tz):
+    """
+    Everything `GET /booking/nearest-available/:id` takes.
+
+    `service_ids` says who is qualified to search across, `stylist_id` names
+    one person to search. Sending both narrows to that stylist for those
+    services; sending neither leaves nothing to search at all, which is the
+    one thing this endpoint cannot answer.
+    """
+    start, end = parse_window(params, tz)
+    service_ids = parse_service_ids(params)
+    stylist_id = _uuid(params, "stylist_id")
+
+    if not service_ids and stylist_id is None:
+        raise ParamError(
+            "service_ids",
+            "Send service_ids, stylist_id, or both.",
+            code="missing_filter",
+        )
+
+    return {
+        "start": start,
+        "end": end,
+        "service_ids": service_ids,
+        "stylist_id": stylist_id,
+    }

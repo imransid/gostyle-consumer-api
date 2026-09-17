@@ -91,6 +91,10 @@ screen in front of a customer who only picked an unusual service.
 "Any Available Expert" is a synthetic first row in the UI. The backend never
 returns it.
 
+Picking a stylist here is not booking one: whether they have a free hour is the
+next question, answered by
+[BOOKING_NEAREST_AVAILABLE_API.md](BOOKING_NEAREST_AVAILABLE_API.md).
+
 ---
 
 ## 3. How the match works

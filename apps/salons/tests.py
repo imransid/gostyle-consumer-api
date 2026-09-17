@@ -2,11 +2,12 @@ import math
 import uuid
 import zoneinfo
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timedelta
+from urllib.parse import urlencode
 from django.http import QueryDict
 from django.test import SimpleTestCase
 
-from apps.salons import skills, timezones, translate
+from apps.salons import skills, slots, timezones, translate
 from apps.salons.geo import bounding_box, format_distance, radius_box
 from apps.salons.hours import is_within, next_opening, next_opening_at, resolve
 from apps.salons.money import bps_to_percent, major
@@ -17,7 +18,9 @@ from apps.salons.params import (
     ParamError,
     parse_discovery,
     parse_map,
+    parse_nearest_available,
     parse_service_ids,
+    parse_window,
 )
 from apps.salons.views import _stylist_order
 
@@ -1123,3 +1126,265 @@ class StylistOrderTests(SimpleTestCase):
         rows = [{"name": None, "rating": None}, {"name": "Amy", "rating": None}]
         rows.sort(key=_stylist_order)
         self.assertEqual([r["name"] for r in rows], [None, "Amy"])
+
+
+DUBAI = zoneinfo.ZoneInfo("Asia/Dubai")
+DAY = datetime(2026, 9, 19, tzinfo=DUBAI)          # a Saturday, salon open 10-22
+
+
+def at(hour, minute=0):
+    """A moment on the test day, in the salon's own timezone."""
+    return DAY + timedelta(hours=hour, minutes=minute)
+
+
+class SpanTests(SimpleTestCase):
+    """'HH:MM'-'HH:MM' as a real interval on one salon-local day."""
+
+    def test_ordinary_day(self):
+        self.assertEqual(slots.span(DAY, "10:00", "22:00"), (at(10), at(22)))
+
+    def test_overnight_runs_into_the_next_day(self):
+        """
+        18:00 to 02:00 is eight hours, not minus sixteen. A salon open past
+        midnight books past midnight, and the naive subtraction would hand
+        back an interval that ends before it starts — silently bookable never.
+        """
+        self.assertEqual(slots.span(DAY, "18:00", "02:00"), (at(18), at(26)))
+
+    def test_malformed_is_none_not_all_day(self):
+        # The hours snapshot is JSONB and a shift time is free text. "No hours
+        # known" must never widen into "open all day".
+        for opens, closes in (("", "22:00"), (None, "22:00"), ("10:00", "ten"), ("25:00", "26:00")):
+            with self.subTest(opens=opens, closes=closes):
+                self.assertIsNone(slots.span(DAY, opens, closes))
+
+    def test_break_is_an_hour_from_its_start(self):
+        self.assertEqual(slots.break_span(DAY, "13:00"), (at(13), at(14)))
+        self.assertIsNone(slots.break_span(DAY, None))
+
+
+class IntervalMathTests(SimpleTestCase):
+    """Merging and subtracting the intervals a day is made of."""
+
+    def test_touching_intervals_merge(self):
+        self.assertEqual(
+            slots.merge([(at(10), at(12)), (at(12), at(14))]), [(at(10), at(14))]
+        )
+
+    def test_zero_length_intervals_vanish(self):
+        self.assertEqual(slots.merge([(at(10), at(10))]), [])
+
+    def test_a_break_splits_a_shift_in_two(self):
+        """
+        The whole reason this is interval arithmetic: an appointment may not
+        straddle lunch, so a 10-18 shift with a 13:00 break is two stretches,
+        not one long one with a note attached.
+        """
+        self.assertEqual(
+            slots.subtract([(at(10), at(18))], [(at(13), at(14))]),
+            [(at(10), at(13)), (at(14), at(18))],
+        )
+
+    def test_blocks_outside_the_shift_change_nothing(self):
+        self.assertEqual(
+            slots.subtract([(at(10), at(12))], [(at(14), at(15))]),
+            [(at(10), at(12))],
+        )
+
+    def test_a_block_covering_everything_leaves_nothing(self):
+        self.assertEqual(slots.subtract([(at(10), at(12))], [(at(9), at(13))]), [])
+
+    def test_overlapping_blocks_do_not_double_cut(self):
+        # Two bookings back to back, the second starting before the first ends
+        # (which the platform allows for two different services on one row).
+        self.assertEqual(
+            slots.subtract(
+                [(at(10), at(14))], [(at(11), at(12, 30)), (at(12), at(13))]
+            ),
+            [(at(10), at(11)), (at(13), at(14))],
+        )
+
+
+class AlignUpTests(SimpleTestCase):
+    """Every start sits on the grid, counted from salon-local midnight."""
+
+    def test_a_grid_point_is_left_alone(self):
+        self.assertEqual(slots.align_up(at(10, 15), DAY), at(10, 15))
+
+    def test_rounds_forward_never_back(self):
+        # Backwards would offer a start before the customer's window began.
+        self.assertEqual(slots.align_up(at(10, 1), DAY), at(10, 15))
+        self.assertEqual(slots.align_up(at(10, 14, ), DAY), at(10, 15))
+
+    def test_anchored_on_midnight_not_on_opening(self):
+        """
+        A salon opening at 09:30 still offers :00/:15/:30/:45, not :30/:45/:00
+        shifted by its own opening time.
+        """
+        self.assertEqual(slots.align_up(at(9, 31), DAY), at(9, 45))
+
+
+class StartsTests(SimpleTestCase):
+    """Walking a free stretch on the grid."""
+
+    FREE = [(at(10), at(12))]
+
+    def starts(self, free=None, duration=30, window=(10, 12), earliest=None):
+        return slots.starts(
+            free if free is not None else self.FREE,
+            duration,
+            at(window[0]),
+            at(window[1]),
+            earliest if earliest is not None else at(0),
+            DAY,
+        )
+
+    def test_walks_the_grid(self):
+        self.assertEqual(
+            self.starts(window=(10, 11)), [at(10), at(10, 15), at(10, 30), at(10, 45)]
+        )
+
+    def test_the_window_bounds_the_start_not_the_end(self):
+        """
+        A 45-minute service starting at 11:45 in a 10:00-12:00 window is a
+        real offer as long as the stylist is free until 12:30. Bounding the
+        END instead would hide the last slot before noon on every screen.
+        """
+        found = slots.starts(
+            [(at(10), at(13))], 45, at(10), at(12), at(0), DAY
+        )
+        self.assertEqual(found[-1], at(11, 45))
+
+    def test_an_appointment_must_fit_before_the_stretch_ends(self):
+        # 11:45 + 30 = 12:15, past a shift ending at 12:00.
+        self.assertEqual(self.starts()[-1], at(11, 30))
+
+    def test_nothing_starts_before_now_plus_lead_time(self):
+        self.assertEqual(
+            self.starts(earliest=at(11, 5))[0], at(11, 15)
+        )
+
+    def test_a_window_entirely_in_the_past_is_empty_not_an_error(self):
+        self.assertEqual(self.starts(earliest=at(23)), [])
+
+    def test_each_free_stretch_is_walked_in_turn(self):
+        found = slots.starts(
+            [(at(10), at(11)), (at(14), at(15))], 60, at(9), at(18), at(0), DAY
+        )
+        self.assertEqual(found, [at(10), at(14)])
+
+    def test_offers_come_back_in_time_order(self):
+        # Two stylists' stretches can arrive in any order; the response is
+        # sorted by start, so the walk is too.
+        found = slots.starts(
+            [(at(14), at(15)), (at(10), at(11))], 60, at(9), at(18), at(0), DAY
+        )
+        self.assertEqual(found, [at(10), at(14)])
+
+
+class WindowParamTests(SimpleTestCase):
+    """`from` and `to`, settled against the salon's own clock."""
+
+    def parse(self, start="2026-09-19T10:00:00+04:00", end="2026-09-19T12:00:00+04:00"):
+        return parse_window(QueryDict(urlencode({"from": start, "to": end})), DUBAI)
+
+    def test_an_ordinary_window(self):
+        start, end = self.parse()
+        self.assertEqual(start, at(10))
+        self.assertEqual(end, at(12))
+
+    def test_a_missing_side_is_rejected(self):
+        for query in ("", "from=2026-09-19T10:00:00%2B04:00"):
+            with self.subTest(query):
+                with self.assertRaises(ParamError) as ctx:
+                    parse_window(QueryDict(query), DUBAI)
+                self.assertEqual(ctx.exception.code, "invalid_window")
+
+    def test_a_naive_time_is_rejected(self):
+        """
+        "2026-09-19T10:00:00" is a moment in an unnamed timezone. Reading it as
+        the salon's own would answer a different question than the caller
+        asked, and say so nowhere.
+        """
+        with self.assertRaises(ParamError) as ctx:
+            self.parse(start="2026-09-19T10:00:00")
+        self.assertEqual(ctx.exception.param, "from")
+        self.assertEqual(ctx.exception.code, "invalid_window")
+
+    def test_garbage_is_rejected(self):
+        with self.assertRaises(ParamError) as ctx:
+            self.parse(end="tomorrow lunchtime")
+        self.assertEqual(ctx.exception.code, "invalid_window")
+
+    def test_an_unencoded_plus_still_reads_as_an_offset(self):
+        """
+        A raw `+` in a query string decodes to a space, so a hand-built URL
+        arrives as "2026-09-19T10:00:00 04:00". That is the caller's mistake,
+        but it has exactly one sensible reading and a 422 nobody can decipher
+        from the URL they typed is the worse answer.
+        """
+        params = QueryDict("from=2026-09-19T10:00:00 04:00&to=2026-09-19T12:00:00 04:00")
+        self.assertEqual(parse_window(params, DUBAI), (at(10), at(12)))
+
+    def test_the_end_must_come_after_the_start(self):
+        with self.assertRaises(ParamError) as ctx:
+            self.parse(start="2026-09-19T12:00:00+04:00", end="2026-09-19T10:00:00+04:00")
+        self.assertEqual(ctx.exception.param, "to")
+        self.assertEqual(ctx.exception.code, "invalid_window")
+
+    def test_a_window_crossing_midnight_is_rejected(self):
+        with self.assertRaises(ParamError) as ctx:
+            self.parse(start="2026-09-19T20:00:00+04:00", end="2026-09-20T02:00:00+04:00")
+        self.assertEqual(ctx.exception.code, "invalid_window")
+
+    def test_a_window_ending_at_midnight_is_one_day(self):
+        """
+        `to` is exclusive, so 20:00 to 00:00 is one evening. Rejecting it
+        would reject the most obvious "rest of today" the app can ask for.
+        """
+        start, end = self.parse(
+            start="2026-09-19T20:00:00+04:00", end="2026-09-20T00:00:00+04:00"
+        )
+        self.assertEqual((start, end), (at(20), at(24)))
+
+    def test_the_day_is_the_salons_day_not_the_callers(self):
+        """
+        A customer in London asking a Dubai salon about 22:00-23:00 their time
+        is asking about tomorrow morning there — one salon day, not two.
+        """
+        start, end = self.parse(
+            start="2026-09-19T22:00:00+01:00", end="2026-09-19T23:00:00+01:00"
+        )
+        self.assertEqual(start.astimezone(DUBAI), at(25))   # 01:00 next day
+        self.assertEqual(end.astimezone(DUBAI), at(26))
+
+
+class NearestAvailableParamTests(SimpleTestCase):
+    """What the endpoint needs before it can search anything."""
+
+    WINDOW = "from=2026-09-19T10:00:00%2B04:00&to=2026-09-19T12:00:00%2B04:00"
+    SERVICE = "66666666-6666-6666-6666-666666666660"
+    STYLIST = "99999999-9999-9999-9999-999999999990"
+
+    def parse(self, extra=""):
+        return parse_nearest_available(QueryDict(f"{self.WINDOW}&{extra}"), DUBAI)
+
+    def test_services_alone(self):
+        params = self.parse(f"service_ids={self.SERVICE}")
+        self.assertEqual(params["service_ids"], [uuid.UUID(self.SERVICE)])
+        self.assertIsNone(params["stylist_id"])
+
+    def test_one_stylist_alone(self):
+        params = self.parse(f"stylist_id={self.STYLIST}")
+        self.assertEqual(params["stylist_id"], uuid.UUID(self.STYLIST))
+        self.assertEqual(params["service_ids"], [])
+
+    def test_both_together_narrow_rather_than_conflict(self):
+        params = self.parse(f"stylist_id={self.STYLIST}&service_ids={self.SERVICE}")
+        self.assertEqual(params["stylist_id"], uuid.UUID(self.STYLIST))
+        self.assertEqual(params["service_ids"], [uuid.UUID(self.SERVICE)])
+
+    def test_neither_is_the_one_thing_this_cannot_answer(self):
+        with self.assertRaises(ParamError) as ctx:
+            self.parse()
+        self.assertEqual(ctx.exception.code, "missing_filter")

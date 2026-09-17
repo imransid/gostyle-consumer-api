@@ -224,6 +224,12 @@ master can take, one only the senior beard barber can, and one requiring a
 skill nobody at the salon holds, which must come back `200` with an empty list
 rather than an error. See [BOOKING_EXPERT_API.md](docs/BOOKING_EXPERT_API.md).
 
+Finally it rosters both barbers for a fortnight from the Monday of the current
+week — dates move with the calendar, because a roster pinned to fixed dates is
+stale by next week — and books one appointment tomorrow, so the Time step has
+a shift to walk, a lunch break to work around and a hole in someone's day. See
+[BOOKING_NEAREST_AVAILABLE_API.md](docs/BOOKING_NEAREST_AVAILABLE_API.md).
+
 A second command, `seed_salons` (plural), fills the legacy `salons_salon` demo
 table. Nothing reads that table any more: `/api/v1/salons/` now answers `410
 Gone` and the map endpoint no longer falls back to it. The command, the model
@@ -319,6 +325,7 @@ All routes are under `/api/v1/`. Auth is JWT (`rest_framework_simplejwt`):
 | `GET /salon/<uuid>/stylists`                                                | Public | `?service_ids=a,b` filters to the staff qualified for those services (booking Expert step)                             |
 | `GET /salon/<uuid>/packages`                                                | Public |                                                                                                                       |
 | `GET /salon/<uuid>/products`                                                | Public | Retail only                                                                                                           |
+| `GET /booking/nearest-available/<uuid>`                                     | JWT    | Bookable starts in one window, for `service_ids` or one `stylist_id`                                                   |
 | `GET /salons/`                                                              | Public | **410 Gone.** Served fixture data, never real salons. Use `/discover`                                                  |
 
 Three things about `/discover` are worth knowing before changing it.
@@ -347,6 +354,7 @@ Further reading, all in [docs/](docs/):
 - [DISCOVERY_API.md](docs/DISCOVERY_API.md) — mobile handoff for the discovery endpoints
 - [SALON_PROFILE_API.md](docs/SALON_PROFILE_API.md) — mobile handoff for the five profile endpoints, including why `:id` is a storefront UUID
 - [BOOKING_EXPERT_API.md](docs/BOOKING_EXPERT_API.md) — the booking flow's Expert step: which stylists can perform the picked services, and the two skill catalogues it bridges to find out
+- [BOOKING_NEAREST_AVAILABLE_API.md](docs/BOOKING_NEAREST_AVAILABLE_API.md) — the Time step: how a bookable start is decided, and everything that does not yet block one
 - [AUTH_GUIDE.md](docs/AUTH_GUIDE.md) — the OTP → verify → register flow in plain language
 - [DEPLOYMENT.md](docs/DEPLOYMENT.md) — CI/CD, image tags, and the rollback lever
 - [OBSERVABILITY.md](docs/OBSERVABILITY.md) — logs in Grafana Loki, and the request ID that ties Django, gunicorn and nginx together

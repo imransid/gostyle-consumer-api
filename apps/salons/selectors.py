@@ -1,3 +1,5 @@
+from datetime import timezone as dt_timezone
+
 from django.db.models import QuerySet
 from django.db.models import Avg, Count, DateField, Exists, F, FloatField, Func, OuterRef, Q, Subquery, TextField, Value
 from django.db.models.functions import ACos, Coalesce, Cos, Least, Lower, Now, NullIf, Radians, Sin
@@ -40,8 +42,10 @@ from apps.platform_data.models import (
 from apps.platform_data.models import FileItem, StaffProfile, UserAccount
 
 from apps.platform_data.models import (
+    Booking,
     CatalogSkill,
     ServiceStage,
+    Shift,
     Skill,
     StaffSkillAssignment,
 )
@@ -822,3 +826,126 @@ def stylist_service_coverage(storefront, service_ids, staff_ids, stages=None):
     held = held_skill_levels(staff_skill_rows(storefront.tenant_id, staff_ids))
 
     return skill_coverage(list(service_ids), required, held)
+
+
+# Which bookings occupy a stylist's time. PENDING, CONFIRMED and CHECKED_IN are
+# the platform's own ACTIVE_STATUSES — the set its availability engine refuses
+# to double-book against. COMPLETED is added here and nowhere there: a finished
+# appointment still happened, and the safe direction for a customer-facing
+# "when can I come in" is to offer fewer starts than the platform would accept,
+# never one it will reject at confirm.
+BUSY_STATUSES = ("PENDING", "CONFIRMED", "CHECKED_IN", "COMPLETED")
+
+
+def shift_rows(tenant_id, branch_id, staff_ids, day):
+    """
+    Each stylist's working hours on one calendar day.
+
+    A shift belongs to a weekly roster, and a roster belongs to one branch, so
+    the branch filter runs through the join: a stylist rostered at another
+    branch that day is not working HERE, whatever their skills.
+    """
+    if not staff_ids:
+        return []
+
+    return list(
+        Shift.objects.filter(
+            tenant_id=tenant_id,
+            roster__branch_id=branch_id,
+            staff_member_id__in=list(staff_ids),
+            shift_date=day,
+        ).values("staff_member_id", "start_time", "end_time", "break_time")
+    )
+
+
+def booking_rows(tenant_id, staff_ids, window_start, window_end):
+    """
+    Appointments these stylists already hold, overlapping the given span.
+
+    Overlap, not containment: a booking that started before the window and
+    runs into it occupies the same minutes as one that starts inside it. The
+    comparison is `start < to AND end > from`, which is the platform's own
+    busy-interval query.
+    """
+    if not staff_ids:
+        return []
+
+    rows = Booking.objects.filter(
+        tenant_id=tenant_id,
+        staff_id__in=list(staff_ids),
+        deleted_at__isnull=True,
+        status__in=BUSY_STATUSES,
+        start_at__lt=window_end,
+        end_at__gt=window_start,
+    ).values("staff_id", "start_at", "end_at")
+
+    # `booking.start_at` is `timestamp WITHOUT time zone` — Prisma's default
+    # mapping — holding UTC. Postgres therefore hands Django a NAIVE datetime,
+    # and `.astimezone()` on one of those reads it as the SERVER's local time,
+    # which is how an appointment moves by four hours without anyone touching
+    # it. The instant is stamped UTC here, once, so nothing downstream ever
+    # sees a naive datetime. (The filter above is safe for the same reason:
+    # Django sends UTC and holds the connection at UTC, so the comparison
+    # Postgres makes against a naive column is UTC against UTC.)
+    return [
+        {
+            "staff_id": row["staff_id"],
+            "start_at": row["start_at"].replace(tzinfo=dt_timezone.utc),
+            "end_at": row["end_at"].replace(tzinfo=dt_timezone.utc),
+        }
+        for row in rows
+    ]
+
+
+def service_timing_rows(storefront, service_ids, branch_id=None):
+    """
+    How long each requested service takes, and the notice it needs.
+
+    `duration_minutes` is the catalogue's own figure — the one the services tab
+    already shows the customer. `stage_minutes` is the sum the platform derives
+    from the service's stages (buffer_pre + work + impact + buffer_post), which
+    is what actually has to fit in the diary; it is None for a service with no
+    stages. `lead_time_minutes` is the minimum notice, null for most services.
+
+    Only services this salon really offers come back, so an id from another
+    salon contributes no duration and no stylist — an empty answer rather than
+    an error, which is what this endpoint promises for a bad service id.
+    """
+    if not service_ids:
+        return []
+
+    stages = ServiceStage.objects.filter(service_id=OuterRef("pk")).values(
+        "service_id"
+    ).annotate(
+        total=Sum(
+            F("buffer_pre") + F("duration_minutes")
+            + F("duration_impact") + F("buffer_post"),
+            output_field=IntegerField(),
+        )
+    ).values("total")
+
+    return list(
+        salon_services(storefront, branch_id)
+        .filter(id__in=list(service_ids))
+        .annotate(stage_minutes=Subquery(stages, output_field=IntegerField()))
+        .values("id", "duration_minutes", "stage_minutes", "lead_time_minutes")
+    )
+
+
+def manual_state_on(storefront_id, day):
+    """
+    The salon's hand-set state for one date, or None if it set none.
+
+    `live_manual_state()` answers the same question for today inside a
+    queryset; this one takes a date, because a booking window is often not
+    today.
+    """
+    return (
+        StorefrontStatus.objects.filter(
+            storefront_id=storefront_id,
+            source="MANUAL",
+            applies_on=day,
+        )
+        .values_list("state", flat=True)
+        .first()
+    )

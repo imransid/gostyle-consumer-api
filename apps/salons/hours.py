@@ -21,6 +21,18 @@ def _minutes(hhmm):
     return h * 60 + m
 
 
+def minutes_of_day(hhmm):
+    """
+    '14:30' -> 870 minutes past midnight, None for anything malformed.
+
+    The public face of _minutes, for callers outside this module: the slot
+    engine reads the same "HH:MM" strings out of shift rows that this module
+    reads out of the hours snapshot, and both need the same tolerance for a
+    JSONB field that may hold anything.
+    """
+    return _minutes(hhmm)
+
+
 def _pretty(hhmm):
     """'22:00' -> '10:00 PM'. None stays None."""
     total = _minutes(hhmm)
