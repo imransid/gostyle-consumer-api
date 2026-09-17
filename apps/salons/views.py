@@ -2,13 +2,20 @@ from datetime import datetime, timezone as dt_timezone
 from django.db.models import F
 from django.http import Http404
 from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import ErrorDetail, ValidationError
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from .snapshot import field as snap_field
-from .params import ParamError, parse_discovery, parse_map, parse_services, parse_stylists
+from .params import (
+    ParamError,
+    parse_discovery,
+    parse_map,
+    parse_service_ids,
+    parse_services,
+    parse_stylists,
+)
 
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from apps.accounts.models import Favourite
@@ -27,9 +34,12 @@ from .selectors import (
     salon_packages,
     salon_products,
     salon_profile,
+    salon_service_ids,
     salon_services,
     salon_stories,
     salon_stylists,
+    service_stage_rows,
+    stylist_service_coverage,
     with_distance,
     with_published_card_fields,
 )
@@ -325,27 +335,138 @@ class SalonServicesView(APIView):
             "duration_max": svc.duration_minutes,
         }
 
-def stylist_rows(salon):
-    """Every stylist of one salon, in the mobile app's shape."""
-    return [
-        {
-            "id": str(s.id),
-            "tenant_id": str(s.tenant_id),
-            "branch_id": str(s.branch_id) if s.branch_id else None,
-            "name": " ".join(filter(None, [s.first_name, s.last_name])) or None,
-            "role": s.position or s.job_title,
-            "avatar_url": s.avatar_url,
-            "rating": None,
-            "review_count": None,
-            "years_experience": None,
-            "day_off": None,
-        }
-        for s in salon_stylists(salon)
+def stylist_rows(salon, service_ids=None, stages=None):
+    """
+    Every stylist of one salon in the mobile app's shape.
+
+    With `service_ids`, only the staff who can perform at least one of those
+    services, each carrying the ones they cover. Without it, the whole roster
+    and no `service_ids` key at all — the Stylists tab asks a question about
+    people, not about a basket, and an empty list there would read as "this
+    person can do nothing".
+    """
+    staff = list(salon_stylists(salon))
+
+    coverage = {}
+    if service_ids:
+        coverage = stylist_service_coverage(
+            salon, service_ids, [s.id for s in staff], stages=stages
+        )
+        # Someone who covers none of the picked services is left out.
+        staff = [s for s in staff if s.id in coverage]
+
+    rows = [
+        _stylist_row(s, coverage[s.id] if service_ids else None) for s in staff
     ]
 
+    # Rating first, then name, so the list does not reshuffle between
+    # refreshes. Sorted here rather than in SQL because rating is not a column
+    # yet (see _stylist_row) and NULLS LAST would have to be spelled out for it
+    # the moment it becomes one.
+    rows.sort(key=_stylist_order)
+    return rows
 
+
+def _stylist_row(s, covered=None):
+    row = {
+        "id": str(s.id),
+        "tenant_id": str(s.tenant_id),
+        "branch_id": str(s.branch_id) if s.branch_id else None,
+        "name": " ".join(filter(None, [s.first_name, s.last_name])) or None,
+        # Two different columns, not one string split in two. `title` is the
+        # job title on the staff record (staff_profile.position — "Master
+        # Barber"); `role` is the expertise line on the person's own account
+        # (user_account.job_title — "Haircut & Styling Expert"). The app joins
+        # them as "title · role", so neither is pre-joined here and neither
+        # falls back to the other: printing the same words on both sides of the
+        # dot is worse than leaving one side empty.
+        "title": s.position or None,
+        "role": s.job_title or None,
+        "avatar_url": s.avatar_url,
+        "rating": None,
+        "review_count": None,
+        "years_experience": None,
+        "day_off": None,
+    }
+
+    # Only when the caller asked about services. `covered` is a list, possibly
+    # of one; an empty one cannot reach here, because a stylist covering
+    # nothing is not in the response at all.
+    if covered is not None:
+        row["service_ids"] = [str(service_id) for service_id in covered]
+    return row
+
+
+def _stylist_order(row):
+    # Rating descending with nulls last, then name. Every rating is null today,
+    # so this is name order in practice; it stops being so the day reviews
+    # learn which stylist they belong to.
+    rating = row.get("rating")
+    return (0 if rating is not None else 1, -(rating or 0), row.get("name") or "")
+
+
+def _service_ids_or_422(request):
+    try:
+        return parse_service_ids(request.query_params)
+    except ParamError as exc:
+        raise ValidationError({exc.param: [exc.message]}) from exc
+
+
+def _reject_unbookable(salon, service_ids):
+    """
+    422 for the two things a caller can get wrong about a service id.
+
+    Nothing else here is an error. A service nobody is qualified for is a 200
+    with an empty list (BOOKING_EXPERT_API.md §2): the customer picked a real
+    service and the
+    honest answer is that this salon has no one for it, which is a screen the
+    app draws, not an error it apologises for.
+    """
+    offered = salon_service_ids(salon, service_ids)
+    if any(sid not in offered for sid in service_ids):
+        raise ValidationError({
+            "service_ids": [
+                ErrorDetail(
+                    "One or more selected services are not offered by this salon.",
+                    code="unknown_service",
+                )
+            ]
+        })
+
+    stages = service_stage_rows(service_ids)
+    staged = {row["service_id"] for row in stages}
+    if any(sid not in staged for sid in service_ids):
+        # A service with no stages requires no skill, so EVERY stylist would
+        # trivially qualify. That is a catalogue gap on the platform side, and
+        # answering it with the whole roster would book the customer with
+        # someone who cannot do the job.
+        raise ValidationError({
+            "service_ids": [
+                ErrorDetail(
+                    "One or more selected services are not bookable yet.",
+                    code="service_without_skill",
+                )
+            ]
+        })
+    return stages
+
+
+@extend_schema(
+    parameters=[
+        OpenApiParameter(
+            "service_ids",
+            str,
+            required=False,
+            description=(
+                "Comma-separated service UUIDs. Filters the list to the staff "
+                "who can perform at least one of them and adds `service_ids` "
+                "to every stylist. Omitted or empty returns the full roster."
+            ),
+        ),
+    ],
+)
 class SalonStylistsView(APIView):
-    """GET /api/v1/salon/<uuid>/stylists"""
+    """GET /api/v1/salon/<uuid>/stylists[?service_ids=a,b]"""
 
     permission_classes = [AllowAny]
 
@@ -354,9 +475,14 @@ class SalonStylistsView(APIView):
         if salon is None:
             raise Http404("Salon not found")
 
-        return Response({"stylists": stylist_rows(salon)})
+        service_ids = _service_ids_or_422(request)
+        if not service_ids:
+            return Response({"stylists": stylist_rows(salon)})
 
-
+        stages = _reject_unbookable(salon, service_ids)
+        return Response({
+            "stylists": stylist_rows(salon, service_ids, stages=stages),
+        })
 
 
 @extend_schema(

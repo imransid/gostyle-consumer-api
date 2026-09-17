@@ -262,3 +262,56 @@ def parse_stylists(params):
         raise ParamError("branch_id", "This parameter is required.")
 
     return {"tenant_id": tenant_id, "branch_id": branch_id}
+
+# One booking cannot plausibly be 50 services long. The cap is not a product
+# rule, it is a ceiling on how big a query string can make the skill lookup.
+MAX_SERVICE_IDS = 50
+
+
+def parse_service_ids(params):
+    """
+    The `service_ids` filter on the stylists endpoint, as a list of UUIDs.
+
+    Liberal on the way in, because three clients spell a list three ways and
+    all three are already in the wild:
+
+        service_ids=a,b          what the customer app sends
+        service_ids=a&service_ids=b
+        service_ids[]=a&service_ids[]=b   axios' default for an array
+
+    All three normalise to the same list. Absent or empty means no filter at
+    all — the caller wants the whole roster — and comes back as an empty list,
+    which is why `parse_stylists`-style "required" checks are absent here.
+
+    Duplicates collapse and order is kept: the response lists each stylist's
+    covered services in the order the customer picked them.
+    """
+    raw = []
+    for name in ("service_ids", "service_ids[]"):
+        getlist = getattr(params, "getlist", None)
+        values = getlist(name) if getlist else ([params[name]] if name in params else [])
+        raw.extend(values or [])
+
+    seen = set()
+    service_ids = []
+    for value in raw:
+        for piece in str(value).split(","):
+            piece = piece.strip()
+            if not piece:
+                continue
+            try:
+                parsed = uuid.UUID(piece)
+            except ValueError:
+                raise ParamError(
+                    "service_ids", f"Must be a list of UUIDs. Got {piece!r}."
+                ) from None
+            if parsed not in seen:
+                seen.add(parsed)
+                service_ids.append(parsed)
+
+    if len(service_ids) > MAX_SERVICE_IDS:
+        raise ParamError(
+            "service_ids", f"Send {MAX_SERVICE_IDS} services or fewer."
+        )
+
+    return service_ids

@@ -216,7 +216,8 @@ fire badge cannot be built from this endpoint.
     {
       "id": "99999999-9999-9999-9999-999999999990",
       "name": "Liam Johnson",
-      "role": "Senior Barber",
+      "title": "Senior Barber",
+      "role": "Barber and Grooming Expert",
       "avatar_url": null,
       "rating": null,
       "review_count": null,
@@ -226,6 +227,15 @@ fire badge cannot be built from this endpoint.
   ]
 }
 ```
+
+`title` is the job title on the staff record; `role` is the expertise line on
+the person's own account. The app renders them as `title · role`, and neither
+falls back to the other, so either can be null on its own. **`role` changed
+meaning**: it used to carry the job title now in `title`.
+
+Add `?service_ids=a,b` to this same endpoint to get only the staff who can
+perform those services, each with the ones they cover — the booking flow's
+Expert step. See `BOOKING_EXPERT_API.md`.
 
 **Four fields are permanently null right now.** The keys are present so
 the response shape stays stable. Treat null as "hide this element".

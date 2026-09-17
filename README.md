@@ -218,6 +218,12 @@ staff row that is `ACTIVE`/`INVITED` and must _not_ appear publicly, a
 `PROFESSIONAL` product that must not reach the shop tab, and a package whose
 `price_before` and `save_amount` are derived rather than stored.
 
+It also seeds the two skill catalogues the booking flow's Expert step matches
+across, so `?service_ids=…` answers with real people: one service only the
+master can take, one only the senior beard barber can, and one requiring a
+skill nobody at the salon holds, which must come back `200` with an empty list
+rather than an error. See [BOOKING_EXPERT_API.md](docs/BOOKING_EXPERT_API.md).
+
 A second command, `seed_salons` (plural), fills the legacy `salons_salon` demo
 table. Nothing reads that table any more: `/api/v1/salons/` now answers `410
 Gone` and the map endpoint no longer falls back to it. The command, the model
@@ -310,7 +316,7 @@ All routes are under `/api/v1/`. Auth is JWT (`rest_framework_simplejwt`):
 | `GET /discover/<uuid>`                                                      | Public | One card                                                                                                              |
 | `GET /salon/<uuid>`                                                         | Public | Profile header, info card, check-in card                                                                              |
 | `GET /salon/<uuid>/services`                                                | Public | Two-level category grouping                                                                                           |
-| `GET /salon/<uuid>/stylists`                                                | Public |                                                                                                                       |
+| `GET /salon/<uuid>/stylists`                                                | Public | `?service_ids=a,b` filters to the staff qualified for those services (booking Expert step)                             |
 | `GET /salon/<uuid>/packages`                                                | Public |                                                                                                                       |
 | `GET /salon/<uuid>/products`                                                | Public | Retail only                                                                                                           |
 | `GET /salons/`                                                              | Public | **410 Gone.** Served fixture data, never real salons. Use `/discover`                                                  |
@@ -340,6 +346,7 @@ Further reading, all in [docs/](docs/):
 
 - [DISCOVERY_API.md](docs/DISCOVERY_API.md) — mobile handoff for the discovery endpoints
 - [SALON_PROFILE_API.md](docs/SALON_PROFILE_API.md) — mobile handoff for the five profile endpoints, including why `:id` is a storefront UUID
+- [BOOKING_EXPERT_API.md](docs/BOOKING_EXPERT_API.md) — the booking flow's Expert step: which stylists can perform the picked services, and the two skill catalogues it bridges to find out
 - [AUTH_GUIDE.md](docs/AUTH_GUIDE.md) — the OTP → verify → register flow in plain language
 - [DEPLOYMENT.md](docs/DEPLOYMENT.md) — CI/CD, image tags, and the rollback lever
 - [OBSERVABILITY.md](docs/OBSERVABILITY.md) — logs in Grafana Loki, and the request ID that ties Django, gunicorn and nginx together

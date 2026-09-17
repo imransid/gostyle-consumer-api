@@ -39,6 +39,19 @@ from apps.platform_data.models import (
 
 from apps.platform_data.models import FileItem, StaffProfile, UserAccount
 
+from apps.platform_data.models import (
+    CatalogSkill,
+    ServiceStage,
+    Skill,
+    StaffSkillAssignment,
+)
+from .skills import (
+    bridge as bridge_skills,
+    coverage as skill_coverage,
+    held_levels as held_skill_levels,
+    requirements as skill_requirements,
+)
+
 from .geo import EARTH_RADIUS_KM, bounding_box, radius_box
 from .serializers import CATEGORY_ALIASES
 from .timezones import DEFAULT_TIMEZONE
@@ -723,3 +736,89 @@ def salon_stories(storefront_id):
         )
         .order_by("sort_order", "-created_at")
     )
+
+def salon_service_ids(storefront, service_ids, branch_id=None):
+    """
+    Which of `service_ids` this salon actually offers, as a set of UUIDs.
+
+    Measured against the same queryset the services tab lists, not against the
+    whole `service` table: a service belonging to another tenant, archived, or
+    switched off for online booking is not bookable here, and answering "who
+    can do it" for one of those would be answering about a service the
+    customer could never have picked.
+    """
+    if not service_ids:
+        return set()
+
+    return set(
+        salon_services(storefront, branch_id)
+        .filter(id__in=list(service_ids))
+        .values_list("id", flat=True)
+    )
+
+
+def service_stage_rows(service_ids):
+    """Every stage of these services, with the skill and level it requires."""
+    if not service_ids:
+        return []
+
+    return list(
+        ServiceStage.objects.filter(service_id__in=list(service_ids))
+        .values("service_id", "skill_id", "min_level")
+    )
+
+
+def skill_bridge(tenant_id, catalog_skill_ids):
+    """catalog_skill id → this tenant's skill id (or None), keyed by code."""
+    if not catalog_skill_ids:
+        return {}
+
+    catalog_rows = CatalogSkill.objects.filter(
+        id__in=list(catalog_skill_ids)
+    ).values("id", "code")
+
+    # Whole catalogue rather than a code-filtered query: a tenant holds a few
+    # dozen skills, and the bridge needs every code to match against anyway.
+    tenant_rows = Skill.objects.filter(
+        tenant_id=tenant_id,
+        deleted_at__isnull=True,
+    ).values("id", "code")
+
+    return bridge_skills(list(catalog_rows), list(tenant_rows))
+
+
+def staff_skill_rows(tenant_id, staff_ids):
+    """The skills these staff hold, and at what level."""
+    if not staff_ids:
+        return []
+
+    return list(
+        StaffSkillAssignment.objects.filter(
+            tenant_id=tenant_id,
+            staff_member_id__in=list(staff_ids),
+        ).values("staff_member_id", "skill_id", "level")
+    )
+
+
+def stylist_service_coverage(storefront, service_ids, staff_ids, stages=None):
+    """
+    staff id → the requested services that person can perform alone.
+
+    Four small queries — stages, catalog codes, tenant codes, assignments —
+    and then the matching happens in `skills.py`. Doing it in SQL would mean
+    expressing the code bridge and the two level scales as a join, and the
+    only readable place for either is Python.
+
+    Staff who can perform none of the requested services do not appear, so the
+    keys are exactly the stylists the Expert step may show.
+    """
+    if stages is None:
+        stages = service_stage_rows(service_ids)
+
+    catalog_to_tenant = skill_bridge(
+        storefront.tenant_id, {row["skill_id"] for row in stages}
+    )
+    required = skill_requirements(stages, catalog_to_tenant)
+    held = held_skill_levels(staff_skill_rows(storefront.tenant_id, staff_ids))
+
+    return skill_coverage(list(service_ids), required, held)

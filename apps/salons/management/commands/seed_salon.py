@@ -3,8 +3,8 @@
 Insert one complete salon for local development.
 
 The profile endpoints read across storefront, branch, tenant, categories,
-services, availability, staff, packages, products and a published version
-snapshot. Testing them needs all of those to exist and agree with each other,
+services, availability, staff, packages, products, the two skill catalogues
+the booking flow matches across, and a published version snapshot. Testing them needs all of those to exist and agree with each other,
 which no fixture file expresses readably.
 
 WRITES TO PLATFORM-OWNED TABLES. Every table here is managed = False and
@@ -63,6 +63,52 @@ STAFF = [
     # selector filters on BOTH status columns rather than just employment.
     ("Ghost", "Invitee", "Barber", None, "INVITED"),
 ]
+
+# WHO CAN DO WHAT. Two skill catalogues that nothing joins: `catalog_skill` is
+# platform-wide reference data a service stage points at, `skill` is the
+# tenant's own list a staff member is assigned from, and the two are matched on
+# `code` (see apps/salons/skills.py). Seeding both is what makes the booking
+# flow's Expert step answerable at all — without stages, every service requires
+# no skill and the endpoint answers 422 service_without_skill.
+
+# code, name_en. Platform-wide, shared by every tenant.
+CATALOG_SKILLS = [
+    ("HAIRCUT", "Haircut"),
+    ("BEARD", "Beard Care"),
+    # No tenant skill matches this one. Scalp Treatment therefore requires a
+    # skill nobody at this salon can hold, which is the only proof that an
+    # unbridged requirement answers 200 with an empty list rather than
+    # qualifying everybody.
+    ("SCALP", "Scalp Care"),
+]
+
+SKILL_CATEGORY_ID = uuid.UUID("ffffffff-ffff-ffff-ffff-fffffffffff0")
+
+# The tenant's own spelling of those codes. "haircut" against the catalogue's
+# "HAIRCUT" is deliberate: the bridge matches on a trimmed, lowercased code,
+# and an exact-match implementation would pass every other test but this one.
+TENANT_SKILLS = [
+    ("haircut", "Haircut"),
+    ("BEARD", "Beard Care"),
+]
+
+# service index -> [(catalog code, min_level 1..5)]. Levels map onto the staff
+# ladder as 1=TRAINEE, 2=JUNIOR, 3=SENIOR, 4=MASTER.
+SERVICE_SKILLS = {
+    0: [("HAIRCUT", 2)],   # Gentleman's Cut: any qualified barber
+    1: [("HAIRCUT", 4)],   # Modern Fade: MASTER only
+    2: [("BEARD", 3)],     # Hot Towel Shave: SENIOR beard work
+    3: [("SCALP", 1)],     # Scalp Treatment: nobody holds this skill
+}
+
+# staff index -> [(tenant skill code, level)]. The result the Expert step shows:
+# the Fade is Darius alone, the Shave is Liam alone, the Cut is both, and the
+# Scalp Treatment is nobody.
+STAFF_SKILLS = {
+    0: [("haircut", "SENIOR"), ("BEARD", "MASTER")],   # Liam
+    1: [("haircut", "MASTER"), ("BEARD", "JUNIOR")],   # Darius
+    # Ghost Invitee holds nothing, and is filtered out before skills anyway.
+}
 
 # (service index, quantity). Members are Gentleman's Cut (199.00, 30m) and
 # Hot Towel Shave (260.00, 35m): 459.00 and 65 minutes bought separately,
@@ -149,6 +195,14 @@ def user_id(index):
 
 def staff_id(index):
     return uuid.UUID(f"99999999-9999-9999-9999-99999999999{index}")
+
+
+def skill_id(index):
+    return uuid.UUID(f"ffffffff-ffff-ffff-ffff-fffffffffff{index + 1}")
+
+
+def stage_id(index):
+    return uuid.UUID(f"12121212-1212-1212-1212-12121212121{index}")
 
 
 def package_item_id(order):
@@ -322,6 +376,91 @@ class Command(BaseCommand):
                      json.dumps([]), json.dumps({}), now, now],
                 )
 
+            # ── Skills ──────────────────────────────────────────────────
+            # catalog_skill is platform-wide reference data with a UNIQUE code,
+            # so a real seeded row may already hold "HAIRCUT" under an id of
+            # its own. Conflict on the CODE and read the id back, rather than
+            # assuming the one invented here won.
+            catalog_ids = {}
+            for order, (code, name_en) in enumerate(CATALOG_SKILLS):
+                cur.execute(
+                    """
+                    INSERT INTO public.catalog_skill
+                        (id, code, name_en, sort_order, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (code) DO NOTHING
+                    """,
+                    [uuid.uuid4(), code, name_en, order, now, now],
+                )
+                cur.execute(
+                    "SELECT id FROM public.catalog_skill WHERE code = %s", [code]
+                )
+                catalog_ids[code] = cur.fetchone()[0]
+
+            cur.execute(
+                """
+                INSERT INTO public.skill_category
+                    (id, tenant_id, name, icon, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                [SKILL_CATEGORY_ID, TENANT_ID, "Hair and Grooming",
+                 "scissors", now, now],
+            )
+
+            tenant_skill_ids = {}
+            for index, (code, name) in enumerate(TENANT_SKILLS):
+                cur.execute(
+                    """
+                    INSERT INTO public.skill
+                        (id, tenant_id, code, name, icon, category_id,
+                         min_bookable_level, cert_required,
+                         created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    [skill_id(index), TENANT_ID, code, name, "scissors",
+                     SKILL_CATEGORY_ID, "JUNIOR", False, now, now],
+                )
+                tenant_skill_ids[code] = skill_id(index)
+
+            # One stage per service here, which is enough to require a skill.
+            # A service's stages are also where its duration comes from on the
+            # platform; the seed keeps duration_minutes on the service row as
+            # the customer API reads it, so the two agree by construction.
+            for index, stages in SERVICE_SKILLS.items():
+                for order, (code, min_level) in enumerate(stages):
+                    cur.execute(
+                        """
+                        INSERT INTO public.service_stage
+                            (id, service_id, name_en, duration_minutes,
+                             sort_order, min_level, skill_id, resource_type,
+                             capacity, buffer_pre, buffer_post,
+                             duration_impact, products, created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                %s, %s, %s, %s)
+                        ON CONFLICT (id) DO NOTHING
+                        """,
+                        [stage_id(index), service_id(index),
+                         SERVICES[index][0], SERVICES[index][3], order,
+                         min_level, catalog_ids[code], "NONE", 1, 0, 0, 0,
+                         [], now, now],
+                    )
+
+            for index, held in STAFF_SKILLS.items():
+                for code, level in held:
+                    cur.execute(
+                        """
+                        INSERT INTO public.staff_skill_assignment
+                            (staff_member_id, skill_id, tenant_id, level,
+                             assigned_at)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (staff_member_id, skill_id) DO NOTHING
+                        """,
+                        [staff_id(index), tenant_skill_ids[code], TENANT_ID,
+                         level, now],
+                    )
+
             # ONE package, inserted after the services it is built from exist.
             # highlights and color_gallery are text[] in Postgres while the
             # stale model calls them TextField; psycopg3 maps a Python list to
@@ -405,6 +544,10 @@ class Command(BaseCommand):
         self.stdout.write(f"  GET /api/v1/salon/{STOREFRONT_ID}")
         self.stdout.write(f"  GET /api/v1/salon/{STOREFRONT_ID}/services")
         self.stdout.write(f"  GET /api/v1/salon/{STOREFRONT_ID}/stylists")
+        self.stdout.write(
+            f"  GET /api/v1/salon/{STOREFRONT_ID}/stylists"
+            f"?service_ids={service_id(0)},{service_id(1)}"
+        )
         self.stdout.write(f"  GET /api/v1/salon/{STOREFRONT_ID}/packages")
         self.stdout.write(f"  GET /api/v1/salon/{STOREFRONT_ID}/products")
 
@@ -436,6 +579,25 @@ class Command(BaseCommand):
                 [package_item_id(order)],
             )
         cur.execute("DELETE FROM public.service_package WHERE id = %s", [PKG_ID])
+
+        # Skills before the staff and services that reference them. The
+        # platform-wide catalog_skill rows are deliberately NOT deleted: they
+        # are reference data shared by every tenant, like badges, and another
+        # tenant's service stage may point at the very row this seed inserted.
+        for index in STAFF_SKILLS:
+            cur.execute(
+                "DELETE FROM public.staff_skill_assignment WHERE staff_member_id = %s",
+                [staff_id(index)],
+            )
+        for index in SERVICE_SKILLS:
+            cur.execute(
+                "DELETE FROM public.service_stage WHERE id = %s", [stage_id(index)]
+            )
+        for index in range(len(TENANT_SKILLS)):
+            cur.execute("DELETE FROM public.skill WHERE id = %s", [skill_id(index)])
+        cur.execute(
+            "DELETE FROM public.skill_category WHERE id = %s", [SKILL_CATEGORY_ID]
+        )
 
         for index in range(len(STAFF)):
             cur.execute(

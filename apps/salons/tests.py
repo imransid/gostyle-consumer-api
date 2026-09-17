@@ -1,16 +1,25 @@
 import math
+import uuid
 import zoneinfo
 from decimal import Decimal
 from datetime import datetime
+from django.http import QueryDict
 from django.test import SimpleTestCase
 
-from apps.salons import timezones, translate
+from apps.salons import skills, timezones, translate
 from apps.salons.geo import bounding_box, format_distance, radius_box
 from apps.salons.hours import is_within, next_opening, next_opening_at, resolve
 from apps.salons.money import bps_to_percent, major
 from apps.salons.snapshot import field, items, normalize
 
-from apps.salons.params import ParamError, parse_discovery, parse_map
+from apps.salons.params import (
+    MAX_SERVICE_IDS,
+    ParamError,
+    parse_discovery,
+    parse_map,
+    parse_service_ids,
+)
+from apps.salons.views import _stylist_order
 
 
 # SimpleTestCase, not TestCase: it refuses database access outright. If someone
@@ -844,3 +853,273 @@ class NextOpeningTests(SimpleTestCase):
 
         result = next_opening_at(self.WEEK, now)
         self.assertEqual(result.isoformat(), "2026-09-15T09:00:00+04:00")
+
+class ServiceIdsParamTests(SimpleTestCase):
+    """
+    The `service_ids` filter, parsed.
+
+    Three clients spell a list three different ways and all three are already
+    in the wild, so the parser takes all three and everything downstream sees
+    one list of UUIDs.
+    """
+
+    A = uuid.UUID("66666666-6666-6666-6666-666666666660")
+    B = uuid.UUID("66666666-6666-6666-6666-666666666661")
+
+    def test_comma_separated(self):
+        params = QueryDict(f"service_ids={self.A},{self.B}")
+        self.assertEqual(parse_service_ids(params), [self.A, self.B])
+
+    def test_repeated_parameter(self):
+        params = QueryDict(f"service_ids={self.A}&service_ids={self.B}")
+        self.assertEqual(parse_service_ids(params), [self.A, self.B])
+
+    def test_axios_bracket_spelling(self):
+        """What axios 1.x sends for an array, and what a plain getlist misses."""
+        params = QueryDict(f"service_ids[]={self.A}&service_ids[]={self.B}")
+        self.assertEqual(parse_service_ids(params), [self.A, self.B])
+
+    def test_absent_and_empty_mean_no_filter(self):
+        # Not an error: the Stylists tab sends neither, and a booking flow
+        # whose basket has not loaded yet sends an empty one. Both want the
+        # whole roster.
+        for query in ("", "service_ids=", "service_ids=,,"):
+            with self.subTest(query):
+                self.assertEqual(parse_service_ids(QueryDict(query)), [])
+
+    def test_whitespace_is_tolerated(self):
+        params = QueryDict(f"service_ids= {self.A} , {self.B} ")
+        self.assertEqual(parse_service_ids(params), [self.A, self.B])
+
+    def test_duplicates_collapse_and_order_holds(self):
+        """
+        The response lists each stylist's covered services in the order the
+        customer picked, so the parsed order is part of the contract.
+        """
+        params = QueryDict(f"service_ids={self.B},{self.A},{self.B}")
+        self.assertEqual(parse_service_ids(params), [self.B, self.A])
+
+    def test_garbage_is_rejected(self):
+        with self.assertRaises(ParamError) as ctx:
+            parse_service_ids(QueryDict("service_ids=not-a-uuid"))
+        self.assertEqual(ctx.exception.param, "service_ids")
+
+    def test_too_many_is_rejected(self):
+        """
+        A basket cannot be 51 services long. The cap keeps a hand-written query
+        string from turning into an unbounded IN list.
+        """
+        ids = ",".join(str(uuid.uuid4()) for _ in range(MAX_SERVICE_IDS + 1))
+        with self.assertRaises(ParamError):
+            parse_service_ids(QueryDict(f"service_ids={ids}"))
+
+
+class SkillLadderTests(SimpleTestCase):
+    """The two scales, and the mapping between them."""
+
+    def test_stage_level_maps_one_to_five_onto_four_rungs(self):
+        self.assertEqual(
+            [skills.stage_level(n) for n in (1, 2, 3, 4, 5)],
+            ["TRAINEE", "JUNIOR", "SENIOR", "MASTER", "MASTER"],
+        )
+
+    def test_out_of_range_clamps_rather_than_crashes(self):
+        # A stage saved as 0 or 9 by some future build must still answer the
+        # question. 0 asks for the least, 9 for the most.
+        self.assertEqual(skills.stage_level(0), "TRAINEE")
+        self.assertEqual(skills.stage_level(99), "MASTER")
+        self.assertEqual(skills.stage_level(None), "TRAINEE")
+
+    def test_unknown_level_never_qualifies(self):
+        """
+        A rung this build has not heard of ranks below every real one, so a
+        holder of it is not silently treated as a MASTER.
+        """
+        self.assertLess(skills.rank("GRANDMASTER"), skills.rank("TRAINEE"))
+
+
+class SkillBridgeTests(SimpleTestCase):
+    """
+    catalog_skill ↔ the tenant's own skill catalogue, matched on `code`.
+
+    Nothing joins these two tables; the platform's own eligibility handler
+    bridges them by code, and this has to agree with it.
+    """
+
+    def test_matches_ignoring_case_and_padding(self):
+        bridged = skills.bridge(
+            [{"id": "cs1", "code": "HAIRCUT"}],
+            [{"id": "sk1", "code": "  haircut "}],
+        )
+        self.assertEqual(bridged, {"cs1": "sk1"})
+
+    def test_unmatched_catalog_skill_is_present_as_none(self):
+        """
+        None, not absent. A skill the tenant never added is a requirement
+        nobody can meet; dropping the key would leave the service looking
+        like it required nothing at all.
+        """
+        bridged = skills.bridge([{"id": "cs1", "code": "COLOUR"}], [])
+        self.assertEqual(bridged, {"cs1": None})
+
+    def test_codeless_rows_never_match(self):
+        # `skill.code` is nullable and `catalog_skill.code` can be blank. Two
+        # rows with no code are not the same skill.
+        bridged = skills.bridge(
+            [{"id": "cs1", "code": None}, {"id": "cs2", "code": ""}],
+            [{"id": "sk1", "code": None}],
+        )
+        self.assertEqual(bridged, {"cs1": None, "cs2": None})
+
+    def test_duplicate_tenant_codes_resolve_stably(self):
+        """
+        `skill.code` is not unique per tenant. First row read wins, so the
+        answer does not depend on the order Postgres happened to return.
+        """
+        bridged = skills.bridge(
+            [{"id": "cs1", "code": "CUT"}],
+            [{"id": "first", "code": "cut"}, {"id": "second", "code": "CUT"}],
+        )
+        self.assertEqual(bridged, {"cs1": "first"})
+
+
+class ServiceRequirementTests(SimpleTestCase):
+    """What one person has to hold to perform a whole service."""
+
+    BRIDGE = {"cs_cut": "sk_cut", "cs_colour": "sk_colour", "cs_nails": None}
+
+    def test_stages_of_one_skill_fold_to_the_highest_level(self):
+        """
+        A colour service with a SENIOR step and a TRAINEE step needs a SENIOR
+        colourist, not two people.
+        """
+        required = skills.requirements(
+            [
+                {"service_id": "svc", "skill_id": "cs_colour", "min_level": 3},
+                {"service_id": "svc", "skill_id": "cs_colour", "min_level": 1},
+            ],
+            self.BRIDGE,
+        )
+        self.assertEqual(required, {"svc": {"sk_colour": "SENIOR"}})
+
+    def test_different_skills_stay_separate(self):
+        required = skills.requirements(
+            [
+                {"service_id": "svc", "skill_id": "cs_cut", "min_level": 2},
+                {"service_id": "svc", "skill_id": "cs_colour", "min_level": 4},
+            ],
+            self.BRIDGE,
+        )
+        self.assertEqual(
+            required, {"svc": {"sk_cut": "JUNIOR", "sk_colour": "MASTER"}}
+        )
+
+    def test_service_without_stages_is_absent(self):
+        """
+        Absent, not empty. The view turns this into a 422: a service requiring
+        no skill would otherwise qualify every stylist in the building.
+        """
+        self.assertEqual(skills.requirements([], self.BRIDGE), {})
+
+    def test_unbridged_skill_becomes_a_requirement_nobody_holds(self):
+        required = skills.requirements(
+            [{"service_id": "svc", "skill_id": "cs_nails", "min_level": 1}],
+            self.BRIDGE,
+        )
+        self.assertEqual(required, {"svc": {("catalog", "cs_nails"): "TRAINEE"}})
+        self.assertFalse(skills.can_perform(required["svc"], {"sk_cut": "MASTER"}))
+
+
+class CoverageTests(SimpleTestCase):
+    """Which of the picked services each stylist can actually take."""
+
+    REQUIRED = {
+        "cut": {"sk_cut": "JUNIOR"},
+        "colour": {"sk_cut": "JUNIOR", "sk_colour": "SENIOR"},
+    }
+
+    def levels(self, **held):
+        return {"darius": held}
+
+    def test_every_skill_or_nothing(self):
+        """
+        Partial coverage is not coverage. Holding the cut skill does not make
+        someone bookable for a service that also needs colour.
+        """
+        covered = skills.coverage(
+            ["cut", "colour"], self.REQUIRED, self.levels(sk_cut="MASTER")
+        )
+        self.assertEqual(covered, {"darius": ["cut"]})
+
+    def test_level_is_a_floor_not_a_match(self):
+        # SENIOR clears a JUNIOR requirement; TRAINEE does not.
+        self.assertEqual(
+            skills.coverage(["cut"], self.REQUIRED, self.levels(sk_cut="SENIOR")),
+            {"darius": ["cut"]},
+        )
+        self.assertEqual(
+            skills.coverage(["cut"], self.REQUIRED, self.levels(sk_cut="TRAINEE")),
+            {},
+        )
+
+    def test_nobody_qualified_is_an_empty_dict(self):
+        """
+        Empty, never an exception. "No one here can do this" is a screen the
+        app draws, not an error it apologises for.
+        """
+        self.assertEqual(skills.coverage(["colour"], self.REQUIRED, {}), {})
+
+    def test_one_stylist_appears_once_with_every_service(self):
+        covered = skills.coverage(
+            ["cut", "colour"],
+            self.REQUIRED,
+            self.levels(sk_cut="MASTER", sk_colour="MASTER"),
+        )
+        self.assertEqual(covered, {"darius": ["cut", "colour"]})
+
+    def test_order_follows_the_request(self):
+        """The app groups the list by what the customer picked, in that order."""
+        covered = skills.coverage(
+            ["colour", "cut"],
+            self.REQUIRED,
+            self.levels(sk_cut="MASTER", sk_colour="MASTER"),
+        )
+        self.assertEqual(covered["darius"], ["colour", "cut"])
+
+    def test_unknown_service_is_skipped_not_guessed(self):
+        covered = skills.coverage(
+            ["cut", "ghost"], self.REQUIRED, self.levels(sk_cut="MASTER")
+        )
+        self.assertEqual(covered, {"darius": ["cut"]})
+
+
+class StylistOrderTests(SimpleTestCase):
+    """Rating descending, then name — stable between refreshes either way."""
+
+    def test_rating_first_then_name(self):
+        rows = [
+            {"name": "Zed", "rating": 4.9},
+            {"name": "Amy", "rating": 4.9},
+            {"name": "Bo", "rating": 5.0},
+        ]
+        rows.sort(key=_stylist_order)
+        self.assertEqual([r["name"] for r in rows], ["Bo", "Amy", "Zed"])
+
+    def test_unrated_sink_below_rated_and_sort_by_name(self):
+        """
+        Every rating is null today, so this is the ordering the app actually
+        sees: pure name order, and nothing jumps when reviews start landing.
+        """
+        rows = [
+            {"name": "Liam", "rating": None},
+            {"name": "Darius", "rating": None},
+            {"name": "Zed", "rating": 3.0},
+        ]
+        rows.sort(key=_stylist_order)
+        self.assertEqual([r["name"] for r in rows], ["Zed", "Darius", "Liam"])
+
+    def test_nameless_row_does_not_crash_the_sort(self):
+        # `name` is null when a staff row has no user account behind it.
+        rows = [{"name": None, "rating": None}, {"name": "Amy", "rating": None}]
+        rows.sort(key=_stylist_order)
+        self.assertEqual([r["name"] for r in rows], [None, "Amy"])
