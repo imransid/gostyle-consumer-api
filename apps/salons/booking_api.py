@@ -131,8 +131,9 @@ def busy_intervals(
     zero bookings and offered slots that were already sold; the customer
     picked one and the booking was refused, naming the stylist.
 
-    Returns a list of `(staff_id, start, end)` with aware UTC datetimes, or
-    raises. NEVER an empty list on failure: an empty list means "everyone is
+    Returns `(intervals, bookable_window)` — the occupied spans as
+    `(staff_id, start, end)` with aware UTC datetimes, and the minutes-from-
+    midnight window the engine will actually search (None if it did not say). NEVER an empty list on failure: an empty list means "everyone is
     free", which is precisely the wrong answer here — it would put the picker
     straight back to offering sold slots, silently.
     """
@@ -161,7 +162,7 @@ def busy_intervals(
             f"booking-api answered {status} for the busy window"
         )
 
-    return [
+    intervals = [
         (
             row["staff_id"],
             datetime.fromisoformat(row["start_at"].replace("Z", "+00:00")),
@@ -169,6 +170,19 @@ def busy_intervals(
         )
         for row in body.get("busy") or []
     ]
+
+    # THE ENGINE'S BOOKABLE DAY, read rather than copied. It searches a fixed
+    # window and nothing outside it, whatever hours a branch keeps — so a
+    # salon opening at 09:00 had its first hour offered here and refused
+    # there. None when an older booking-api does not send it, and the caller
+    # then clamps nothing, which is exactly the behaviour it had before.
+    day = body.get("day") or {}
+    window = (
+        (day.get("from_min"), day.get("to_min"))
+        if isinstance(day.get("from_min"), int) and isinstance(day.get("to_min"), int)
+        else None
+    )
+    return intervals, window
 
 
 def patch_booking(booking_id, body, *, authorization, idempotency_key=None, tenant_id=None):

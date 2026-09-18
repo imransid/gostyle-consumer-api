@@ -2527,7 +2527,7 @@ class BusyIntervalsClientTests(SimpleTestCase):
             b'"end_at":"2026-09-21T08:30:00.000Z"}]}'
         )
         with self.answer(body=body):
-            rows = self.call()
+            rows, _window = self.call()
         self.assertEqual(len(rows), 1)
         staff_id, start, end = rows[0]
         self.assertEqual(staff_id, self.STAFF)
@@ -2549,6 +2549,28 @@ class BusyIntervalsClientTests(SimpleTestCase):
                 with self.answer(status=status, body=b"{}"):
                     with self.assertRaises(BookingApiUnavailable):
                         self.call()
+
+    @override_settings(BOOKING_API_URL="http://booking/")
+    def test_the_engines_bookable_day_comes_back_with_it(self):
+        """
+        The engine searches a fixed window and nothing outside it, whatever
+        hours a branch keeps. The picker reads the branch's real hours, so a
+        salon opening at 09:00 had its first hour offered and then refused --
+        "09:00 is no longer available" about a slot that was never
+        reachable. Read from booking-api rather than copied, so it cannot
+        drift out of step.
+        """
+        with self.answer(body=b'{"day":{"from_min":600,"to_min":1320},"busy":[]}'):
+            _rows, window = self.call()
+        self.assertEqual(window, (600, 1320))
+
+    @override_settings(BOOKING_API_URL="http://booking/")
+    def test_an_older_booking_api_that_omits_the_day_clamps_nothing(self):
+        # None means "it did not say", and the caller then behaves exactly
+        # as it did before -- not "the day is zero minutes long".
+        with self.answer(body=b'{"busy":[]}'):
+            _rows, window = self.call()
+        self.assertIsNone(window)
 
     @override_settings(BOOKING_API_URL="http://booking/")
     def test_an_unparseable_body_also_raises(self):

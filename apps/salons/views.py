@@ -1234,13 +1234,31 @@ def _offers(salon, tz, params, duration, lead_minutes, now, authorization):
     # included, since a salon open past midnight books past midnight too.
     booked = {}
     day_end = day_start + timedelta(days=2)
-    for staff_id, start_at, end_at in busy_intervals(
+    intervals, engine_day = busy_intervals(
         salon.branch_id, staff_ids, day_start, day_end,
         authorization=authorization,
         tenant_id=salon.tenant_id,
-    ):
+    )
+    for staff_id, start_at, end_at in intervals:
         booked.setdefault(uuid.UUID(str(staff_id)), []).append(
             (start_at.astimezone(tz), end_at.astimezone(tz))
+        )
+
+    # WHAT THE ENGINE WILL ACTUALLY BOOK, which is narrower than the salon's
+    # hours. It searches a fixed window and nothing outside it, so a salon
+    # opening at 09:00 had its first hour offered here and then refused
+    # there -- "09:00 is no longer available" about a slot that was never
+    # reachable. Offering a time nobody can book is worse than not offering
+    # it: the customer picks it, and the refusal blames the stylist.
+    #
+    # Read from booking-api, never copied, so it cannot drift. The real fix
+    # is a per-branch trading day in the engine; this stops the customer
+    # meeting the gap in the meantime.
+    engine_span = None
+    if engine_day is not None:
+        engine_span = (
+            day_start + timedelta(minutes=engine_day[0]),
+            day_start + timedelta(minutes=engine_day[1]),
         )
 
     earliest = now + timedelta(minutes=lead_minutes)
@@ -1256,8 +1274,14 @@ def _offers(salon, tz, params, duration, lead_minutes, now, authorization):
             continue
 
         # The salon's hours bound the stylist's: a shift starting before the
-        # doors open is not bookable time.
+        # doors open is not bookable time. And the engine's own day bounds
+        # both, because a start it will not search is not an offer.
         on_duty = (max(working[0], open_span[0]), min(working[1], open_span[1]))
+        if engine_span is not None:
+            on_duty = (
+                max(on_duty[0], engine_span[0]),
+                min(on_duty[1], engine_span[1]),
+            )
         if on_duty[0] >= on_duty[1]:
             continue
 
