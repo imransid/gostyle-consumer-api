@@ -325,6 +325,7 @@ All routes are under `/api/v1/`. Auth is JWT (`rest_framework_simplejwt`):
 | `GET /salon/<uuid>/stylists`                                                | Public | `?service_ids=a,b` filters to the staff qualified for those services (booking Expert step)                             |
 | `GET /salon/<uuid>/packages`                                                | Public |                                                                                                                       |
 | `GET /salon/<uuid>/products`                                                | Public | Retail only                                                                                                           |
+| `POST /booking`                                                             | JWT    | Forwards to gostyle-booking-api and returns its answer unchanged, 409 and 422 included                                 |
 | `GET /booking/nearest-available/<uuid>`                                     | JWT    | Bookable starts in one window, for `service_ids` or one `stylist_id`                                                   |
 | `GET /salons/`                                                              | Public | **410 Gone.** Served fixture data, never real salons. Use `/discover`                                                  |
 
@@ -355,6 +356,7 @@ Further reading, all in [docs/](docs/):
 - [SALON_PROFILE_API.md](docs/SALON_PROFILE_API.md) — mobile handoff for the five profile endpoints, including why `:id` is a storefront UUID
 - [BOOKING_EXPERT_API.md](docs/BOOKING_EXPERT_API.md) — the booking flow's Expert step: which stylists can perform the picked services, and the two skill catalogues it bridges to find out
 - [BOOKING_NEAREST_AVAILABLE_API.md](docs/BOOKING_NEAREST_AVAILABLE_API.md) — the Time step: how a bookable start is decided, and everything that does not yet block one
+- [BOOKING_CREATE_API.md](docs/BOOKING_CREATE_API.md) — creating a booking: what this service forwards to gostyle-booking-api, what it refuses on its own, and why two error shapes share one endpoint
 - [AUTH_GUIDE.md](docs/AUTH_GUIDE.md) — the OTP → verify → register flow in plain language
 - [DEPLOYMENT.md](docs/DEPLOYMENT.md) — CI/CD, image tags, and the rollback lever
 - [OBSERVABILITY.md](docs/OBSERVABILITY.md) — logs in Grafana Loki, and the request ID that ties Django, gunicorn and nginx together

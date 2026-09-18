@@ -2,11 +2,17 @@ from datetime import datetime, time, timedelta, timezone as dt_timezone
 from django.db.models import F
 from django.http import Http404
 from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
-from rest_framework.exceptions import ErrorDetail, ValidationError
+from rest_framework.exceptions import (
+    APIException,
+    ErrorDetail,
+    UnsupportedMediaType,
+    ValidationError,
+)
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from .booking_api import BookingApiUnavailable, create_booking
 from .snapshot import field as snap_field
 from .params import (
     ParamError,
@@ -1120,3 +1126,58 @@ def _offers(salon, tz, params, duration, lead_minutes, now):
     for offer in offers:
         del offer["_order"]
     return offers
+
+
+class BookingApiDown(APIException):
+    """503 when gostyle-booking-api cannot be reached.
+
+    Deliberately NOT how a 409 or a 422 from that service arrives: those are
+    answers, and they are forwarded with their own status and body. This is
+    the network failing, which is the one case the customer app cannot act on.
+    """
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    default_detail = "Booking is temporarily unavailable. Please try again."
+    default_code = "booking_api_unavailable"
+
+
+@extend_schema(
+    request=None,
+    responses=None,
+    description=(
+        "Create a booking. The body is forwarded to gostyle-booking-api "
+        "unchanged, and its answer is returned unchanged — including 409 "
+        "slot_taken and 422 validation errors, which carry that service's "
+        "error shape rather than this one's. Send `Idempotency-Key` to make "
+        "a retry safe."
+    ),
+)
+class BookingCreateView(APIView):
+    """POST /api/v1/booking — forwards to gostyle-booking-api."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        # Guard the content type before dialling out: booking-api would
+        # answer 422 for a form post, after a round trip, with a message
+        # about the payload rather than about the header.
+        media_type = (request.content_type or "").split(";")[0].strip().lower()
+        if media_type != "application/json":
+            raise UnsupportedMediaType(media_type or "none")
+
+        try:
+            upstream_status, body = create_booking(
+                # request.body, NOT request.data: the bytes go across exactly
+                # as they arrived. See booking_api.create_booking.
+                request.body,
+                authorization=request.META.get("HTTP_AUTHORIZATION", ""),
+                idempotency_key=request.META.get("HTTP_IDEMPOTENCY_KEY"),
+                # Forwarded only if the caller sent one. Never invented here.
+                tenant_id=request.META.get("HTTP_X_TENANT_ID"),
+            )
+        except BookingApiUnavailable as exc:
+            raise BookingApiDown() from exc
+
+        # Returned, not raised, so api_exception_handler never sees it and the
+        # body reaches the app in booking-api's own shape.
+        return Response(body, status=upstream_status)

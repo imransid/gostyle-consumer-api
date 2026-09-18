@@ -1,19 +1,142 @@
-import os
-import requests
+"""
+Talking to gostyle-booking-api.
 
-BASE_URL = os.environ.get("BOOKING_API_URL", "")
-TOKEN = os.environ.get("BOOKING_API_TOKEN", "")
+Bookings live in that service and in ITS database (`gostyle_booking`), which
+this one has no connection to and no business writing. Everything here is one
+HTTP call across the overlay network, and the answer comes back to the caller
+very nearly untouched.
+
+The rule that shapes this module:
+
+    A REFUSAL IS AN ANSWER, NOT A FAILURE.
+
+booking-api says 409 when the slot went to someone else between the customer
+picking it and pressing Book, and 422 when the payload is wrong. Both are
+things the app has a screen for. `urllib` raises `HTTPError` for either one,
+so the whole point of `_send` is to catch that and hand the status and body
+back as an ordinary return value. Only a booking-api that cannot be reached,
+or that answers with something other than JSON, is an exception here.
+
+Stdlib `urllib`, not `requests`, because that is what this project already
+uses to call another service (apps/accounts/notifications.py) and because
+`requests` is not in requirements.txt — the previous version of this module
+imported it anyway, and would have raised ImportError the first time anything
+called it.
+"""
+
+import json
+import logging
+import urllib.error
+import urllib.parse
+import urllib.request
+
+from django.conf import settings
+
+logger = logging.getLogger(__name__)
+
+# How much of an unparseable response reaches the log. Enough to recognise an
+# nginx error page or a stack trace, not enough to dump a payload into Loki.
+LOG_BODY_LIMIT = 500
+
+
+class BookingApiUnavailable(Exception):
+    """booking-api could not be reached, or did not answer with JSON.
+
+    NOT raised for 4xx or 5xx: those are answers, and they are returned. This
+    means the network failed, the service is down, or something in front of it
+    (nginx, a proxy) replied with HTML.
+    """
+
+
+def create_booking(body, *, authorization, idempotency_key=None, tenant_id=None):
+    """
+    POST /v1/booking, returning (status_code, parsed_body) exactly as given.
+
+    `body` is the caller's RAW request bytes, forwarded verbatim. Re-encoding
+    it here would round-trip every price through a Python float and reorder
+    the keys, and booking-api hashes the request body to recognise a retry —
+    so a re-serialised body is a different request to it, which is the one
+    thing idempotency must not be.
+
+    `authorization` is the customer's own bearer header, passed straight
+    through: booking-api resolves who is booking from that token, and this
+    service does not second-guess it.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": authorization,
+    }
+
+    # Both are forwarded ONLY when the caller sent them. An invented
+    # Idempotency-Key would make every retry a new booking; an invented tenant
+    # would stamp someone else's rows.
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    if tenant_id:
+        headers["X-Tenant-Id"] = tenant_id
+
+    return _send("POST", "/v1/mobile-booking", headers=headers, body=body)
 
 
 def get_branch_services(tenant_id, branch_id):
-    """Call booking-api. Returns a list, or None if it failed."""
+    """
+    Services a branch offers, as booking-api reads them from the platform.
+
+    Nothing in this service calls this today — the services tab reads the
+    platform tables directly (selectors.salon_services). It is kept because it
+    documents the one other endpoint we integrate with, and returns None on
+    failure exactly as the version before it did.
+    """
+    query = urllib.parse.urlencode({"tenantId": tenant_id, "branchId": branch_id})
     try:
-        response = requests.get(
-            f"{BASE_URL}/v1/services-directory/services",
-            params={"tenantId": tenant_id, "branchId": branch_id},
-            timeout=5,
-        )
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException:
+        status, body = _send("GET", f"/v1/services-directory/services?{query}")
+    except BookingApiUnavailable:
         return None
+    return body if status == 200 else None
+
+
+def _send(method, path, *, headers=None, body=None):
+    """One request to booking-api. Returns (status, parsed body or None)."""
+    url = settings.BOOKING_API_URL.rstrip("/") + path
+    request = urllib.request.Request(
+        url, data=body, headers=headers or {}, method=method
+    )
+
+    try:
+        with urllib.request.urlopen(
+            request, timeout=settings.BOOKING_API_TIMEOUT
+        ) as response:
+            return response.status, _parse(response.read(), response.status, url)
+    except urllib.error.HTTPError as exc:
+        # 409 slot_taken, 422 validation_error, 401 from its own auth — every
+        # one of them is the answer the customer needs to see.
+        return exc.code, _parse(exc.read(), exc.code, url)
+    except OSError as exc:
+        # URLError (connection refused, DNS, TLS) and TimeoutError are both
+        # OSError, and HTTPError is already handled above.
+        logger.warning(
+            "booking-api unreachable: %s %s (%s)", method, url, exc,
+            extra={"booking_api_url": url},
+        )
+        raise BookingApiUnavailable(str(exc)) from exc
+
+
+def _parse(raw, status, url):
+    """The response body as JSON, or None when there is no body at all."""
+    if not raw or not raw.strip():
+        # 204, or a 5xx with nothing in it. A booking response always has a
+        # body, so the caller decides what an empty one means.
+        return None
+
+    try:
+        return json.loads(raw)
+    except ValueError as exc:
+        # An HTML error page from a proxy, most likely. Passing it through
+        # would put markup where the app expects a booking, so this is a
+        # failure rather than an answer.
+        logger.warning(
+            "booking-api answered %s with non-JSON at %s: %r",
+            status, url, raw[:LOG_BODY_LIMIT],
+            extra={"booking_api_status": status, "booking_api_url": url},
+        )
+        raise BookingApiUnavailable("booking-api did not answer with JSON") from exc

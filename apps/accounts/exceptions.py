@@ -32,8 +32,14 @@ _TOP_LEVEL_CODES = {
     403: "permission_denied",
     404: "not_found",
     405: "method_not_allowed",
+    415: "unsupported_media_type",
     422: "validation_error",
     429: "rate_limited",
+    # Set by a view that depends on another service. The specific code lives
+    # in `errors` (booking_api_unavailable); this one says "not your fault,
+    # try again", which is the only thing the app can act on.
+    502: "upstream_error",
+    503: "service_unavailable",
 }
 
 _TOP_LEVEL_DETAIL = {
@@ -42,8 +48,11 @@ _TOP_LEVEL_DETAIL = {
     403: "You do not have permission to do that.",
     404: "Not found.",
     405: "Method not allowed.",
+    415: "That content type is not supported.",
     422: "Please correct the highlighted fields.",
     429: "Too many requests. Please try again later.",
+    502: "A service this request depends on failed.",
+    503: "Temporarily unavailable. Please try again.",
 }
 
 # DRF's own names for "this error has no field". Both become null for the

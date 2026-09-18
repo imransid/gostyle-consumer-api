@@ -131,6 +131,21 @@ SPECTACULAR_SETTINGS = {
 # touches Postgres. Production points this at Redis; local dev and tests use
 # in-memory (see config.settings.local).
 REDIS_URL = env("REDIS_URL", default="redis://127.0.0.1:6379/0")
+
+# gostyle-booking-api, which owns bookings and their database. This service
+# never writes a booking row; it forwards to that service and hands back what
+# it answers (apps/salons/booking_api.py).
+#
+# The base URL carries NO /v1: that prefix is the booking service's own
+# (`setGlobalPrefix('v1')`), so the client appends it per path, and a future
+# /v2 does not need every deployment's env file edited. The default is the
+# Swarm service name, which is what production resolves anyway — the variable
+# exists for local development and for the day the service moves.
+BOOKING_API_URL = env("BOOKING_API_URL", default="http://gostyle-booking_api:3851")
+
+# A customer is waiting on this call, so it fails fast rather than holding a
+# gunicorn worker open. Creating a booking is one transaction over there.
+BOOKING_API_TIMEOUT = env.int("BOOKING_API_TIMEOUT", default=10)
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",

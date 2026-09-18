@@ -1,13 +1,19 @@
+import json
 import math
+import urllib.error
 import uuid
 import zoneinfo
+from unittest import mock
 from decimal import Decimal
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
 from django.http import QueryDict
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 
-from apps.salons import skills, slots, timezones, translate
+from rest_framework.test import APIRequestFactory, force_authenticate
+
+from apps.salons import booking_api, skills, slots, timezones, translate
+from apps.salons.booking_api import BookingApiUnavailable
 from apps.salons.geo import bounding_box, format_distance, radius_box
 from apps.salons.hours import is_within, next_opening, next_opening_at, resolve
 from apps.salons.money import bps_to_percent, major
@@ -22,7 +28,7 @@ from apps.salons.params import (
     parse_service_ids,
     parse_window,
 )
-from apps.salons.views import _stylist_order
+from apps.salons.views import BookingCreateView, _stylist_order
 
 
 # SimpleTestCase, not TestCase: it refuses database access outright. If someone
@@ -1388,3 +1394,208 @@ class NearestAvailableParamTests(SimpleTestCase):
         with self.assertRaises(ParamError) as ctx:
             self.parse()
         self.assertEqual(ctx.exception.code, "missing_filter")
+
+
+class BookingApiClientTests(SimpleTestCase):
+    """
+    The client, with the network replaced.
+
+    The one rule worth testing here: a refusal is an answer. `urllib` raises
+    on 4xx, and a version of this that let the exception through would turn
+    "that slot just went" into a 500.
+    """
+
+    URL = "http://booking/v1/booking"
+
+    def urlopen(self, *, status=201, body=b'{"id":"bkg_1"}'):
+        """A stand-in for urlopen returning one response."""
+        response = mock.MagicMock()
+        response.status = status
+        response.read.return_value = body
+        response.__enter__.return_value = response
+        return mock.patch.object(booking_api.urllib.request, "urlopen", return_value=response)
+
+    def http_error(self, status, body):
+        error = urllib.error.HTTPError(self.URL, status, "", {}, None)
+        error.read = lambda: body
+        return mock.patch.object(booking_api.urllib.request, "urlopen", side_effect=error)
+
+    def create(self, **kwargs):
+        return booking_api.create_booking(
+            b'{"branch_id":"b1"}', authorization="Bearer t", **kwargs
+        )
+
+    def test_a_created_booking_comes_back_whole(self):
+        with self.urlopen():
+            self.assertEqual(self.create(), (201, {"id": "bkg_1"}))
+
+    def test_a_refusal_is_returned_not_raised(self):
+        """409 and 422 are screens in the app, not errors in this service."""
+        for status_code, body in (
+            (409, b'{"code":"slot_taken"}'),
+            (422, b'{"code":"validation_error"}'),
+        ):
+            with self.subTest(status_code):
+                with self.http_error(status_code, body):
+                    self.assertEqual(self.create(), (status_code, json.loads(body)))
+
+    def test_an_unreachable_service_raises(self):
+        with mock.patch.object(
+            booking_api.urllib.request, "urlopen",
+            side_effect=urllib.error.URLError("connection refused"),
+        ):
+            with self.assertRaises(booking_api.BookingApiUnavailable):
+                self.create()
+
+    def test_a_timeout_raises(self):
+        # TimeoutError is not a URLError; both are OSError, which is what the
+        # client catches.
+        with mock.patch.object(
+            booking_api.urllib.request, "urlopen", side_effect=TimeoutError("timed out")
+        ):
+            with self.assertRaises(booking_api.BookingApiUnavailable):
+                self.create()
+
+    def test_an_html_error_page_is_not_passed_through(self):
+        """
+        A proxy's 502 page is not a booking. Forwarding it would put markup
+        where the app expects JSON.
+        """
+        with self.http_error(502, b"<html>Bad Gateway</html>"):
+            with self.assertRaises(booking_api.BookingApiUnavailable):
+                self.create()
+
+    def test_an_empty_body_is_none_not_a_crash(self):
+        with self.urlopen(status=204, body=b""):
+            self.assertEqual(self.create(), (204, None))
+
+    @override_settings(BOOKING_API_URL="http://booking/")
+    def test_only_the_headers_we_control_are_sent(self):
+        with self.urlopen() as urlopen:
+            self.create(idempotency_key="key-1", tenant_id="ten-1")
+        request = urlopen.call_args.args[0]
+        # The trailing slash on the setting must not double up in the path.
+        self.assertEqual(request.get_full_url(), "http://booking/v1/mobile-booking")
+        self.assertEqual(request.data, b'{"branch_id":"b1"}')
+        self.assertEqual(
+            {k.lower(): v for k, v in request.headers.items()},
+            {
+                "content-type": "application/json",
+                "authorization": "Bearer t",
+                "idempotency-key": "key-1",
+                "x-tenant-id": "ten-1",
+            },
+        )
+
+    def test_absent_optional_headers_are_absent(self):
+        """
+        An invented Idempotency-Key would make every retry a new booking, and
+        an invented tenant would stamp someone else's rows.
+        """
+        with self.urlopen() as urlopen:
+            self.create()
+        headers = {k.lower() for k in urlopen.call_args.args[0].headers}
+        self.assertNotIn("idempotency-key", headers)
+        self.assertNotIn("x-tenant-id", headers)
+
+
+class Customer:
+    """The authenticated caller, without a database to put one in."""
+
+    is_authenticated = True
+
+
+class BookingCreateViewTests(SimpleTestCase):
+    """
+    The endpoint, with the client replaced.
+
+    SimpleTestCase and a request factory: this view touches no model, and the
+    only thing worth asserting is what crosses the boundary in each direction.
+    """
+
+    PAYLOAD = b'{"branch_id":"b1","services":[]}'
+
+    def post(self, *, body=None, authenticated=True, content_type="application/json", **headers):
+        request = APIRequestFactory().post(
+            "/api/v1/booking",
+            data=self.PAYLOAD if body is None else body,
+            content_type=content_type,
+            **headers,
+        )
+        if authenticated:
+            force_authenticate(request, user=Customer())
+        return BookingCreateView.as_view()(request)
+
+    def call(self, result):
+        return mock.patch("apps.salons.views.create_booking", return_value=result)
+
+    def test_a_created_booking_passes_through(self):
+        with self.call((201, {"id": "bkg_1", "code": "GS-BKG-1"})):
+            response = self.post()
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data, {"id": "bkg_1", "code": "GS-BKG-1"})
+
+    def test_a_refusal_passes_through_with_its_own_shape(self):
+        """
+        409 and 422 reach the app as booking-api wrote them. This endpoint
+        deliberately does NOT rewrap them in this project's envelope: the app
+        branches on that service's codes, and a translation layer here would
+        be one more thing to keep in step.
+        """
+        for status_code, body in (
+            (409, {"code": "slot_taken", "message": "That time just went."}),
+            (422, {"code": "validation_error", "errors": [{"field": "services"}]}),
+        ):
+            with self.subTest(status_code):
+                with self.call((status_code, body)):
+                    response = self.post()
+                self.assertEqual(response.status_code, status_code)
+                self.assertEqual(response.data, body)
+
+    def test_the_body_crosses_untouched(self):
+        with self.call((201, {})) as create:
+            self.post()
+        self.assertEqual(create.call_args.args[0], self.PAYLOAD)
+
+    def test_the_callers_token_is_forwarded(self):
+        with self.call((201, {})) as create:
+            self.post(HTTP_AUTHORIZATION="Bearer customer-token")
+        self.assertEqual(create.call_args.kwargs["authorization"], "Bearer customer-token")
+
+    def test_idempotency_key_is_forwarded_when_sent(self):
+        with self.call((201, {})) as create:
+            self.post(HTTP_IDEMPOTENCY_KEY="key-1")
+        self.assertEqual(create.call_args.kwargs["idempotency_key"], "key-1")
+
+    def test_optional_headers_are_none_when_not_sent(self):
+        with self.call((201, {})) as create:
+            self.post()
+        self.assertIsNone(create.call_args.kwargs["idempotency_key"])
+        self.assertIsNone(create.call_args.kwargs["tenant_id"])
+
+    def test_tenant_header_is_forwarded_when_sent(self):
+        with self.call((201, {})) as create:
+            self.post(HTTP_X_TENANT_ID="ten-1")
+        self.assertEqual(create.call_args.kwargs["tenant_id"], "ten-1")
+
+    def test_an_unreachable_booking_service_is_503_in_our_envelope(self):
+        with mock.patch(
+            "apps.salons.views.create_booking",
+            side_effect=BookingApiUnavailable("connection refused"),
+        ):
+            response = self.post()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data["code"], "service_unavailable")
+        self.assertEqual(response.data["errors"][0]["code"], "booking_api_unavailable")
+
+    def test_a_form_post_is_refused_before_the_network(self):
+        with self.call((201, {})) as create:
+            response = self.post(body="branch_id=b1", content_type="application/x-www-form-urlencoded")
+        self.assertEqual(response.status_code, 415)
+        create.assert_not_called()
+
+    def test_anonymous_is_refused_before_the_network(self):
+        with self.call((201, {})) as create:
+            response = self.post(authenticated=False)
+        self.assertEqual(response.status_code, 401)
+        create.assert_not_called()

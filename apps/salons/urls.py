@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .views import (
+    BookingCreateView,
     DiscoverMapView,
     NearestAvailableView,
     DiscoverStoryListView,
@@ -26,6 +27,7 @@ urlpatterns = [
     path("salon/<uuid:salon_id>", SalonProfileView.as_view(), name="salon-profile"),
     path("salon/<uuid:salon_id>/services", SalonServicesView.as_view(), name="salon-services"),
     path("salon/<uuid:salon_id>/stylists", SalonStylistsView.as_view(), name="salon-stylists"),
+    path("booking", BookingCreateView.as_view(), name="booking-create"),
     path(
         "booking/nearest-available/<uuid:salon_id>",
         NearestAvailableView.as_view(),
