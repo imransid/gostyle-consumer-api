@@ -354,6 +354,7 @@ Further reading, all in [docs/](docs/):
 
 - [DISCOVERY_API.md](docs/DISCOVERY_API.md) — mobile handoff for the discovery endpoints
 - [SALON_PROFILE_API.md](docs/SALON_PROFILE_API.md) — mobile handoff for the five profile endpoints, including why `:id` is a storefront UUID
+- [SERVICES_DETAILS_API.md](docs/SERVICES_DETAILS_API.md) — resolving service ids into their details: order, retired services, and why `salon_id` comes from the tenant
 - [BOOKING_EXPERT_API.md](docs/BOOKING_EXPERT_API.md) — the booking flow's Expert step: which stylists can perform the picked services, and the two skill catalogues it bridges to find out
 - [BOOKING_NEAREST_AVAILABLE_API.md](docs/BOOKING_NEAREST_AVAILABLE_API.md) — the Time step: how a bookable start is decided, and everything that does not yet block one
 - [BOOKING_CREATE_API.md](docs/BOOKING_CREATE_API.md) — creating a booking: what this service forwards to gostyle-booking-api, what it refuses on its own, and why two error shapes share one endpoint

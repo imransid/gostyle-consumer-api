@@ -1,9 +1,11 @@
 from datetime import datetime
 
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from . import timezones, translate
 from .geo import format_distance
+from .money import major
 from .hours import next_opening_at, resolve as resolve_hours
 from .snapshot import field as snap_field
 from .snapshot import items as snap_items
@@ -456,3 +458,80 @@ class FavouriteSerializer(serializers.Serializer):
 
     def get_salon(self, obj) -> dict:
         return FavouriteSalonSerializer(obj.salon, context=self.context).data
+
+
+class ServiceDetailSerializer(serializers.Serializer):
+    """
+    One service resolved by id, for the services-details lookup.
+
+    Fed by `selectors.services_by_ids`, so `salon_id` and `image_url` are
+    annotations rather than columns. `categories` in the context is the dict
+    that selector's caller read for every tenant in the batch.
+    """
+
+    id = serializers.UUIDField()
+    salon_id = serializers.UUIDField(allow_null=True)
+    name = serializers.CharField()
+    description = serializers.CharField(allow_null=True)
+    price = serializers.SerializerMethodField()
+    # The SAME number twice, deliberately — see SalonServicesView._service. A
+    # real range needs service_variant rows with differing durations; until
+    # the app reads those, sending one value twice is honest and lets the app
+    # collapse "20 - 20 mins" to "20 mins" itself.
+    duration_min = serializers.IntegerField(source="duration_minutes")
+    duration_max = serializers.IntegerField(source="duration_minutes")
+    category = serializers.SerializerMethodField()
+    image_url = serializers.CharField(allow_null=True)
+    is_active = serializers.SerializerMethodField()
+
+    def get_price(self, obj) -> float | None:
+        """The service's current price. A lookup, never a quote."""
+        # booking-api recomputes every figure against its own quote and is the
+        # only authority on what is charged (BOOKING_CREATE_API.md), so a
+        # customer holding a stale basket is corrected there, not here.
+        #
+        # No branch price is read: a service id arrives without a branch, and
+        # service_branch_availability is not read anywhere yet
+        # (selectors.BRANCH_AVAILABILITY_ENABLED). When it is, this is one of
+        # the call sites that has to learn about it.
+        return major(obj.price_minor)
+
+    @extend_schema_field(
+        {
+            "type": "object",
+            "nullable": True,
+            "properties": {
+                "id": {"type": "string"},
+                "label": {"type": "string"},
+            },
+        }
+    )
+    def get_category(self, obj) -> dict | None:
+        # category_0_id, not category_id: the service table has a legacy text
+        # column already named `category`, so inspectdb renamed the real
+        # foreign key rather than colliding with it.
+        cat = self.context["categories"].get(obj.category_0_id)
+        if cat is None:
+            # No category, or one pointing at a deleted row. Null rather than
+            # an invented "Other": this endpoint describes one service, and
+            # has no group to file it under the way the menu does.
+            return None
+
+        # The PARENT when there is one, so these ids match the chips the
+        # services tab already drew (SALON_PROFILE_API.md §2) and the app can
+        # group a basket without a second vocabulary.
+        parent = self.context["categories"].get(cat["parent_id"]) if cat["parent_id"] else None
+        chip = parent or cat
+        return {"id": str(chip["id"]), "label": chip["name_en"]}
+
+    def get_is_active(self, obj) -> bool:
+        """True when the service is still on the salon's menu today."""
+        # Exactly the three conditions `salon_services` filters the menu on,
+        # so the two endpoints cannot disagree about what "active" means.
+        # False is why the row is here at all: an old booking or a stale
+        # basket has to be describable, not a gap.
+        return (
+            obj.status == "PUBLISHED"
+            and obj.deleted_at is None
+            and obj.online_booking_enabled
+        )

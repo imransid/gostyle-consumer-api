@@ -1,11 +1,12 @@
 import json
 import math
+import types
 import urllib.error
 import uuid
 import zoneinfo
 from unittest import mock
 from decimal import Decimal
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 from urllib.parse import urlencode
 from django.http import QueryDict
 from django.test import SimpleTestCase, override_settings
@@ -28,7 +29,7 @@ from apps.salons.params import (
     parse_service_ids,
     parse_window,
 )
-from apps.salons.views import BookingCreateView, _stylist_order
+from apps.salons.views import BookingCreateView, ServiceDetailsView, _stylist_order
 
 
 # SimpleTestCase, not TestCase: it refuses database access outright. If someone
@@ -1599,3 +1600,181 @@ class BookingCreateViewTests(SimpleTestCase):
             response = self.post(authenticated=False)
         self.assertEqual(response.status_code, 401)
         create.assert_not_called()
+
+
+class ServiceRow(types.SimpleNamespace):
+    """A row as `services_by_ids` hands it over: columns plus two annotations."""
+
+    @classmethod
+    def make(cls, service_id, **overrides):
+        return cls(**{
+            "id": service_id,
+            "tenant_id": ServiceDetailsViewTests.TENANT,
+            "salon_id": ServiceDetailsViewTests.SALON,
+            "name": "Signature Fade",
+            "description": "Skin fade with a hot towel finish.",
+            "price_minor": 12000,
+            "duration_minutes": 45,
+            "category_0_id": ServiceDetailsViewTests.CATEGORY,
+            "image_url": "https://cdn.gostyles.app/services/fade.jpg",
+            "status": "PUBLISHED",
+            "deleted_at": None,
+            "online_booking_enabled": True,
+            **overrides,
+        })
+
+
+class ServiceDetailsViewTests(SimpleTestCase):
+    """
+    GET /api/v1/services-details, with the database replaced.
+
+    The selector is mocked because this view's whole job is the arithmetic
+    around it: which ids it asks for, what order the answers come back in, and
+    what it does about the ones that are missing.
+    """
+
+    A = uuid.UUID("66666666-6666-6666-6666-666666666660")
+    B = uuid.UUID("66666666-6666-6666-6666-666666666661")
+    GHOST = uuid.UUID("66666666-6666-6666-6666-66666666666f")
+    TENANT = uuid.UUID("11111111-1111-1111-1111-111111111111")
+    SALON = uuid.UUID("55555555-5555-5555-5555-555555555555")
+    CATEGORY = uuid.UUID("77777777-7777-7777-7777-777777777770")
+    PARENT = uuid.UUID("77777777-7777-7777-7777-777777777771")
+
+    CATEGORIES = {
+        CATEGORY: {
+            "id": CATEGORY,
+            "name_en": "Fades",
+            "parent_id": PARENT,
+        },
+        PARENT: {
+            "id": PARENT,
+            "name_en": "Haircut & Styling",
+            "parent_id": None,
+        },
+    }
+
+    def get(self, query, *, rows=(), authenticated=True, categories=None):
+        request = APIRequestFactory().get(f"/api/v1/services-details?{query}")
+        if authenticated:
+            force_authenticate(request, user=Customer())
+
+        with mock.patch(
+            "apps.salons.views.services_by_ids", return_value=list(rows)
+        ) as selector, mock.patch(
+            "apps.salons.views.categories_for_tenants",
+            return_value=self.CATEGORIES if categories is None else categories,
+        ):
+            self.selector = selector
+            return ServiceDetailsView.as_view()(request)
+
+    def test_the_requested_order_is_what_comes_back(self):
+        """
+        Not the database's order. The app renders the basket in the order the
+        customer built it, so the array is rebuilt against the query string.
+        """
+        response = self.get(
+            f"service_ids={self.B},{self.A}",
+            # Deliberately the other way round, as a plain IN query would
+            # return them.
+            rows=[ServiceRow.make(self.A), ServiceRow.make(self.B)],
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [row["id"] for row in response.data], [str(self.B), str(self.A)]
+        )
+
+    def test_an_unresolvable_id_is_left_out_rather_than_erroring(self):
+        """Two ids asked, one returned. The caller compares lengths."""
+        response = self.get(
+            f"service_ids={self.A},{self.GHOST}",
+            rows=[ServiceRow.make(self.A)],
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["id"] for row in response.data], [str(self.A)])
+
+    def test_nothing_resolving_is_an_empty_array_not_a_404(self):
+        response = self.get(f"service_ids={self.GHOST}", rows=[])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, [])
+
+    def test_duplicates_collapse_before_the_query(self):
+        self.get(f"service_ids={self.A},{self.A}", rows=[ServiceRow.make(self.A)])
+        self.assertEqual(self.selector.call_args.args[0], [self.A])
+
+    def test_a_row_carries_the_documented_shape(self):
+        response = self.get(f"service_ids={self.A}", rows=[ServiceRow.make(self.A)])
+        self.assertEqual(response.data[0], {
+            "id": str(self.A),
+            "salon_id": str(self.SALON),
+            "name": "Signature Fade",
+            "description": "Skin fade with a hot towel finish.",
+            "price": Decimal("120.00"),
+            "duration_min": 45,
+            "duration_max": 45,
+            # The PARENT category, which is the chip the services tab drew.
+            "category": {"id": str(self.PARENT), "label": "Haircut & Styling"},
+            "image_url": "https://cdn.gostyles.app/services/fade.jpg",
+            "is_active": True,
+        })
+
+    def test_a_retired_service_still_resolves(self):
+        """
+        An old booking has to be describable. Each of the three reasons a
+        service leaves the menu comes back as is_active: false, not as a gap.
+        """
+        for reason in (
+            {"status": "DRAFT"},
+            {"deleted_at": datetime(2026, 1, 1, tzinfo=dt_timezone.utc)},
+            {"online_booking_enabled": False},
+        ):
+            with self.subTest(reason):
+                response = self.get(
+                    f"service_ids={self.A}",
+                    rows=[ServiceRow.make(self.A, **reason)],
+                )
+                self.assertEqual(len(response.data), 1)
+                self.assertIs(response.data[0]["is_active"], False)
+
+    def test_a_service_with_no_category_is_null_not_other(self):
+        response = self.get(
+            f"service_ids={self.A}",
+            rows=[ServiceRow.make(self.A, category_0_id=None)],
+        )
+        self.assertIsNone(response.data[0]["category"])
+
+    def test_a_top_level_category_is_its_own_chip(self):
+        response = self.get(
+            f"service_ids={self.A}",
+            rows=[ServiceRow.make(self.A, category_0_id=self.PARENT)],
+        )
+        self.assertEqual(
+            response.data[0]["category"],
+            {"id": str(self.PARENT), "label": "Haircut & Styling"},
+        )
+
+    def test_missing_or_empty_service_ids_is_422_missing_filter(self):
+        """
+        Required here, unlike on the stylists endpoint where absent means the
+        whole roster. A lookup with nothing to look up is a caller bug.
+        """
+        for query in ("", "service_ids=", "service_ids=,,"):
+            with self.subTest(query):
+                response = self.get(query)
+                self.assertEqual(response.status_code, 422)
+                self.assertEqual(response.data["code"], "validation_error")
+                self.assertEqual(response.data["errors"][0], {
+                    "field": "service_ids",
+                    "code": "missing_filter",
+                    "message": "Provide at least one service id.",
+                })
+
+    def test_a_malformed_id_is_422(self):
+        response = self.get("service_ids=not-a-uuid")
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.data["errors"][0]["field"], "service_ids")
+
+    def test_anonymous_is_refused(self):
+        response = self.get(f"service_ids={self.A}", authenticated=False)
+        self.assertEqual(response.status_code, 401)
+        self.selector.assert_not_called()

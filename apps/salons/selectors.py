@@ -1,13 +1,18 @@
 from datetime import timezone as dt_timezone
 
 from django.db.models import QuerySet
-from django.db.models import Avg, Count, DateField, Exists, F, FloatField, Func, OuterRef, Q, Subquery, TextField, Value
+from django.db.models import Avg, Case, Count, DateField, Exists, F, FloatField, Func, OuterRef, Q, Subquery, TextField, Value, When
 from django.db.models.functions import ACos, Coalesce, Cos, Least, Lower, Now, NullIf, Radians, Sin
 from django.contrib.postgres.aggregates import ArrayAgg
 from django.contrib.postgres.fields import ArrayField
 from apps.platform_data.models import Product, ProductVariant
 
-from apps.platform_data.models import Category, Service, ServiceBranchAvailability
+from apps.platform_data.models import (
+    Category,
+    Service,
+    ServiceBranchAvailability,
+    ServiceMedia,
+)
 
 from django.db.models.fields.json import KeyTextTransform, KeyTransform
 from apps.platform_data.models import StorefrontStory, StorefrontVersion
@@ -288,20 +293,92 @@ def salon_services(storefront, branch_id=None):
 
     return qs.order_by("name")
 
-def salon_categories(tenant_id):
+def categories_for_tenants(tenant_ids):
     """
-    Every category for a tenant, as a dict keyed by id.
+    Every category belonging to a SET of tenants, as a dict keyed by id.
 
     Read whole rather than joined per service: a tenant has a handful of
     categories and a salon has many services, so one small query beats a join
     repeated on every row. The parent lookup below also needs the full set.
+
+    Takes a set because service ids can span salons, and therefore tenants
+    (SERVICES_DETAILS_API.md §3.6). One query for all of them beats one per
+    tenant, and the ids are globally unique so a single dict is unambiguous.
     """
+    tenant_ids = list(tenant_ids)
+    if not tenant_ids:
+        return {}
+
     rows = Category.objects.filter(
-        tenant_id=tenant_id,
+        tenant_id__in=tenant_ids,
         deleted_at__isnull=True,
     ).values("id", "name_en", "slug", "icon", "parent_id", "sort_order")
 
     return {row["id"]: row for row in rows}
+
+
+def salon_categories(tenant_id):
+    """Every category for one tenant. See `categories_for_tenants`."""
+    return categories_for_tenants([tenant_id])
+
+
+def services_by_ids(service_ids):
+    """
+    Full detail for a set of service ids, whatever state each one is in.
+
+    NOT `salon_services` with an id filter, and the difference is the point.
+    That selector answers "what can a customer book at this salon today", so
+    it drops anything unpublished, deleted, or off online booking — which is
+    exactly the set of rows this lookup exists to describe. A basket or a
+    six-month-old booking holds ids that may since have been retired, and a
+    silent gap in the array is worse than a row marked `is_active: false`.
+
+    Nothing is filtered by tenant either: the caller holds the ids, and ids
+    from two salons in one request is a supported case, not an attack. The
+    rows carry no customer data.
+    """
+    if not service_ids:
+        return Service.objects.none()
+
+    # The primary image, else the first by sort order. `-is_primary` puts True
+    # first; `created_at` is the tie-break so the same row wins every time
+    # rather than whichever the planner happened to return.
+    primary_media = ServiceMedia.objects.filter(
+        service_id=OuterRef("pk"),
+        deleted_at__isnull=True,
+    ).order_by("-is_primary", "sort_order", "created_at")
+
+    # A service belongs to a TENANT; there is no salon column to read. What
+    # the app calls a salon is a storefront, one per branch, so it is resolved
+    # through the tenant — preferring a PUBLIC one, and falling back to any
+    # live storefront so a service sold only on a hidden branch still names
+    # the salon behind it rather than coming back with a null link.
+    #
+    # A tenant with several branches has several storefronts and this picks
+    # the oldest. See the known gap in docs/SERVICES_DETAILS_API.md: a real fix
+    # needs service_branch_availability, which is not read anywhere yet
+    # (BRANCH_AVAILABILITY_ENABLED is False).
+    storefronts = (
+        Storefront.objects.filter(
+            tenant_id=OuterRef("tenant_id"),
+            deleted_at__isnull=True,
+        )
+        .annotate(
+            public_first=Case(
+                When(visibility="PUBLIC", then=Value(0)),
+                default=Value(1),
+                output_field=IntegerField(),
+            )
+        )
+        .order_by("public_first", "created_at", "id")
+    )
+
+    return Service.objects.filter(id__in=list(service_ids)).annotate(
+        salon_id=Subquery(storefronts.values("id")[:1]),
+        image_url=Subquery(
+            primary_media.values("url")[:1], output_field=TextField()
+        ),
+    )
 
 def salon_profile(storefront_id, user=None):
 

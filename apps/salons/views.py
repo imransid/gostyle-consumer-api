@@ -21,6 +21,7 @@ from rest_framework.views import APIView
 from .booking_api import BookingApiUnavailable, create_booking
 from .snapshot import field as snap_field
 from .params import (
+    MAX_SERVICE_IDS,
     ParamError,
     parse_discovery,
     parse_map,
@@ -45,6 +46,7 @@ from .selectors import (
     filter_by_search,
     filter_top_rated,
     map_venues,
+    categories_for_tenants,
     salon_categories,
     salon_packages,
     salon_products,
@@ -55,6 +57,7 @@ from .selectors import (
     salon_stories,
     salon_stylists,
     service_stage_rows,
+    services_by_ids,
     service_timing_rows,
     shift_rows,
     stylist_service_coverage,
@@ -66,9 +69,34 @@ from .serializers import (
     MapVenueSerializer,
     SalonCardSerializer,
     SalonProfileSerializer,
+    ServiceDetailSerializer,
     StorySalonSerializer,
 )
 from .snapshot import read_snapshot
+
+
+# The project's error envelope, as raw OpenAPI. Shared by every view here
+# that documents a refusal of its own, and shaped by apps.accounts.exceptions
+# (api_exception_handler) rather than by any serializer — which is why it is
+# written out rather than derived.
+_OUR_ENVELOPE = {
+    "type": "object",
+    "properties": {
+        "detail": {"type": "string"},
+        "code": {"type": "string"},
+        "errors": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "field": {"type": "string", "nullable": True},
+                    "code": {"type": "string"},
+                    "message": {"type": "string"},
+                },
+            },
+        },
+    },
+}
 
 
 class SalonListView(APIView):
@@ -565,6 +593,107 @@ class ServiceListView(APIView):
             ]
 
         return Response(data)
+
+
+@extend_schema(
+    summary="Resolve service ids into their details",
+    description=(
+        "Resolve a set of service ids into full details, in one call — what "
+        "the app needs to describe a basket, a saved booking, or a deep link "
+        "it holds ids for.\n\n"
+        "The array comes back in the order the ids were sent, duplicates "
+        "collapse, and an id that resolves to nothing is LEFT OUT rather "
+        "than erroring — so the array can be shorter than the request, or "
+        "empty. The caller compares lengths to notice.\n\n"
+        "Retired services still resolve, carrying `is_active: false`, so an "
+        "old booking can still be described instead of showing a gap.\n\n"
+        "Prices are current, not quoted: this is a lookup, and booking-api "
+        "recomputes every figure itself (BOOKING_CREATE_API.md). Ids may "
+        "span salons; each entry names its own `salon_id`. No pagination — "
+        "the caller asks for a known, small set."
+    ),
+    parameters=[
+        OpenApiParameter(
+            "service_ids",
+            str,
+            required=True,
+            description=(
+                "Service UUIDs, comma separated. The repeated "
+                "(`service_ids=a&service_ids=b`) and bracket "
+                f"(`service_ids[]=a`) spellings are accepted too. Up to "
+                f"{MAX_SERVICE_IDS} ids."
+            ),
+        ),
+    ],
+    responses={
+        200: ServiceDetailSerializer(many=True),
+        422: OpenApiResponse(
+            response=_OUR_ENVELOPE,
+            description=(
+                "`service_ids` missing or empty (`missing_filter`), or not a "
+                "list of UUIDs (`invalid`). Nothing else here is an error: "
+                "ids that resolve to nothing are a 200 with a shorter array."
+            ),
+            examples=[
+                OpenApiExample(
+                    "Missing filter",
+                    value={
+                        "detail": "Please correct the highlighted fields.",
+                        "code": "validation_error",
+                        "errors": [
+                            {
+                                "field": "service_ids",
+                                "code": "missing_filter",
+                                "message": "Provide at least one service id.",
+                            }
+                        ],
+                    },
+                )
+            ],
+        ),
+    },
+)
+class ServiceDetailsView(APIView):
+    """
+    GET /api/v1/services-details?service_ids=<uuid>,<uuid>
+
+    The one endpoint here that is keyed by service rather than by salon. The
+    app reaches it holding ids it stored earlier — a basket it kept across a
+    restart, a booking it is rendering, a link someone shared — and needs the
+    names, prices and pictures back for them, possibly across two salons.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        service_ids = _service_ids_or_422(request)
+        if not service_ids:
+            # REQUIRED here, unlike the same parameter on the stylists
+            # endpoint, where absent means "the whole roster". There is no
+            # whole roster to fall back on: a lookup with nothing to look up
+            # is a caller bug, and answering [] would hide it.
+            raise _invalid(
+                ParamError(
+                    "service_ids",
+                    "Provide at least one service id.",
+                    code="missing_filter",
+                )
+            )
+
+        rows = {svc.id: svc for svc in services_by_ids(service_ids)}
+        categories = categories_for_tenants({svc.tenant_id for svc in rows.values()})
+
+        # The REQUESTED order, not the database's: the app renders a basket in
+        # the order the customer built it. `parse_service_ids` already
+        # collapsed duplicates and kept that order; anything that did not
+        # resolve simply is not here.
+        found = [rows[sid] for sid in service_ids if sid in rows]
+
+        return Response(
+            ServiceDetailSerializer(
+                found, many=True, context={"categories": categories}
+            ).data
+        )
 
 
 class SalonPackagesView(APIView):
@@ -1269,29 +1398,6 @@ _BOOKING_REQUEST = {
         "Who is booking is NOT in here. booking-api resolves the customer from "
         "the bearer token, and this service neither reads nor overrides it."
     ),
-}
-
-# Two error shapes live on this endpoint, and the app has to handle both.
-# Refusals from booking-api arrive in ITS shape (409, 422); refusals raised
-# before the request leaves this service arrive in this project's envelope
-# (401, 415, 503). See docs/BOOKING_CREATE_API.md §2.
-_OUR_ENVELOPE = {
-    "type": "object",
-    "properties": {
-        "detail": {"type": "string"},
-        "code": {"type": "string"},
-        "errors": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "field": {"type": "string", "nullable": True},
-                    "code": {"type": "string"},
-                    "message": {"type": "string"},
-                },
-            },
-        },
-    },
 }
 
 
