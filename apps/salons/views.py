@@ -1895,9 +1895,13 @@ _PAYMENT_REQUEST = {
                 location=OpenApiParameter.HEADER,
                 required=False,
                 description=(
-                    "Forwarded only when sent, never invented. "
+                    "OPTIONAL. Derived from the body when not sent, so a "
+                    "gateway callback delivered twice records one payment. "
                     "`payment_reference` is the second guard: the same one "
-                    "twice returns the same booking."
+                    "twice returns the same booking.\n\n"
+                    "**No `X-Tenant-Id`.** The booking id and the bearer "
+                    "token are the whole request — a booking already records "
+                    "which salon and tenant it belongs to."
                 ),
             ),
         ],
@@ -1988,11 +1992,14 @@ class BookingDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, booking_id):
+        # THE ID AND THE TOKEN, NOTHING ELSE. A booking already knows which
+        # salon and tenant it belongs to, so asking the caller to say it
+        # again was asking for a fact they had no way to know from a booking
+        # id — and getting it wrong answered 404 for a booking that existed.
         try:
             upstream_status, body = read_booking(
                 booking_id,
                 authorization=request.META.get("HTTP_AUTHORIZATION", ""),
-                tenant_id=request.META.get("HTTP_X_TENANT_ID"),
             )
         except BookingApiUnavailable as exc:
             raise BookingApiDown() from exc
@@ -2009,10 +2016,13 @@ class BookingDetailView(APIView):
         try:
             upstream_status, body = patch_booking(
                 booking_id,
+                # The bytes as they arrived: this payload names no salon, so
+                # there is nothing to resolve and nothing to rewrite.
                 request.body,
                 authorization=request.META.get("HTTP_AUTHORIZATION", ""),
-                idempotency_key=request.META.get("HTTP_IDEMPOTENCY_KEY"),
-                tenant_id=request.META.get("HTTP_X_TENANT_ID"),
+                # Derived when the app sends none, so a gateway callback
+                # retried is recorded once. See _idempotency_key.
+                idempotency_key=_idempotency_key(request),
             )
         except BookingApiUnavailable as exc:
             raise BookingApiDown() from exc

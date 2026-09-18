@@ -220,6 +220,10 @@ booking-api is forwarded as itself and carries no such promise.
 
 ## 7. Read one booking — `GET /api/v1/booking/<id>`
 
+**The booking id and the bearer token are the whole request** — no
+`X-Tenant-Id`, no salon id. A booking already records which salon and tenant
+it belongs to.
+
 Forwarded to booking-api and returned unchanged. The whole booking, whatever
 state it is in, so the confirmation screen, the pass and the booking history
 all read one shape. The shape is `BOOKING_CREATE_API.md` §8.
@@ -244,7 +248,11 @@ all read one shape. The shape is `BOOKING_CREATE_API.md` §8.
 
 ## 8. Record the payment — `PATCH /api/v1/booking/<id>`
 
-Called once the payment gateway answers. The body is forwarded as raw bytes —
+Called once the payment gateway answers. **Only the booking id and the
+bearer token are needed**; `Idempotency-Key` is derived from the body when
+not sent, so a callback delivered twice records one payment.
+
+The body is forwarded as raw bytes —
 never parsed and re-serialised, because re-encoding rounds every figure
 through a Python float. Responds `200` with the full booking, same shape as
 §7.

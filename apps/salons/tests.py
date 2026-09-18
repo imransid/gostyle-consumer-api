@@ -2299,3 +2299,66 @@ class BookingPatchMediaTypeTests(SimpleTestCase):
             response = BookingDetailView.as_view()(request, booking_id="x")
         self.assertEqual(response.status_code, 200)
         client.assert_called_once()
+
+
+class BookingDetailHeaderlessTests(SimpleTestCase):
+    """
+    Reading and paying for a booking take the id and the token, nothing else.
+
+    WHAT WENT WRONG. `PATCH /booking/<id>` forwarded `X-Tenant-Id` only when
+    the app sent one, and the app has no way to know a tenant from a booking
+    id. With no tenant, booking-api could not load the salon's catalogue and
+    answered `404 BOOKING_NOT_FOUND — Unknown service: <id>` to a payment for
+    a booking that plainly existed. The customer could not pay, and the
+    message blamed a service.
+
+    A booking already records which salon and tenant it belongs to, so asking
+    the caller to repeat it was asking for a fact they did not hold.
+    """
+
+    BOOKING = "c4832b75-0ed1-4c70-a005-14a200f6638c"
+
+    def test_reading_sends_no_tenant_header(self):
+        request = APIRequestFactory().get(f"/api/v1/booking/{self.BOOKING}")
+        force_authenticate(request, user=Customer())
+        with mock.patch(
+            "apps.salons.views.read_booking", return_value=(200, {"id": self.BOOKING})
+        ) as read:
+            response = BookingDetailView.as_view()(request, booking_id=self.BOOKING)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("tenant_id", read.call_args.kwargs)
+
+    def test_paying_sends_no_tenant_header(self):
+        request = APIRequestFactory().patch(
+            f"/api/v1/booking/{self.BOOKING}",
+            data=b'{"payment_status":"FULLY_PAID"}',
+            content_type="application/json",
+        )
+        force_authenticate(request, user=Customer())
+        with mock.patch(
+            "apps.salons.views.patch_booking", return_value=(200, {"id": self.BOOKING})
+        ) as patch_call:
+            response = BookingDetailView.as_view()(request, booking_id=self.BOOKING)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("tenant_id", patch_call.call_args.kwargs)
+
+    def test_a_retried_payment_carries_the_same_key(self):
+        """
+        A gateway callback that arrives twice must record ONE payment. The
+        app sends no header, so the key is derived from the body — the same
+        callback derives the same key and booking-api replays it.
+        """
+        def send():
+            request = APIRequestFactory().patch(
+                f"/api/v1/booking/{self.BOOKING}",
+                data=b'{"payment_status":"FULLY_PAID","payment_reference":"pi_1"}',
+                content_type="application/json",
+            )
+            force_authenticate(request, user=Customer())
+            with mock.patch(
+                "apps.salons.views.patch_booking", return_value=(200, {})
+            ) as call:
+                BookingDetailView.as_view()(request, booking_id=self.BOOKING)
+            return call.call_args.kwargs["idempotency_key"]
+
+        self.assertEqual(send(), send())
