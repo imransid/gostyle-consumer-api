@@ -32,6 +32,7 @@ from apps.salons.params import (
 )
 from apps.salons.views import (
     BookingCreateView,
+    NearestAvailableView,
     BookingDetailView,
     BookingListView,
     ServiceDetailsView,
@@ -2539,3 +2540,53 @@ class BusyIntervalsClientTests(SimpleTestCase):
         with self.answer(body=b"[]"):
             with self.assertRaises(BookingApiUnavailable):
                 self.call()
+
+
+class NearestAvailableUnavailableTests(SimpleTestCase):
+    """
+    What the slot picker answers when booking-api cannot be reached.
+
+    THE POINT. Who is already booked now comes from booking-api, because the
+    table this service used to read was one booking-api never wrote to. When
+    that call fails there is no honest answer: an empty busy list means
+    "everyone is free", which is exactly the bug the change was made to end.
+
+    So it must be a 503 the app can retry — and it must not be a 500, which
+    is what an uncaught BookingApiUnavailable produced.
+    """
+
+    SALON = uuid.uuid4()
+
+    def get(self):
+        request = APIRequestFactory().get(
+            f"/api/v1/booking/nearest-available/{self.SALON}"
+            "?from=2026-09-22T14:00:00%2B06:00&to=2026-09-22T17:00:00%2B06:00"
+            "&stylist_id=50dcbb8f-c863-47a0-9f29-6dd5fb41da1c"
+        )
+        force_authenticate(request, user=Customer())
+        salon = types.SimpleNamespace(
+            id=self.SALON,
+            tenant_id=uuid.uuid4(),
+            branch_id=uuid.uuid4(),
+            branch_timezone="Asia/Dhaka",
+        )
+        with mock.patch("apps.salons.views.salon_profile", return_value=salon), \
+             mock.patch("apps.salons.views.service_timing_rows", return_value=[]), \
+             mock.patch(
+                 "apps.salons.views._offers",
+                 side_effect=BookingApiUnavailable("busy window unreachable"),
+             ):
+            return NearestAvailableView.as_view()(request, salon_id=self.SALON)
+
+    def test_an_unreachable_booking_api_is_503_not_500(self):
+        response = self.get()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.data["errors"][0]["code"], "booking_api_unavailable"
+        )
+
+    def test_it_never_answers_with_an_empty_offer_list(self):
+        # "No offers" and "we could not find out" are different sentences,
+        # and only the second one is true here. Answering the first would
+        # send the customer away from a salon that has free slots.
+        self.assertNotIn("offers", self.get().data)

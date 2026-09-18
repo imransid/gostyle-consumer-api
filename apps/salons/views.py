@@ -1111,14 +1111,22 @@ class NearestAvailableView(APIView):
         timing = service_timing_rows(salon, params["service_ids"])
         duration = _appointment_minutes(params["service_ids"], timing)
 
-        return Response({
-            "duration_min": duration,
-            "offers": _offers(
+        # WHO IS BUSY COMES FROM booking-api, and when that service cannot
+        # be reached this endpoint has no honest answer. Saying "everything
+        # is free" is the failure mode this endpoint was just fixed to stop,
+        # so an unreachable booking-api is a 503 the app can retry, not a
+        # grid computed against nothing. Without this the exception escaped
+        # as a bare 500.
+        try:
+            offers = _offers(
                 salon, tz, params, duration,
                 lead_minutes=max([row["lead_time_minutes"] or 0 for row in timing] or [0]),
                 now=datetime.now(tz),
-            ),
-        })
+            )
+        except BookingApiUnavailable as exc:
+            raise BookingApiDown() from exc
+
+        return Response({"duration_min": duration, "offers": offers})
 
 
 def _appointment_minutes(service_ids, timing):
