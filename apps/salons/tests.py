@@ -20,6 +20,7 @@ from apps.salons.hours import is_within, next_opening, next_opening_at, resolve
 from apps.salons.money import bps_to_percent, major
 from apps.salons.snapshot import field, items, normalize
 
+from apps.salons.selectors import tenant_for_salon
 from apps.salons.params import (
     MAX_SERVICE_IDS,
     ParamError,
@@ -29,7 +30,11 @@ from apps.salons.params import (
     parse_service_ids,
     parse_window,
 )
-from apps.salons.views import BookingCreateView, ServiceDetailsView, _stylist_order
+from apps.salons.views import (
+    BookingCreateView,
+    ServiceDetailsView,
+    _stylist_order,
+)
 
 
 # SimpleTestCase, not TestCase: it refuses database access outright. If someone
@@ -1600,6 +1605,116 @@ class BookingCreateViewTests(SimpleTestCase):
             response = self.post(authenticated=False)
         self.assertEqual(response.status_code, 401)
         create.assert_not_called()
+
+
+class BookingTenantHeaderTests(SimpleTestCase):
+    """
+    Which tenant a forwarded booking is stamped with.
+
+    booking-api reads X-Tenant-Id and nothing else — its TenantMiddleware runs
+    before the guard, so the token's claim is not available to it — and with no
+    tenant it resolves no platform services and refuses the booking. The app
+    does not send the header, so it is derived from the salon in the payload.
+    """
+
+    TENANT = uuid.UUID("11111111-1111-1111-1111-111111111111")
+    OTHER_TENANT = uuid.UUID("22222222-2222-2222-2222-222222222222")
+    SALON = uuid.UUID("55555555-5555-5555-5555-555555555555")
+
+    def post(self, body, **headers):
+        request = APIRequestFactory().post(
+            "/api/v1/booking",
+            data=body,
+            content_type="application/json",
+            **headers,
+        )
+        force_authenticate(request, user=Customer())
+        return request
+
+    def send(self, body, *, resolves=None, **headers):
+        request = self.post(body, **headers)
+        # Faithful to the real selector in the one way that matters here: a
+        # reference it cannot use resolves to nothing.
+        with mock.patch(
+            "apps.salons.views.tenant_for_salon",
+            side_effect=lambda ref: resolves if isinstance(ref, str) and ref.strip() else None,
+        ) as lookup, mock.patch(
+            "apps.salons.views.create_booking", return_value=(201, {})
+        ) as create:
+            BookingCreateView.as_view()(request)
+        self.lookup = lookup
+        return create.call_args
+
+    def test_the_callers_own_header_wins_untouched(self):
+        """
+        An app that knows its tenant is the better source, and it is not
+        second-guessed: the salon is not even looked up.
+        """
+        call = self.send(
+            b'{"salon_id":"' + str(self.SALON).encode() + b'"}',
+            resolves=self.OTHER_TENANT,
+            HTTP_X_TENANT_ID=str(self.TENANT),
+        )
+        self.assertEqual(call.kwargs["tenant_id"], str(self.TENANT))
+        self.lookup.assert_not_called()
+
+    def test_the_salons_tenant_is_derived_when_no_header_was_sent(self):
+        call = self.send(
+            b'{"salon_id":"' + str(self.SALON).encode() + b'"}',
+            resolves=self.TENANT,
+        )
+        self.assertEqual(self.lookup.call_args.args[0], str(self.SALON))
+        self.assertEqual(call.kwargs["tenant_id"], str(self.TENANT))
+
+    def test_an_unresolvable_salon_sends_no_tenant_at_all(self):
+        """
+        Not a guess, and not a refusal either: the booking goes on to
+        booking-api exactly as it did before, and that service answers.
+        """
+        call = self.send(b'{"salon_id":"marina-walk"}', resolves=None)
+        self.assertIsNone(call.kwargs["tenant_id"])
+
+    def test_a_payload_with_no_salon_sends_no_tenant(self):
+        call = self.send(b'{"services":[]}', resolves=self.TENANT)
+        self.assertIsNone(call.kwargs["tenant_id"])
+        self.lookup.assert_called_once_with(None)
+
+    def test_an_unreadable_body_is_still_booking_apis_422_to_give(self):
+        for body in (b"", b"not json", b"[]", b'"a string"'):
+            with self.subTest(body):
+                call = self.send(body, resolves=self.TENANT)
+                self.assertIsNone(call.kwargs["tenant_id"])
+                # Forwarded anyway, untouched, so the refusal comes from the
+                # service that owns the payload contract.
+                self.assertEqual(call.args[0], body)
+
+    def test_the_body_still_crosses_byte_for_byte(self):
+        """
+        Reading salon_id out of the payload must not re-serialise it:
+        booking-api hashes these bytes to recognise a retry, so key order and
+        the exact spelling of every number have to survive.
+        """
+        # 120.00 re-serialises to 120.0 and the keys would come back sorted;
+        # neither happens, because the parsed copy is only read from.
+        body = b'{"total":216.25,"salon_id":"marina-walk","services":[{"amount":120.00}]}'
+        call = self.send(body, resolves=self.TENANT)
+        self.assertEqual(call.kwargs["tenant_id"], str(self.TENANT))
+        self.assertEqual(call.args[0], body)
+
+
+class TenantForSalonGuardTests(SimpleTestCase):
+    """
+    What `tenant_for_salon` refuses to look up at all.
+
+    The resolving cases need a database and are covered through the view; what
+    can be pinned without one is that nothing unusable ever reaches a query,
+    because every one of these would otherwise be a tenant chosen at random.
+    """
+
+    def test_a_reference_that_is_not_a_usable_string_is_none(self):
+        for ref in (None, "", "   ", 42, [], {"id": "x"}, True):
+            with self.subTest(ref):
+                self.assertIsNone(tenant_for_salon(ref))
 
 
 class ServiceRow(types.SimpleNamespace):

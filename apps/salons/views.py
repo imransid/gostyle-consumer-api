@@ -1,3 +1,5 @@
+import json
+import logging
 from datetime import datetime, time, timedelta, timezone as dt_timezone
 from django.db.models import F
 from django.http import Http404
@@ -61,6 +63,7 @@ from .selectors import (
     service_timing_rows,
     shift_rows,
     stylist_service_coverage,
+    tenant_for_salon,
     with_distance,
     with_published_card_fields,
 )
@@ -73,6 +76,8 @@ from .serializers import (
     StorySalonSerializer,
 )
 from .snapshot import read_snapshot
+
+logger = logging.getLogger(__name__)
 
 
 # The project's error envelope, as raw OpenAPI. Shared by every view here
@@ -1263,6 +1268,52 @@ def _offers(salon, tz, params, duration, lead_minutes, now):
     return offers
 
 
+def _tenant_for_booking(request):
+    """
+    The `X-Tenant-Id` to forward: the caller's own, else the salon's.
+
+    THE CALLER'S WINS, verbatim and unexamined. An app that knows its tenant
+    is the better source, and second-guessing it here would make this service
+    the thing that decides which salon's books a booking lands in.
+
+    Only when the app sent none is one derived, and DERIVED IS NOT INVENTED:
+    it is the tenant that the storefront named in the payload actually belongs
+    to, read from the same table `/salon/<id>` serves. booking-api cannot do
+    this for itself — its TenantMiddleware runs before the guard and reads the
+    header or nothing (tenant.middleware.ts) — and with no tenant it resolves
+    no platform services and refuses the booking with `unknown_service`.
+
+    Anything unreadable comes back as None and NO header is sent, which leaves
+    the refusal exactly where it was. The body is read here, never rewritten:
+    what crosses the network is still `request.body`, byte for byte, because
+    booking-api hashes those bytes to recognise a retry.
+    """
+    sent = request.META.get("HTTP_X_TENANT_ID")
+    if sent:
+        return sent
+
+    try:
+        payload = json.loads(request.body or b"")
+    except ValueError:
+        # A malformed body is booking-api's 422 to give, not ours to pre-empt.
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    tenant_id = tenant_for_salon(payload.get("salon_id"))
+    if tenant_id is None:
+        logger.warning(
+            "No X-Tenant-Id sent and salon_id %r resolved to no tenant; "
+            "forwarding the booking without one, which booking-api will "
+            "refuse with unknown_service.",
+            payload.get("salon_id"),
+        )
+        return None
+
+    return str(tenant_id)
+
+
 class BookingApiDown(APIException):
     """503 when gostyle-booking-api cannot be reached.
 
@@ -1434,8 +1485,13 @@ _BOOKING_REQUEST = {
             location=OpenApiParameter.HEADER,
             required=False,
             description=(
-                "Forwarded only when sent. Never invented here: a made-up "
-                "tenant would stamp another salon's rows."
+                "The tenant whose books the booking lands in. Optional: when "
+                "it is not sent, the tenant that owns the payload's "
+                "`salon_id` is looked up and sent instead, because "
+                "booking-api reads this header and nothing else to resolve "
+                "the services. A header the caller does send is forwarded "
+                "verbatim and the salon is not consulted. Nothing is guessed "
+                "— a salon that cannot be resolved sends no tenant at all."
             ),
         ),
     ],
@@ -1613,9 +1669,13 @@ class BookingCreateView(APIView):
                 # as they arrived. See booking_api.create_booking.
                 request.body,
                 authorization=request.META.get("HTTP_AUTHORIZATION", ""),
+                # Never invented: forwarded only if the caller sent one,
+                # because a made-up key would turn a retry into a second
+                # booking.
                 idempotency_key=request.META.get("HTTP_IDEMPOTENCY_KEY"),
-                # Forwarded only if the caller sent one. Never invented here.
-                tenant_id=request.META.get("HTTP_X_TENANT_ID"),
+                # The caller's own, or the tenant the payload's salon belongs
+                # to. Never a guess — see _tenant_for_booking.
+                tenant_id=_tenant_for_booking(request),
             )
         except BookingApiUnavailable as exc:
             raise BookingApiDown() from exc

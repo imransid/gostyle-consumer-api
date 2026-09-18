@@ -1,3 +1,5 @@
+import logging
+import uuid
 from datetime import timezone as dt_timezone
 
 from django.db.models import QuerySet
@@ -320,6 +322,60 @@ def categories_for_tenants(tenant_ids):
 def salon_categories(tenant_id):
     """Every category for one tenant. See `categories_for_tenants`."""
     return categories_for_tenants([tenant_id])
+
+
+logger = logging.getLogger(__name__)
+
+
+def tenant_for_salon(salon_ref):
+    """
+    The tenant that owns a salon, or None when it cannot be told for certain.
+
+    Takes any of the three things a booking payload's `salon_id` can hold,
+    because two services disagree about what a salon is and both are right in
+    their own vocabulary:
+
+      * a STOREFRONT uuid — what every salon endpoint in this service returns;
+      * a BRANCH uuid — what booking-api means by a salon (its mobile handler
+        reads `salon_id` straight into `branchId`);
+      * a storefront SLUG — what booking-api's contract examples show.
+
+    Both uuid columns are unique, so matching either is a lookup rather than a
+    choice. `slug` is NOT: the platform has no global unique index on it, only
+    a per-tenant one.
+
+    NONE RATHER THAN A GUESS, every way this can fail — a reference of some
+    other shape, one that resolves to nothing, and one that lands on two
+    tenants at once. That last case is the whole reason this is careful:
+    picking the first row would file a real booking against another salon's
+    rows. Sending no tenant leaves booking-api refusing the booking, which is
+    the failure everyone already has.
+    """
+    if not isinstance(salon_ref, str) or not salon_ref.strip():
+        return None
+
+    salon_ref = salon_ref.strip()
+    live = Storefront.objects.filter(deleted_at__isnull=True)
+
+    try:
+        parsed = uuid.UUID(salon_ref)
+    except ValueError:
+        match = live.filter(slug=salon_ref)
+    else:
+        match = live.filter(Q(id=parsed) | Q(branch_id=parsed))
+
+    # Two is all it takes to know the answer is ambiguous.
+    tenants = list(match.values_list("tenant_id", flat=True).distinct()[:2])
+    if len(tenants) != 1:
+        if tenants:
+            logger.warning(
+                "salon reference %r belongs to more than one tenant; sending "
+                "no X-Tenant-Id rather than guessing one.",
+                salon_ref,
+            )
+        return None
+
+    return tenants[0]
 
 
 def services_by_ids(service_ids):

@@ -11,27 +11,71 @@ forwarded to **gostyle-booking-api**, which holds them in its own database
 ## 1. What this endpoint does, exactly
 
 ```
-app ──POST /api/v1/booking──▶ customer-api ──POST /v1/booking──▶ booking-api
+app ──POST /api/v1/booking──▶ customer-api ──POST /v1/mobile-booking──▶ booking-api
                                             (body byte-for-byte)
-app ◀────── status + body ───── customer-api ◀──── status + body ──┘
+app ◀────── status + body ───── customer-api ◀──────── status + body ────┘
 ```
 
-Three headers cross, and nothing else:
+Four headers cross, and nothing else:
 
-| Header            | Source                                          |
-| ----------------- | ----------------------------------------------- |
-| `Authorization`   | the caller's own, verbatim                      |
-| `Content-Type`    | always `application/json`                       |
-| `Idempotency-Key` | the caller's, **only when sent**                |
-| `X-Tenant-Id`     | the caller's, **only when sent**                |
+| Header            | Source                                                  |
+| ----------------- | ------------------------------------------------------- |
+| `Authorization`   | the caller's own, verbatim                              |
+| `Content-Type`    | always `application/json`                               |
+| `Idempotency-Key` | the caller's, **only when sent**                        |
+| `X-Tenant-Id`     | the caller's, else **the payload's salon's tenant**     |
 
-Neither optional header is ever invented here. A made-up `Idempotency-Key`
-would turn every retry into a second booking; a made-up tenant would stamp
-another salon's rows.
+`Idempotency-Key` is never invented: a made-up one would turn every retry
+into a second booking.
+
+### Why `X-Tenant-Id` is the exception
+
+booking-api needs it to resolve the services in the payload. `ListServices` is
+tenant-scoped, and its `TenantMiddleware` reads this header and nothing else —
+deliberately, since the middleware runs before the guard and the token's
+`tenantId` claim is not available to it. With no header it resolves no
+services and refuses the booking:
+
+```
+Cannot resolve 1 platform service(s): no X-Tenant-Id on this request,
+and ListServices is tenant-scoped.
+```
+
+which reaches the app as `422 unknown_service`. The customer app does not send
+the header, so this service supplies it.
+
+**Derived, not invented.** When the caller sends no `X-Tenant-Id`, the payload
+is read — READ, never rewritten — for its `salon_id`, and that salon's own
+`tenant_id` is sent. It is the tenant the salon actually belongs to, from the
+same table `/salon/<id>` serves, not a guess about which one was meant.
+
+`salon_id` is matched against all three things it can hold, because this
+service and booking-api disagree about what a salon is and each is right in
+its own vocabulary: a **storefront uuid** (what every salon endpoint here
+returns), a **branch uuid** (what booking-api means — its mobile handler reads
+`salon_id` straight into `branchId`), or a **storefront slug** (what its
+contract examples show). The two uuid columns are unique, so matching either
+is a lookup. `slug` is unique only per tenant, so one that lands on two
+tenants resolves to nothing.
+
+Three rules hold it to that:
+
+1. **The caller's header wins**, verbatim and unexamined. An app that knows
+   its tenant is the better source, and the salon is not even looked up.
+2. **Ambiguity sends nothing.** An unresolvable `salon_id`, a payload without
+   one, a body that is not JSON, or a slug that two live storefronts share all
+   send no header at all. booking-api then refuses the booking exactly as it
+   does today — which is the safe end of the trade, because a tenant chosen at
+   random would file a real booking against another salon's rows.
+3. **The forwarded bytes do not change.** The parsed copy is only read from;
+   what crosses the network is still the caller's body, byte for byte, so
+   booking-api's retry hash still matches.
 
 **The body is forwarded as raw bytes.** It is never parsed and re-serialised,
 because booking-api hashes the body to recognise a retry — so `216.25` must
-arrive as `216.25`, with the keys in the order they were sent.
+arrive as `216.25`, with the keys in the order they were sent. It is *parsed*
+for one read-only purpose, the tenant lookup above; the bytes that go out are
+still the ones that came in.
 
 **Who is booking is decided over there.** booking-api resolves the customer
 from the bearer token; this service does not read, check, or override
@@ -120,6 +164,12 @@ locally to point somewhere real.
   crash-looping on an empty `SECRET_KEY`, so every create will be refused by
   booking-api until that is fixed. The refusal is forwarded correctly; it is
   just not a refusal about the booking.
+- **The tenant comes from the salon, not from the app.** Until the app sends
+  `X-Tenant-Id` itself, every booking's tenant is resolved from `salon_id`
+  here. A booking whose payload names a salon this service cannot resolve
+  still fails with `unknown_service`, and the customer-api log says so
+  (`No X-Tenant-Id sent and salon_id … resolved to no tenant`) rather than
+  leaving the reason in booking-api's logs only.
 - **No payload validation here, by design.** booking-api owns that contract.
   Validating in two places guarantees the two drift, and its `422` is already
   the answer the app needs.
