@@ -378,6 +378,117 @@ def tenant_for_salon(salon_ref):
     return tenants[0]
 
 
+def salon_cards_for_refs(salon_refs):
+    """
+    `{ id, name, logo_url, city }` and the cancellation window, for the salon
+    references on a page of bookings.
+
+    ONE QUERY FOR THE WHOLE PAGE. A booking list is ten to fifty rows and
+    usually two or three distinct salons; resolving each row on its own would
+    be fifty round trips to draw one screen.
+
+    Takes the same three spellings `tenant_for_salon` does, for the same
+    reason — booking-api's `salon_id` is whatever it was given, which is a
+    storefront uuid from this service's own endpoints, a branch uuid from its
+    columns, or a slug from its fixtures. The returned map is keyed by the
+    reference AS IT WAS PASSED IN, so the caller can look a row up with the
+    string it already holds rather than guessing which of the three it was.
+
+    A reference that resolves to nothing, or to more than one salon, is
+    ABSENT FROM THE MAP rather than present with nulls. The caller renders
+    `null` for the salon object in that case, which says "we could not find
+    it"; a card with a name-shaped hole in it says the salon has no name.
+    """
+    refs = [r.strip() for r in salon_refs if isinstance(r, str) and r.strip()]
+    if not refs:
+        return {}
+
+    uuids, slugs = [], []
+    for ref in refs:
+        try:
+            uuids.append(uuid.UUID(ref))
+        except ValueError:
+            slugs.append(ref)
+
+    matched = Q()
+    if uuids:
+        matched |= Q(id__in=uuids) | Q(branch_id__in=uuids)
+    if slugs:
+        matched |= Q(slug__in=slugs)
+
+    branch = Branch.objects.filter(id=OuterRef("branch_id"))
+    rows = (
+        Storefront.objects.filter(deleted_at__isnull=True)
+        .filter(matched)
+        .annotate(
+            branch_name=Subquery(branch.values("name")[:1], output_field=TextField()),
+            branch_city=Subquery(branch.values("city")[:1], output_field=TextField()),
+            # The same LOGO rule the discover card uses: public, approved,
+            # newest first. A second spelling of it here is how one screen
+            # starts showing a logo the other has already moderated away.
+            logo_url=Subquery(
+                StorefrontMedia.objects.filter(
+                    storefront_id=OuterRef("pk"),
+                    deleted_at__isnull=True,
+                    is_public=True,
+                    moderation_status="APPROVED",
+                    kind="LOGO",
+                )
+                .order_by("-created_at")
+                .values("url")[:1],
+                output_field=TextField(),
+            ),
+            cancel_window_hours=Subquery(
+                StorefrontPolicy.objects.filter(
+                    storefront_id=OuterRef("pk")
+                ).values("cancel_window_hours")[:1],
+            ),
+            branch_timezone=Subquery(
+                branch.values("timezone")[:1], output_field=TextField()
+            ),
+        )
+        .values(
+            "id",
+            "slug",
+            "branch_id",
+            "branch_name",
+            "branch_city",
+            "logo_url",
+            "cancel_window_hours",
+            "branch_timezone",
+        )
+    )
+
+    # Every spelling of every row, so a lookup by any of the three lands.
+    # A key claimed by two storefronts is DROPPED, not resolved to the first:
+    # `slug` is unique per tenant and not globally, so two salons can share
+    # one, and picking either would put another salon's name on a booking.
+    by_key, ambiguous = {}, set()
+    for row in rows:
+        card = {
+            "id": str(row["id"]),
+            "name": row["branch_name"],
+            "logo_url": row["logo_url"],
+            "city": row["branch_city"],
+            "cancel_window_hours": row["cancel_window_hours"],
+            "timezone": row["branch_timezone"],
+        }
+        for key in (str(row["id"]), str(row["branch_id"]), row["slug"]):
+            if key in by_key and by_key[key]["id"] != card["id"]:
+                ambiguous.add(key)
+            by_key[key] = card
+
+    for key in ambiguous:
+        logger.warning(
+            "salon reference %r belongs to more than one storefront; leaving "
+            "the salon off the booking row rather than naming the wrong one.",
+            key,
+        )
+        by_key.pop(key, None)
+
+    return {ref: by_key[ref] for ref in refs if ref in by_key}
+
+
 def services_by_ids(service_ids):
     """
     Full detail for a set of service ids, whatever state each one is in.

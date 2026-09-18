@@ -326,6 +326,9 @@ All routes are under `/api/v1/`. Auth is JWT (`rest_framework_simplejwt`):
 | `GET /salon/<uuid>/packages`                                                | Public |                                                                                                                       |
 | `GET /salon/<uuid>/products`                                                | Public | Retail only                                                                                                           |
 | `POST /booking`                                                             | JWT    | Forwards to gostyle-booking-api and returns its answer unchanged, 409 and 422 included                                 |
+| `GET /bookings`                                                             | JWT    | The caller's own bookings: `?filter=upcoming\|recurring\|archive`, `page`, `pageSize`. Forwarded, then `salon` and `can_cancel`/`can_reschedule` are filled in from the platform tables |
+| `GET /booking/<uuid>`                                                       | JWT    | One booking, whatever state it is in. 404 (never 403) for one the caller may not see                                   |
+| `PATCH /booking/<uuid>`                                                     | JWT    | Records the payment once the gateway answers. Only from `DRAFT`                                                        |
 | `GET /booking/nearest-available/<uuid>`                                     | JWT    | Bookable starts in one window, for `service_ids` or one `stylist_id`                                                   |
 | `GET /salons/`                                                              | Public | **410 Gone.** Served fixture data, never real salons. Use `/discover`                                                  |
 
@@ -358,6 +361,7 @@ Further reading, all in [docs/](docs/):
 - [BOOKING_EXPERT_API.md](docs/BOOKING_EXPERT_API.md) — the booking flow's Expert step: which stylists can perform the picked services, and the two skill catalogues it bridges to find out
 - [BOOKING_NEAREST_AVAILABLE_API.md](docs/BOOKING_NEAREST_AVAILABLE_API.md) — the Time step: how a bookable start is decided, and everything that does not yet block one
 - [BOOKING_CREATE_API.md](docs/BOOKING_CREATE_API.md) — creating a booking: what this service forwards to gostyle-booking-api, what it refuses on its own, and why two error shapes share one endpoint
+- [BOOKING_LIST_API.md](docs/BOOKING_LIST_API.md) — listing, reading and paying for bookings: the three shelves, and the three fields only this service can answer (`salon`, `can_cancel`, `can_reschedule`)
 - [AUTH_GUIDE.md](docs/AUTH_GUIDE.md) — the OTP → verify → register flow in plain language
 - [DEPLOYMENT.md](docs/DEPLOYMENT.md) — CI/CD, image tags, and the rollback lever
 - [OBSERVABILITY.md](docs/OBSERVABILITY.md) — logs in Grafana Loki, and the request ID that ties Django, gunicorn and nginx together

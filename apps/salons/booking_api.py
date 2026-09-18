@@ -93,6 +93,31 @@ def read_booking(booking_id, *, authorization, tenant_id=None):
     return _send("GET", f"/v1/mobile-booking/{booking_id}", headers=headers)
 
 
+def list_bookings(query, *, authorization, tenant_id=None):
+    """
+    GET /v1/mobile-booking?<query>, returning (status, parsed body) as given.
+
+    `query` is the already-encoded query string. WHOSE BOOKINGS IS NOT IN IT:
+    booking-api reads the customer off the bearer token, exactly as it does
+    for create and read, and a customer id on this URL would be an
+    enumeration of every booking in the system behind one valid login.
+
+    The answer is a page of SUMMARIES without `salon`, `can_cancel` or
+    `can_reschedule` — booking-api stores a branch id and cannot resolve any
+    of the three (its booking-list.md §9). Each row carries `salon_id`, and
+    filling those in is this service's job, in views.BookingListView.
+    """
+    headers = {"Authorization": authorization}
+    if tenant_id:
+        headers["X-Tenant-Id"] = tenant_id
+
+    path = "/v1/mobile-booking"
+    if query:
+        path = f"{path}?{query}"
+
+    return _send("GET", path, headers=headers)
+
+
 def patch_booking(booking_id, body, *, authorization, idempotency_key=None, tenant_id=None):
     """
     PATCH /v1/mobile-booking/<id> — records the payment once the gateway answers.

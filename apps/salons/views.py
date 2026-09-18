@@ -1,5 +1,6 @@
 import json
 import logging
+import urllib.parse
 from datetime import datetime, time, timedelta, timezone as dt_timezone
 from django.db.models import F
 from django.http import Http404
@@ -19,6 +20,7 @@ from rest_framework.exceptions import (
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework import status
 from rest_framework.response import Response
+from rest_framework.utils.urls import replace_query_param
 from rest_framework.views import APIView
 from .snapshot import field as snap_field
 from .params import (
@@ -32,7 +34,13 @@ from .params import (
     parse_stylists,
 )
 
-from .booking_api import create_booking, read_booking, patch_booking, BookingApiUnavailable
+from .booking_api import (
+    create_booking,
+    list_bookings,
+    read_booking,
+    patch_booking,
+    BookingApiUnavailable,
+)
 
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from apps.accounts.models import Favourite
@@ -51,6 +59,7 @@ from .selectors import (
     map_venues,
     categories_for_tenants,
     salon_categories,
+    salon_cards_for_refs,
     salon_packages,
     salon_products,
     manual_state_on,
@@ -1686,6 +1695,212 @@ class BookingCreateView(APIView):
         return Response(body, status=upstream_status)
 
 
+_BOOKING_NOT_FOUND = OpenApiExample(
+    "Not found",
+    value={
+        "detail": "No such booking.",
+        "code": "validation_error",
+        "errors": [
+            {"field": "id", "code": "not_found", "message": "No such booking."}
+        ],
+    },
+)
+
+_PAYMENT_REQUEST = {
+    "type": "object",
+    "required": ["payment_status", "advance_paid_amount"],
+    "properties": {
+        "payment_status": {
+            "type": "string",
+            "enum": ["PARTIALLY", "FULLY_PAID", "PAY_AFTER_CHECK_IN"],
+            "description": (
+                "Never back to DRAFT. A booking that is already PARTIALLY or "
+                "FULLY_PAID is not patched again — that is 409 `already_paid`, "
+                "because refunds and top-ups are their own endpoints."
+            ),
+        },
+        "payment_method": {
+            "type": "string",
+            "enum": ["WALLET", "CARD", "GOOGLE", "APPLE", "OTHERS"],
+            "description": "Required unless PAY_AFTER_CHECK_IN.",
+        },
+        "advance_paid_amount": {
+            **_MONEY,
+            "example": 216.25,
+            "description": (
+                "What the gateway actually took. CHECKED AGAINST THE BOOKING, "
+                "never accepted on trust: at most `total`, exactly `total` "
+                "when FULLY_PAID, and 0 for PAY_AFTER_CHECK_IN."
+            ),
+        },
+        "due_amount": {
+            **_MONEY,
+            "example": 0,
+            "description": "Derived as total - advance_paid_amount; verified when sent.",
+        },
+        "payment_reference": {
+            "type": "string",
+            "example": "pi_3Qk2xLJ8n",
+            "description": (
+                "The gateway's own id, required whenever money moved. UNIQUE: "
+                "the same reference patched twice returns the same booking "
+                "rather than recording a second payment."
+            ),
+        },
+    },
+    "description": (
+        "Nothing else about the booking changes here. `total`, `tax_amount`, "
+        "`discount`, the services and the products are immutable on this "
+        "call — a different price is a new booking — and `status` is "
+        "untouched: it stays BOOKED until the salon moves it."
+    ),
+}
+
+
+@extend_schema_view(
+    get=extend_schema(
+        summary="Read one booking",
+        description=(
+            "The whole booking, whatever state it is in, so the confirmation "
+            "screen, the pass and the booking history all read one shape. "
+            "Forwarded to gostyle-booking-api and returned unchanged.\n\n"
+            "ONLY THE CUSTOMER WHO OWNS IT, or staff of the salon it belongs "
+            "to. Anyone else gets 404, never 403 — a 403 confirms that a "
+            "booking id exists, which is exactly what an enumerator is "
+            "trying to learn.\n\n"
+            "No query parameters: services, products and stylists always "
+            "come expanded, never as bare ids. A DRAFT booking is readable "
+            "so an interrupted checkout can be resumed, and carries "
+            "`expires_at` while its hold window is still running."
+        ),
+        responses={
+            200: OpenApiResponse(
+                response={"type": "object"},
+                description="booking-api's booking, forwarded verbatim.",
+            ),
+            401: OpenApiResponse(
+                response=_OUR_ENVELOPE,
+                description="No bearer token. Refused here, before the network.",
+            ),
+            404: OpenApiResponse(
+                response={"type": "object"},
+                description=(
+                    "No such booking, OR not one the caller may see. The two "
+                    "are deliberately indistinguishable."
+                ),
+                examples=[_BOOKING_NOT_FOUND],
+            ),
+            503: OpenApiResponse(
+                response=_OUR_ENVELOPE,
+                description="booking-api unreachable, timed out, or non-JSON.",
+            ),
+        },
+    ),
+    patch=extend_schema(
+        summary="Record the payment",
+        description=(
+            "Called once the payment gateway answers. Nothing else about the "
+            "booking changes here, and a FAILED payment is NOT a patch — "
+            "leave the booking in DRAFT and let the hold expire rather than "
+            "inventing a FAILED status the rest of the app has to handle.\n\n"
+            "A successful patch clears the draft hold: the slot is firmly "
+            "booked and `expires_at` disappears. Responds with the full "
+            "booking, in the same shape as GET."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="Idempotency-Key",
+                type=str,
+                location=OpenApiParameter.HEADER,
+                required=False,
+                description=(
+                    "Forwarded only when sent, never invented. "
+                    "`payment_reference` is the second guard: the same one "
+                    "twice returns the same booking."
+                ),
+            ),
+        ],
+        request={"application/json": _PAYMENT_REQUEST},
+        responses={
+            200: OpenApiResponse(
+                response={"type": "object"},
+                description="Recorded. The full booking, same shape as GET.",
+            ),
+            401: OpenApiResponse(
+                response=_OUR_ENVELOPE,
+                description="No bearer token.",
+            ),
+            404: OpenApiResponse(
+                response={"type": "object"},
+                description="No such booking, or not the caller's.",
+                examples=[_BOOKING_NOT_FOUND],
+            ),
+            409: OpenApiResponse(
+                response={"type": "object"},
+                description=(
+                    "`already_paid` — the booking was not in DRAFT — or "
+                    "`booking_expired` — the hold ran out before the gateway "
+                    "answered."
+                ),
+                examples=[
+                    OpenApiExample(
+                        "Already paid",
+                        value={
+                            "detail": "This booking has already been paid for.",
+                            "code": "validation_error",
+                            "errors": [
+                                {
+                                    "field": "payment_status",
+                                    "code": "already_paid",
+                                    "message": "This booking has already been paid for.",
+                                }
+                            ],
+                        },
+                    ),
+                ],
+            ),
+            415: OpenApiResponse(
+                response=_OUR_ENVELOPE,
+                description=(
+                    "Not `Content-Type: application/json`. Refused before "
+                    "dialling out, so the app hears about the header rather "
+                    "than getting an answer about the payload after a round "
+                    "trip."
+                ),
+            ),
+            422: OpenApiResponse(
+                response={"type": "object"},
+                description=(
+                    "booking-api's own shape: `invalid_payment_status`, "
+                    "`amount_mismatch`, `deposit_too_low` or "
+                    "`missing_payment_reference`. A mismatch carries the "
+                    "server's figure in `expected`."
+                ),
+                examples=[
+                    OpenApiExample(
+                        "Amount mismatch",
+                        value={
+                            "detail": "FULLY_PAID means the whole total was taken.",
+                            "code": "validation_error",
+                            "errors": [
+                                {
+                                    "field": "advance_paid_amount",
+                                    "code": "amount_mismatch",
+                                    "message": "FULLY_PAID means the whole total was taken.",
+                                    "expected": 216.25,
+                                }
+                            ],
+                        },
+                    ),
+                ],
+            ),
+            503: OpenApiResponse(
+                response=_OUR_ENVELOPE,
+                description="booking-api unreachable, timed out, or non-JSON.",
+            ),
+        },
+    ),
+)
 class BookingDetailView(APIView):
     """GET and PATCH one booking. Forwards to booking-api unchanged."""
 
@@ -1703,6 +1918,13 @@ class BookingDetailView(APIView):
         return Response(body, status=upstream_status)
 
     def patch(self, request, booking_id):
+        # The same guard create has. booking-api would answer 422 for a form
+        # post, after a round trip, with a message about the payload rather
+        # than about the header.
+        media_type = (request.content_type or "").split(";")[0].strip().lower()
+        if media_type != "application/json":
+            raise UnsupportedMediaType(media_type or "none")
+
         try:
             upstream_status, body = patch_booking(
                 booking_id,
@@ -1714,3 +1936,314 @@ class BookingDetailView(APIView):
         except BookingApiUnavailable as exc:
             raise BookingApiDown() from exc
         return Response(body, status=upstream_status)
+
+# ---------------------------------------------------------------------------
+# GET /bookings — the three shelves
+# ---------------------------------------------------------------------------
+
+# The contract's cap (booking-list.md §1). booking-api clamps to the same
+# number; this one exists so an over-large page is trimmed before it costs a
+# round trip, and both are deliberate — neither service trusts the other to
+# have done it.
+MAX_BOOKING_PAGE_SIZE = 50
+DEFAULT_BOOKING_PAGE_SIZE = 20
+
+
+def _positive_int(raw, default):
+    """A query integer, or the default. Never an exception.
+
+    §5 has ONE refusal and it is `filter`, because that changes which
+    bookings come back. `?page=abc` only changes how many, and answering it
+    with a 422 costs the customer their booking history over a typo.
+    """
+    try:
+        value = int(str(raw))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _can_still_move(row, card, now):
+    """
+    Whether the salon's policy still allows cancelling or moving this booking.
+
+    THE SERVER DECIDES, NOT THE CALLER (§3). Two questions, and both have to
+    be answered no before either is offered:
+
+      * Is the booking still live? A COMPLETED, CANCELLED or NO_SHOW booking
+        cannot be cancelled again, whatever the window says.
+      * Is the salon's cancellation window still open? `cancel_window_hours`
+        is the one number the salon actually publishes, so both answers read
+        it rather than one of them inventing a second rule.
+
+    A SALON THAT PUBLISHES NO WINDOW IS TREATED AS ZERO HOURS — cancellable
+    until the appointment starts. `False` would be the cautious-looking
+    default and it is the wrong one: it would tell customers of every salon
+    that has not filled the field in that they may never cancel, which is a
+    refusal the salon never made.
+    """
+    if row.get("status") not in LIVE_BOOKING_STATUSES:
+        return False
+
+    start = _parse_iso(row.get("start_time"))
+    if start is None:
+        # No start time to measure against. Saying "yes" here would offer a
+        # button that the cancel endpoint would then refuse.
+        return False
+
+    hours = (card or {}).get("cancel_window_hours") or 0
+    return now < start - timedelta(hours=hours)
+
+
+def _parse_iso(value):
+    """An ISO 8601 instant with an offset, or None.
+
+    The offset comes from booking-api and is the SALON's, so the comparison
+    against `now` is in the salon's clock without this service needing to
+    know which timezone that is (§2.4).
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    # A naive instant cannot be compared with an aware one, and guessing a
+    # timezone for it would answer §2.4 wrongly half the time.
+    return parsed if parsed.tzinfo is not None else None
+
+
+# The three the contract calls live (§2). Anything else is history, and
+# history does not offer a cancel button.
+LIVE_BOOKING_STATUSES = frozenset({"BOOKED", "CONFIRMED_BY_SALON", "CHECKED_IN"})
+
+
+@extend_schema(
+    summary="The caller's bookings — upcoming, recurring or archive",
+    description=(
+        "One shelf of the caller's own bookings, paginated. WHOSE BOOKINGS "
+        "IS NOT A PARAMETER: the customer comes from the bearer token, and "
+        "an endpoint that took a customer id would be an enumeration of "
+        "every booking in the system behind one valid login.\n\n"
+        "The page comes from gostyle-booking-api, which owns the bookings. "
+        "Two things on each row do NOT come from there and are filled in "
+        "here: `salon`, because a booking stores a branch id and booking-api "
+        "cannot resolve a name, logo or city; and `can_cancel` / "
+        "`can_reschedule`, because the cancellation window is published by "
+        "the salon into this service's tables. A salon that cannot be "
+        "resolved gets `\"salon\": null` rather than an object with holes in "
+        "it.\n\n"
+        "`counts` carries all three tab badges, so the app does not make "
+        "three requests for numbers it draws at once. `recurring` is always "
+        "empty today — series are not wired yet, and an empty page is a "
+        "truer answer than a 422. See docs/BOOKING_LIST_API.md."
+    ),
+    parameters=[
+        OpenApiParameter(
+            "filter",
+            str,
+            description=(
+                "`upcoming` (default), `recurring` or `archive`. Every "
+                "booking is on exactly one shelf, so the three never "
+                "double-count. Anything else is 422 `invalid_filter` — "
+                "refused rather than quietly defaulted, because a typo "
+                "answered with `upcoming` is a tab that has never once shown "
+                "what its label claims."
+            ),
+            enum=["upcoming", "recurring", "archive"],
+        ),
+        OpenApiParameter("page", int, description="1-based. Default 1."),
+        OpenApiParameter(
+            "pageSize",
+            int,
+            description=(
+                f"Default {DEFAULT_BOOKING_PAGE_SIZE}, capped at "
+                f"{MAX_BOOKING_PAGE_SIZE}. `page_size` is accepted as an "
+                "alias, because every other list in this service spells it "
+                "that way."
+            ),
+        ),
+    ],
+    responses={
+        200: OpenApiResponse(
+            response={"type": "object"},
+            description="A page of the shelf, with all three tab counts.",
+            examples=[
+                OpenApiExample(
+                    "Upcoming",
+                    value={
+                        "count": 14,
+                        "next": "https://api.gostyle.uk/api/v1/bookings?filter=upcoming&page=2",
+                        "previous": None,
+                        "counts": {"upcoming": 3, "recurring": 0, "archive": 10},
+                        "results": [
+                            {
+                                "id": "9f1c0f4e-3a2b-4d55-9a71-2c8e5b0d7a11",
+                                "salon_id": "marina-walk",
+                                "status": "CONFIRMED_BY_SALON",
+                                "payment_status": "FULLY_PAID",
+                                "booking_type": "SINGLE",
+                                "date": "2026-09-20",
+                                "start_time": "2026-09-20T20:00:00+04:00",
+                                "end_time": "2026-09-20T20:45:00+04:00",
+                                "salon": {
+                                    "id": "3f6a1d2c-88b4-4f0e-9a3d-51c7e2b40f91",
+                                    "name": "The Iron Razor Barbershop",
+                                    "logo_url": "https://cdn.gostyles.app/logo.png",
+                                    "city": "Dubai",
+                                },
+                                "services": [
+                                    {"id": "svc_fade", "name": "Signature Fade"}
+                                ],
+                                "stylists": [
+                                    {
+                                        "id": "maya",
+                                        "name": "Maya",
+                                        "avatar_url": None,
+                                    }
+                                ],
+                                "total": 216.25,
+                                "due_amount": 0,
+                                "can_cancel": True,
+                                "can_reschedule": True,
+                                "created_at": "2026-09-18T14:02:11+04:00",
+                            }
+                        ],
+                    },
+                ),
+                OpenApiExample(
+                    "No bookings yet",
+                    value={
+                        "count": 0,
+                        "next": None,
+                        "previous": None,
+                        "counts": {"upcoming": 0, "recurring": 0, "archive": 0},
+                        "results": [],
+                    },
+                ),
+            ],
+        ),
+        401: OpenApiResponse(
+            response=_OUR_ENVELOPE,
+            description="No bearer token. Refused here, before the network.",
+        ),
+        422: OpenApiResponse(
+            response={"type": "object"},
+            description=(
+                "booking-api's own shape. `filter` was not one of the three."
+            ),
+            examples=[
+                OpenApiExample(
+                    "Invalid filter",
+                    value={
+                        "detail": 'filter must be upcoming, recurring or archive. Got "past".',
+                        "code": "validation_error",
+                        "errors": [
+                            {
+                                "field": "filter",
+                                "code": "invalid_filter",
+                                "message": 'filter must be upcoming, recurring or archive. Got "past".',
+                            }
+                        ],
+                    },
+                )
+            ],
+        ),
+        503: OpenApiResponse(
+            response=_OUR_ENVELOPE,
+            description="booking-api was unreachable, timed out, or answered with non-JSON.",
+        ),
+    },
+)
+class BookingListView(APIView):
+    """GET /api/v1/bookings — one shelf of the caller's own bookings."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        params = request.query_params
+        page = _positive_int(params.get("page"), 1)
+        page_size = min(
+            _positive_int(
+                params.get("pageSize", params.get("page_size")),
+                DEFAULT_BOOKING_PAGE_SIZE,
+            ),
+            MAX_BOOKING_PAGE_SIZE,
+        )
+
+        # `filter` is forwarded ONLY when it was sent. Sending the default
+        # ourselves would make booking-api's own default unreachable and
+        # give this service a second copy of it to keep in step.
+        upstream = {"page": page, "pageSize": page_size}
+        if params.get("filter"):
+            upstream["filter"] = params["filter"]
+
+        try:
+            upstream_status, body = list_bookings(
+                urllib.parse.urlencode(upstream),
+                authorization=request.META.get("HTTP_AUTHORIZATION", ""),
+                tenant_id=request.META.get("HTTP_X_TENANT_ID"),
+            )
+        except BookingApiUnavailable as exc:
+            raise BookingApiDown() from exc
+
+        # A refusal is an answer: 422 invalid_filter and 401 both reach the
+        # app in booking-api's own shape, unenriched.
+        if upstream_status != 200 or not isinstance(body, dict):
+            return Response(body, status=upstream_status)
+
+        return Response(
+            self._enrich(request, body, page, page_size),
+            status=upstream_status,
+        )
+
+    def _enrich(self, request, body, page, page_size):
+        """booking-api's page, plus the parts only this service can answer."""
+        results = body.get("results") or []
+        cards = salon_cards_for_refs([row.get("salon_id") for row in results])
+        # UTC, aware. Each row's own start carries the SALON's offset, so
+        # comparing the two instants answers §2.4 without this service
+        # needing to know which timezone the salon is in.
+        now = datetime.now(dt_timezone.utc)
+
+        for row in results:
+            card = cards.get(row.get("salon_id"))
+            row["salon"] = (
+                None
+                if card is None
+                else {
+                    "id": card["id"],
+                    "name": card["name"],
+                    "logo_url": card["logo_url"],
+                    "city": card["city"],
+                }
+            )
+            # One window answers both today. They are separate fields because
+            # they are separate questions, and the day the salon publishes a
+            # reschedule rule of its own only one of these changes.
+            movable = _can_still_move(row, card, now)
+            row["can_cancel"] = movable
+            row["can_reschedule"] = movable
+
+        count = body.get("count") or 0
+        return {
+            "count": count,
+            # Absolute, as in /discover — the app follows the link rather
+            # than rebuilding the query and getting one parameter wrong.
+            "next": self._page_url(request, page + 1)
+            if page * page_size < count
+            else None,
+            "previous": self._page_url(request, page - 1) if page > 1 else None,
+            "counts": body.get("counts") or {},
+            "results": results,
+        }
+
+    @staticmethod
+    def _page_url(request, page):
+        """This request's own URL at another page number.
+
+        Built from the CALLER's url, so `filter` and `pageSize` survive into
+        the link. Rebuilding it from the parameters this view happens to know
+        is how `next` quietly drops one of them.
+        """
+        return replace_query_param(request.build_absolute_uri(), "page", page)

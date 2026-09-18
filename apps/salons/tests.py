@@ -7,7 +7,7 @@ import zoneinfo
 from unittest import mock
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone as dt_timezone
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode
 from django.http import QueryDict
 from django.test import SimpleTestCase, override_settings
 
@@ -32,6 +32,8 @@ from apps.salons.params import (
 )
 from apps.salons.views import (
     BookingCreateView,
+    BookingDetailView,
+    BookingListView,
     ServiceDetailsView,
     _stylist_order,
 )
@@ -1893,3 +1895,324 @@ class ServiceDetailsViewTests(SimpleTestCase):
         response = self.get(f"service_ids={self.A}", authenticated=False)
         self.assertEqual(response.status_code, 401)
         self.selector.assert_not_called()
+
+
+class BookingListClientTests(SimpleTestCase):
+    """The client call for the list, with the network replaced."""
+
+    def urlopen(self, body=b'{"count":0,"results":[]}'):
+        response = mock.MagicMock()
+        response.status = 200
+        response.read.return_value = body
+        response.__enter__.return_value = response
+        return mock.patch.object(
+            booking_api.urllib.request, "urlopen", return_value=response
+        )
+
+    @override_settings(BOOKING_API_URL="http://booking/")
+    def test_the_query_rides_along_and_the_token_goes_with_it(self):
+        with self.urlopen() as urlopen:
+            booking_api.list_bookings(
+                "filter=archive&page=2", authorization="Bearer t"
+            )
+        request = urlopen.call_args.args[0]
+        self.assertEqual(
+            request.get_full_url(),
+            "http://booking/v1/mobile-booking?filter=archive&page=2",
+        )
+        self.assertEqual(request.get_method(), "GET")
+        # WHOSE BOOKINGS IS NOT ON THE URL. booking-api reads the customer
+        # off this header, and a customer id in the query would be an
+        # enumeration of every booking behind one valid login.
+        self.assertEqual(request.get_header("Authorization"), "Bearer t")
+
+    @override_settings(BOOKING_API_URL="http://booking/")
+    def test_no_query_leaves_no_dangling_question_mark(self):
+        with self.urlopen() as urlopen:
+            booking_api.list_bookings("", authorization="Bearer t")
+        self.assertEqual(
+            urlopen.call_args.args[0].get_full_url(),
+            "http://booking/v1/mobile-booking",
+        )
+
+
+class BookingListViewTests(SimpleTestCase):
+    """
+    The endpoint, with both the client and the salon lookup replaced.
+
+    What is worth asserting here is only what this service ADDS: booking-api
+    owns the shelves, the ordering and the counts, and none of that is
+    re-decided here.
+    """
+
+    NOW = datetime(2026, 9, 18, 12, 0, tzinfo=dt_timezone.utc)
+
+    def row(self, **overrides):
+        return {
+            "id": "bkg-1",
+            "salon_id": "marina-walk",
+            "status": "CONFIRMED_BY_SALON",
+            "payment_status": "FULLY_PAID",
+            "booking_type": "SINGLE",
+            "date": "2026-09-20",
+            # Two days out, written in the salon's own offset.
+            "start_time": "2026-09-20T20:00:00+04:00",
+            "end_time": "2026-09-20T20:45:00+04:00",
+            "services": [{"id": "svc_fade", "name": "Signature Fade"}],
+            "stylists": [],
+            "total": 216.25,
+            "due_amount": 0,
+            "created_at": "2026-09-18T14:02:11+04:00",
+            **overrides,
+        }
+
+    def page(self, rows=None, *, count=None, counts=None):
+        rows = [self.row()] if rows is None else rows
+        return {
+            "count": len(rows) if count is None else count,
+            "page": 1,
+            "page_size": 20,
+            "counts": counts or {"upcoming": 1, "recurring": 0, "archive": 0},
+            "results": rows,
+        }
+
+    CARD = {
+        "id": "3f6a1d2c-88b4-4f0e-9a3d-51c7e2b40f91",
+        "name": "The Iron Razor Barbershop",
+        "logo_url": "https://cdn/logo.png",
+        "city": "Dubai",
+        "cancel_window_hours": 24,
+        "timezone": "Asia/Dubai",
+    }
+
+    def get(self, query="", *, upstream=None, cards=None, authenticated=True):
+        request = APIRequestFactory().get(f"/api/v1/bookings?{query}")
+        if authenticated:
+            force_authenticate(request, user=Customer())
+        with mock.patch(
+            "apps.salons.views.list_bookings",
+            return_value=(200, self.page()) if upstream is None else upstream,
+        ) as client, mock.patch(
+            "apps.salons.views.salon_cards_for_refs",
+            return_value={"marina-walk": self.CARD} if cards is None else cards,
+        ), mock.patch(
+            "apps.salons.views.datetime"
+        ) as clock:
+            clock.now.return_value = self.NOW
+            clock.fromisoformat = datetime.fromisoformat
+            self.client_mock = client
+            return BookingListView.as_view()(request)
+
+    # ------------------------------------------------------------ forwarding
+
+    def test_the_page_is_asked_for_with_the_caller_s_parameters(self):
+        self.get("filter=archive&pageSize=5&page=3")
+        self.assertEqual(
+            dict(parse_qsl(self.client_mock.call_args.args[0])),
+            {"filter": "archive", "page": "3", "pageSize": "5"},
+        )
+
+    def test_a_filter_that_was_not_sent_is_not_invented(self):
+        """
+        booking-api owns the default. Sending `upcoming` ourselves would
+        give this service a second copy of it to keep in step.
+        """
+        self.get("")
+        self.assertNotIn("filter", dict(parse_qsl(self.client_mock.call_args.args[0])))
+
+    def test_page_size_is_capped_before_the_round_trip(self):
+        # Each row upstream costs a quote, so an over-large page is trimmed
+        # here as well as there. Neither service trusts the other to do it.
+        self.get("pageSize=5000")
+        self.assertEqual(
+            dict(parse_qsl(self.client_mock.call_args.args[0]))["pageSize"], "50"
+        )
+
+    def test_a_nonsense_page_falls_back_rather_than_refusing(self):
+        """
+        The list has ONE refusal and it is `filter`, because that changes
+        which bookings come back. `?page=abc` only changes how many, and a
+        422 there costs the customer their history over a typo.
+        """
+        for query in ("page=abc", "page=0", "page=-4", "pageSize=nope"):
+            with self.subTest(query):
+                response = self.get(query)
+                self.assertEqual(response.status_code, 200)
+
+    # ------------------------------------------------------------ enrichment
+
+    def test_the_salon_is_filled_in_from_this_service_s_own_tables(self):
+        # booking-api stores a branch id and cannot name a salon (its
+        # booking-list.md §9). This is the half only this service can answer.
+        row = self.get().data["results"][0]
+        self.assertEqual(row["salon"], {
+            "id": self.CARD["id"],
+            "name": "The Iron Razor Barbershop",
+            "logo_url": "https://cdn/logo.png",
+            "city": "Dubai",
+        })
+        # The window is policy, not something the app should see or apply.
+        self.assertNotIn("cancel_window_hours", row["salon"])
+
+    def test_a_salon_that_cannot_be_resolved_is_null_not_a_hollow_object(self):
+        """
+        `null` says "we could not find it". A card with a name-shaped hole
+        in it says the salon has no name.
+        """
+        row = self.get(cards={}).data["results"][0]
+        self.assertIsNone(row["salon"])
+        # The booking is still real and still listed.
+        self.assertEqual(row["id"], "bkg-1")
+
+    def test_a_booking_inside_the_cancellation_window_may_not_be_cancelled(self):
+        # Starts 2026-09-20T20:00+04:00 = 16:00Z. A 24h window closes at
+        # 2026-09-19T16:00Z, and "now" is a day before that.
+        self.assertTrue(self.get().data["results"][0]["can_cancel"])
+
+        late = {**self.CARD, "cancel_window_hours": 24 * 30}
+        row = self.get(cards={"marina-walk": late}).data["results"][0]
+        self.assertFalse(row["can_cancel"])
+        self.assertFalse(row["can_reschedule"])
+
+    def test_a_salon_with_no_published_window_may_still_be_cancelled(self):
+        """
+        `False` would be the cautious-LOOKING default and is the wrong one:
+        it tells customers of every salon that has not filled the field in
+        that they may never cancel — a refusal the salon never made.
+        """
+        bare = {**self.CARD, "cancel_window_hours": None}
+        self.assertTrue(
+            self.get(cards={"marina-walk": bare}).data["results"][0]["can_cancel"]
+        )
+
+    def test_a_finished_booking_offers_no_cancel_button(self):
+        # Whatever the window says. Cancelling a cancelled booking is not a
+        # thing, and offering the button is a request the salon will refuse.
+        for status_word in ("COMPLETED", "CANCELLED", "NO_SHOW"):
+            with self.subTest(status_word):
+                response = self.get(
+                    upstream=(200, self.page([self.row(status=status_word)]))
+                )
+                self.assertFalse(response.data["results"][0]["can_cancel"])
+
+    def test_a_row_with_no_usable_start_offers_no_cancel_button(self):
+        # Saying yes here would show a button the cancel endpoint refuses.
+        for start in (None, "not-a-time", "2026-09-20T20:00:00"):
+            with self.subTest(start):
+                response = self.get(
+                    upstream=(200, self.page([self.row(start_time=start)]))
+                )
+                self.assertFalse(response.data["results"][0]["can_cancel"])
+
+    # ------------------------------------------------------------ pagination
+
+    def test_next_carries_every_parameter_the_caller_sent(self):
+        # Rebuilt from the caller's own url, so `filter` and `pageSize`
+        # survive into the link rather than being dropped from it.
+        response = self.get(
+            "filter=archive&pageSize=1",
+            upstream=(200, self.page(count=9)),
+        )
+        self.assertIn("filter=archive", response.data["next"])
+        self.assertIn("pageSize=1", response.data["next"])
+        self.assertIn("page=2", response.data["next"])
+        self.assertIsNone(response.data["previous"])
+
+    def test_the_last_page_has_no_next(self):
+        response = self.get("page=2&pageSize=20", upstream=(200, self.page(count=21)))
+        self.assertIsNone(response.data["next"])
+        self.assertIn("page=1", response.data["previous"])
+
+    def test_the_three_counts_come_back_untouched(self):
+        counts = {"upcoming": 3, "recurring": 0, "archive": 10}
+        response = self.get(upstream=(200, self.page(counts=counts)))
+        self.assertEqual(response.data["counts"], counts)
+
+    def test_every_shelf_answers_with_all_three_badges(self):
+        """
+        FOUND BY CALLING THE ENDPOINT, not by a mocked body. booking-api's
+        repository knows two shelves and the app draws three chips, so the
+        `upcoming` and `archive` responses came back with no `recurring`
+        key at all and the third badge rendered empty rather than zero.
+
+        This pins the SHAPE the app reads by key. The numbers are
+        booking-api's to decide; the three keys existing is not.
+        """
+        for counts in (
+            {"upcoming": 3, "recurring": 0, "archive": 10},
+            {"upcoming": 0, "recurring": 0, "archive": 0},
+        ):
+            with self.subTest(counts):
+                response = self.get(upstream=(200, self.page(counts=counts)))
+                self.assertEqual(
+                    set(response.data["counts"]),
+                    {"upcoming", "recurring", "archive"},
+                )
+
+    def test_an_empty_shelf_is_a_200_not_a_404(self):
+        response = self.get(upstream=(200, self.page([], count=0)))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"], [])
+        self.assertIsNone(response.data["next"])
+
+    # ------------------------------------------------------------ refusals
+
+    def test_a_refusal_passes_through_unenriched(self):
+        """
+        422 invalid_filter reaches the app in booking-api's own shape. There
+        is nothing to enrich on a body that carries no bookings.
+        """
+        body = {"code": "validation_error", "errors": [{"code": "invalid_filter"}]}
+        response = self.get("filter=past", upstream=(422, body))
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.data, body)
+
+    def test_an_unreachable_booking_service_is_503_in_our_envelope(self):
+        request = APIRequestFactory().get("/api/v1/bookings")
+        force_authenticate(request, user=Customer())
+        with mock.patch(
+            "apps.salons.views.list_bookings", side_effect=BookingApiUnavailable("down")
+        ):
+            response = BookingListView.as_view()(request)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data["errors"][0]["code"], "booking_api_unavailable")
+
+    def test_anonymous_never_reaches_the_network(self):
+        request = APIRequestFactory().get("/api/v1/bookings")
+        with mock.patch("apps.salons.views.list_bookings") as client:
+            response = BookingListView.as_view()(request)
+        self.assertEqual(response.status_code, 401)
+        client.assert_not_called()
+
+
+class BookingPatchMediaTypeTests(SimpleTestCase):
+    """The 415 guard, which PATCH was missing while create had it."""
+
+    def patch(self, content_type):
+        request = APIRequestFactory().patch(
+            "/api/v1/booking/x", data=b"{}", content_type=content_type
+        )
+        force_authenticate(request, user=Customer())
+        with mock.patch("apps.salons.views.patch_booking") as client:
+            self.client_mock = client
+            return BookingDetailView.as_view()(request, booking_id="x")
+
+    def test_a_form_post_is_refused_before_dialling_out(self):
+        # booking-api would answer 422 after a round trip, with a message
+        # about the payload rather than about the header.
+        response = self.patch("application/x-www-form-urlencoded")
+        self.assertEqual(response.status_code, 415)
+        self.client_mock.assert_not_called()
+
+    def test_json_goes_through(self):
+        self.client_mock = None
+        request = APIRequestFactory().patch(
+            "/api/v1/booking/x", data=b"{}", content_type="application/json"
+        )
+        force_authenticate(request, user=Customer())
+        with mock.patch(
+            "apps.salons.views.patch_booking", return_value=(200, {"id": "x"})
+        ) as client:
+            response = BookingDetailView.as_view()(request, booking_id="x")
+        self.assertEqual(response.status_code, 200)
+        client.assert_called_once()
