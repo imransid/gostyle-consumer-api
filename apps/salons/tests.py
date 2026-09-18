@@ -2342,26 +2342,53 @@ class BookingDetailHeaderlessTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("tenant_id", patch_call.call_args.kwargs)
 
-    def test_a_retried_payment_carries_the_same_key(self):
-        """
-        A gateway callback that arrives twice must record ONE payment. The
-        app sends no header, so the key is derived from the body — the same
-        callback derives the same key and booking-api replays it.
-        """
-        def send():
-            request = APIRequestFactory().patch(
-                f"/api/v1/booking/{self.BOOKING}",
-                data=b'{"payment_status":"FULLY_PAID","payment_reference":"pi_1"}',
-                content_type="application/json",
-            )
-            force_authenticate(request, user=Customer())
-            with mock.patch(
-                "apps.salons.views.patch_booking", return_value=(200, {})
-            ) as call:
-                BookingDetailView.as_view()(request, booking_id=self.BOOKING)
-            return call.call_args.kwargs["idempotency_key"]
+    def send_patch(self, booking_id, body, **headers):
+        request = APIRequestFactory().patch(
+            f"/api/v1/booking/{booking_id}",
+            data=body,
+            content_type="application/json",
+            **headers,
+        )
+        force_authenticate(request, user=Customer())
+        with mock.patch(
+            "apps.salons.views.patch_booking", return_value=(200, {})
+        ) as call:
+            BookingDetailView.as_view()(request, booking_id=booking_id)
+        return call.call_args.kwargs["idempotency_key"]
 
-        self.assertEqual(send(), send())
+    def test_no_key_is_invented_for_a_payment(self):
+        """
+        THE BUG THIS PINS. A derived key hashed the customer and the BODY --
+        which does not carry the booking id, because that travels in the URL.
+        So paying for two different bookings with the same figures produced
+        one key, and booking-api refused the second with
+        IDEMPOTENCY_KEY_REUSED. Correct of it; the question should never have
+        been asked.
+
+        What stops a double payment is the booking's own state: §11.1 patches
+        only from DRAFT, so a second attempt is 409 already_paid whatever key
+        it carries.
+        """
+        body = b'{"payment_status":"FULLY_PAID","advance_paid_amount":367.5}'
+        self.assertIsNone(self.send_patch(self.BOOKING, body))
+
+    def test_two_bookings_with_identical_payloads_do_not_collide(self):
+        # The exact shape that produced the 409: same customer, same money,
+        # different booking.
+        body = b'{"payment_status":"FULLY_PAID","advance_paid_amount":367.5}'
+        first = self.send_patch("848eb05e-e428-4e6c-bd08-7111a34bb5be", body)
+        second = self.send_patch("c4832b75-0ed1-4c70-a005-14a200f6638c", body)
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+
+    def test_the_callers_own_key_is_still_forwarded(self):
+        # An app doing its own retry accounting is the better source, and
+        # nothing here second-guesses it.
+        body = b'{"payment_status":"FULLY_PAID"}'
+        self.assertEqual(
+            self.send_patch(self.BOOKING, body, HTTP_IDEMPOTENCY_KEY="mine-9"),
+            "mine-9",
+        )
 
 
 class BookingDetailSalonTests(SimpleTestCase):

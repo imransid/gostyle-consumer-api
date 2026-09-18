@@ -257,8 +257,14 @@ all read one shape. The shape is `BOOKING_CREATE_API.md` §8.
 ## 8. Record the payment — `PATCH /api/v1/booking/<id>`
 
 Called once the payment gateway answers. **Only the booking id and the
-bearer token are needed**; `Idempotency-Key` is derived from the body when
-not sent, so a callback delivered twice records one payment.
+bearer token are needed** — no `X-Tenant-Id`, and no `Idempotency-Key`.
+
+A key is never invented here. One was, briefly, hashed from the customer and
+the body — but the body does not carry the booking id, so paying for two
+bookings with the same figures produced one key and the second was refused as
+reused. What actually prevents a double payment is rule 1 below: a booking is
+patched only from `DRAFT`, so a second attempt is `409 already_paid` whatever
+key it carries. A key you send yourself is still forwarded.
 
 The body is forwarded as raw bytes —
 never parsed and re-serialised, because re-encoding rounds every figure

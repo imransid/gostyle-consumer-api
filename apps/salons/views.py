@@ -1895,13 +1895,16 @@ _PAYMENT_REQUEST = {
                 location=OpenApiParameter.HEADER,
                 required=False,
                 description=(
-                    "OPTIONAL. Derived from the body when not sent, so a "
-                    "gateway callback delivered twice records one payment. "
-                    "`payment_reference` is the second guard: the same one "
-                    "twice returns the same booking.\n\n"
-                    "**No `X-Tenant-Id`.** The booking id and the bearer "
-                    "token are the whole request — a booking already records "
-                    "which salon and tenant it belongs to."
+                    "OPTIONAL, and NOT invented here. Forwarded only when "
+                    "you send one, for an app doing its own retry "
+                    "accounting.\n\n"
+                    "What stops a payment being recorded twice is the "
+                    "booking's own state: a booking is patched only from "
+                    "`DRAFT`, so a second attempt is `409 already_paid` "
+                    "whatever key it carries.\n\n"
+                    "**No `X-Tenant-Id` either.** The booking id and the "
+                    "bearer token are the whole request — a booking already "
+                    "records which salon and tenant it belongs to."
                 ),
             ),
         ],
@@ -2033,9 +2036,22 @@ class BookingDetailView(APIView):
                 # there is nothing to resolve and nothing to rewrite.
                 request.body,
                 authorization=request.META.get("HTTP_AUTHORIZATION", ""),
-                # Derived when the app sends none, so a gateway callback
-                # retried is recorded once. See _idempotency_key.
-                idempotency_key=_idempotency_key(request),
+                # NO DERIVED KEY HERE, and the reason is worth keeping.
+                #
+                # It was a hash of the customer and the body -- which does
+                # not include the booking id, because that travels in the
+                # URL. So paying for two different bookings with the same
+                # figures produced the SAME key, and booking-api refused the
+                # second with IDEMPOTENCY_KEY_REUSED: a correct answer to a
+                # question this service should never have asked.
+                #
+                # Adding the id to the hash would have fixed the collision
+                # and bought nothing. What actually stops a payment being
+                # recorded twice is the booking's own state: §11.1 patches
+                # only from DRAFT, so a second attempt is 409 already_paid
+                # whatever key it carries. A key the CALLER sends is still
+                # forwarded, for an app doing its own retry accounting.
+                idempotency_key=request.META.get("HTTP_IDEMPOTENCY_KEY"),
             )
         except BookingApiUnavailable as exc:
             raise BookingApiDown() from exc
