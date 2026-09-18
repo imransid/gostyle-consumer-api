@@ -1122,6 +1122,9 @@ class NearestAvailableView(APIView):
                 salon, tz, params, duration,
                 lead_minutes=max([row["lead_time_minutes"] or 0 for row in timing] or [0]),
                 now=datetime.now(tz),
+                # Forwarded to booking-api: `/busy` is behind its auth guard,
+                # and the customer asking for slots is the one to ask with.
+                authorization=request.META.get("HTTP_AUTHORIZATION", ""),
             )
         except BookingApiUnavailable as exc:
             raise BookingApiDown() from exc
@@ -1200,7 +1203,7 @@ def _open_span(salon, tz, day, day_start):
     return slots.span(day_start, row.get("open"), row.get("close"))
 
 
-def _offers(salon, tz, params, duration, lead_minutes, now):
+def _offers(salon, tz, params, duration, lead_minutes, now, authorization):
     day = params["start"].astimezone(tz).date()
     day_start = datetime.combine(day, time.min, tzinfo=tz)
 
@@ -1233,6 +1236,7 @@ def _offers(salon, tz, params, duration, lead_minutes, now):
     day_end = day_start + timedelta(days=2)
     for staff_id, start_at, end_at in busy_intervals(
         salon.branch_id, staff_ids, day_start, day_end,
+        authorization=authorization,
         tenant_id=salon.tenant_id,
     ):
         booked.setdefault(uuid.UUID(str(staff_id)), []).append(

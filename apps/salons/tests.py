@@ -2492,7 +2492,7 @@ class BusyIntervalsClientTests(SimpleTestCase):
 
     def call(self):
         return booking_api.busy_intervals(
-            self.BRANCH, [self.STAFF], *self.WINDOW
+            self.BRANCH, [self.STAFF], *self.WINDOW, authorization="Bearer t"
         )
 
     @override_settings(BOOKING_API_URL="http://booking/")
@@ -2503,6 +2503,21 @@ class BusyIntervalsClientTests(SimpleTestCase):
         self.assertIn("branchId=263e7e84", url)
         self.assertIn("staffIds=50dcbb8f", url)
         self.assertIn("2026-09-21", url)
+
+    @override_settings(BOOKING_API_URL="http://booking/")
+    def test_the_callers_token_travels_with_the_question(self):
+        """
+        `/busy` sits on booking-api's mobile-booking controller, behind its
+        auth guard like every route on it. Calling without a token is a 401,
+        which this client turns into BookingApiUnavailable and the endpoint
+        reports as "booking is temporarily unavailable" — so a missing
+        header reads as an outage. It was exactly that for one deploy.
+        """
+        with self.answer() as urlopen:
+            self.call()
+        self.assertEqual(
+            urlopen.call_args.args[0].get_header("Authorization"), "Bearer t"
+        )
 
     @override_settings(BOOKING_API_URL="http://booking/")
     def test_busy_intervals_come_back_as_aware_instants(self):

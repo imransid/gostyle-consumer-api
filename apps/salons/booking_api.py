@@ -119,7 +119,9 @@ def list_bookings(query, *, authorization, tenant_id=None):
     return _send("GET", path, headers=headers)
 
 
-def busy_intervals(branch_id, staff_ids, window_start, window_end, *, tenant_id=None):
+def busy_intervals(
+    branch_id, staff_ids, window_start, window_end, *, authorization, tenant_id=None
+):
     """
     When these stylists are already occupied, from the service that knows.
 
@@ -141,12 +143,20 @@ def busy_intervals(branch_id, staff_ids, window_start, window_end, *, tenant_id=
         "to": window_end.astimezone(dt_timezone.utc).isoformat(),
     })
 
-    headers = {}
+    # THE CALLER'S OWN TOKEN. `/busy` lives on booking-api's mobile-booking
+    # controller, which is behind its auth guard like every route on it — so
+    # calling without one is a 401, which this turns into a 503 and the app
+    # reads as "booking is down". It was exactly that for one deploy.
+    headers = {"Authorization": authorization}
     if tenant_id:
         headers["X-Tenant-Id"] = str(tenant_id)
 
     status, body = _send("GET", f"/v1/mobile-booking/busy?{query}", headers=headers)
     if status != 200 or not isinstance(body, dict):
+        # The status is IN THE MESSAGE. A 401 here means the token did not
+        # travel, a 404 means the endpoint is not deployed, and a 500 is
+        # booking-api's own problem — three different fixes that otherwise
+        # all surface as one opaque 503.
         raise BookingApiUnavailable(
             f"booking-api answered {status} for the busy window"
         )
