@@ -1,7 +1,13 @@
 from datetime import datetime, time, timedelta, timezone as dt_timezone
 from django.db.models import F
 from django.http import Http404
-from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
+from drf_spectacular.utils import (
+    OpenApiExample,
+    OpenApiParameter,
+    OpenApiResponse,
+    extend_schema,
+    extend_schema_view,
+)
 from rest_framework.exceptions import (
     APIException,
     ErrorDetail,
@@ -1141,16 +1147,346 @@ class BookingApiDown(APIException):
     default_code = "booking_api_unavailable"
 
 
+# The schema below is written by hand as raw OpenAPI, and there is no
+# serializer behind it ON PURPOSE. booking-api owns this payload; a serializer
+# here would validate it a second time, and two copies of one contract drift.
+# It would also have to re-serialise the body to produce `request.data`, and
+# the bytes must cross untouched — booking-api hashes them to recognise a
+# retry (see booking_api.create_booking). So this documents the body without
+# standing in its way. It is a description, not a gate: what actually refuses
+# a bad payload is booking-api's 422, and only that.
+_MONEY = {
+    "type": "number",
+    "format": "double",
+    "minimum": 0,
+    "description": "Decimal AED, at most two places. Verified upstream, never trusted.",
+}
+
+_LINE = {
+    "type": "object",
+    "required": ["id", "amount"],
+    "properties": {
+        "id": {"type": "string", "example": "svc_fade"},
+        "amount": {**_MONEY, "example": 120},
+    },
+}
+
+_BOOKING_REQUEST = {
+    "type": "object",
+    "required": [
+        "salon_id",
+        "services",
+        "stylists",
+        "date",
+        "start_time",
+        "end_time",
+        "amount_without_tax",
+        "tax_amount",
+        "discount",
+        "total",
+        "advance_paid_amount",
+        "due_amount",
+        "payment_status",
+        "status",
+        "booking_type",
+    ],
+    "properties": {
+        "salon_id": {"type": "string", "example": "marina-walk"},
+        "services": {
+            "type": "array",
+            "minItems": 1,
+            "items": _LINE,
+            "description": "At least one. An empty basket is refused upstream.",
+        },
+        "products": {
+            "type": "array",
+            "items": _LINE,
+            "description": (
+                "Refused with 422 products_not_supported when non-empty: there "
+                "is no product catalogue to price a line against, and a product "
+                "silently dropped from a basket is money the salon does not take."
+            ),
+        },
+        "stylists": {
+            "type": "array",
+            "items": {"type": "string"},
+            "example": ["maya"],
+            "description": (
+                "One for the whole visit, or one per service in the same order. "
+                "An empty array is refused: the staff directory publishes no "
+                "skills, so \"the salon picks a qualified one\" cannot be done "
+                "honestly."
+            ),
+        },
+        "date": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-09-20",
+            "description": "Branch-local trading day. Must agree with start_time.",
+        },
+        "start_time": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-09-20T20:00:00+04:00",
+        },
+        "end_time": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-09-20T20:45:00+04:00",
+        },
+        "amount_without_tax": {**_MONEY, "example": 225},
+        "tax_amount": {**_MONEY, "example": 11.25},
+        "discount": {**_MONEY, "example": 20},
+        "promo_code": {
+            "type": "string",
+            "nullable": True,
+            "example": "GOSTYLE20",
+        },
+        "total": {**_MONEY, "example": 216.25},
+        "advance_paid_amount": {**_MONEY, "example": 0, "description": "Always 0 on create."},
+        "due_amount": {**_MONEY, "example": 216.25},
+        "payment_status": {
+            "type": "string",
+            "enum": ["DRAFT"],
+            "description": "Only DRAFT on create.",
+        },
+        "status": {
+            "type": "string",
+            "enum": ["BOOKED"],
+            "description": "Only BOOKED on create.",
+        },
+        "booking_type": {
+            "type": "string",
+            "enum": ["SINGLE", "ROUTINE"],
+            "description": (
+                "ROUTINE is refused with 422 routine_not_supported: this payload "
+                "carries no recurrence rule, and a recurring booking that creates "
+                "one visit is a customer expecting twelve."
+            ),
+        },
+    },
+    "description": (
+        "Who is booking is NOT in here. booking-api resolves the customer from "
+        "the bearer token, and this service neither reads nor overrides it."
+    ),
+}
+
+# Two error shapes live on this endpoint, and the app has to handle both.
+# Refusals from booking-api arrive in ITS shape (409, 422); refusals raised
+# before the request leaves this service arrive in this project's envelope
+# (401, 415, 503). See docs/BOOKING_CREATE_API.md §2.
+_OUR_ENVELOPE = {
+    "type": "object",
+    "properties": {
+        "detail": {"type": "string"},
+        "code": {"type": "string"},
+        "errors": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "field": {"type": "string", "nullable": True},
+                    "code": {"type": "string"},
+                    "message": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
+
 @extend_schema(
-    request=None,
-    responses=None,
+    summary="Create a booking",
     description=(
         "Create a booking. The body is forwarded to gostyle-booking-api "
-        "unchanged, and its answer is returned unchanged — including 409 "
-        "slot_taken and 422 validation errors, which carry that service's "
-        "error shape rather than this one's. Send `Idempotency-Key` to make "
-        "a retry safe."
+        "unchanged — raw bytes, never parsed and re-serialised, because that "
+        "service hashes the body to recognise a retry — and its answer is "
+        "returned unchanged, including 409 slot_taken and 422 validation "
+        "errors, which carry that service's error shape rather than this "
+        "one's. Send `Idempotency-Key` to make a retry safe.\n\n"
+        "The body below is booking-api's contract, documented here but not "
+        "validated here: nothing in this service checks it, and its 422 is "
+        "the only answer about the payload. See docs/BOOKING_CREATE_API.md."
     ),
+    parameters=[
+        OpenApiParameter(
+            name="Idempotency-Key",
+            type=str,
+            location=OpenApiParameter.HEADER,
+            required=False,
+            description=(
+                "A UUID per booking attempt, reused for that attempt's retries. "
+                "booking-api stores it with a hash of the body and returns the "
+                "original response to a repeat, so a customer who taps twice "
+                "gets one booking. Forwarded only when sent — never invented "
+                "here, which would make every retry a second booking."
+            ),
+        ),
+        OpenApiParameter(
+            name="X-Tenant-Id",
+            type=str,
+            location=OpenApiParameter.HEADER,
+            required=False,
+            description=(
+                "Forwarded only when sent. Never invented here: a made-up "
+                "tenant would stamp another salon's rows."
+            ),
+        ),
+    ],
+    request={"application/json": _BOOKING_REQUEST},
+    responses={
+        201: OpenApiResponse(
+            response={
+                "type": "object",
+                "description": "booking-api's created booking, forwarded verbatim.",
+            },
+            description="Created, at payment_status DRAFT. booking-api's body, untouched.",
+            examples=[
+                OpenApiExample(
+                    "Created",
+                    value={
+                        "id": "bkg_01J8Z",
+                        "salon_id": "marina-walk",
+                        "status": "BOOKED",
+                        "status_detail": "PENDING_PAYMENT",
+                        "date": "2026-09-20",
+                        "start_time": "2026-09-20T20:00:00+04:00",
+                        "end_time": "2026-09-20T20:45:00+04:00",
+                        "services": [
+                            {"id": "svc_fade", "name": "Skin fade", "amount": 120}
+                        ],
+                        "products": [],
+                        "stylists": [
+                            {"id": "maya", "name": "Maya", "avatar_url": None}
+                        ],
+                        "amount_without_tax": 225,
+                        "tax_amount": 11.25,
+                        "discount": 20,
+                        "total": 216.25,
+                        "promo_code": "GOSTYLE20",
+                        "advance_paid_amount": 0,
+                        "due_amount": 216.25,
+                        "payment_status": "DRAFT",
+                        "payment_status_detail": "UNPAID",
+                        "payment_method": None,
+                        "pass_qr_code": "GS-BKG-1",
+                        "expires_at": "2026-09-18T18:15:00+04:00",
+                        "created_at": "2026-09-18T18:00:00+04:00",
+                    },
+                )
+            ],
+        ),
+        401: OpenApiResponse(
+            response=_OUR_ENVELOPE,
+            description="No bearer token. Refused here, before the network.",
+            examples=[
+                OpenApiExample(
+                    "Not authenticated",
+                    value={
+                        "detail": "Authentication credentials were not provided.",
+                        "code": "not_authenticated",
+                        "errors": [
+                            {
+                                "field": None,
+                                "code": "not_authenticated",
+                                "message": "Authentication credentials were not provided.",
+                            }
+                        ],
+                    },
+                )
+            ],
+        ),
+        409: OpenApiResponse(
+            response={"type": "object"},
+            description=(
+                "booking-api's own shape. The slot went to someone else between "
+                "picking it and pressing Book — a race, not a mistake, so the "
+                "app sends the customer back to the picker."
+            ),
+            examples=[
+                OpenApiExample(
+                    "Slot taken",
+                    value={"code": "slot_taken", "message": "That time just went."},
+                )
+            ],
+        ),
+        415: OpenApiResponse(
+            response=_OUR_ENVELOPE,
+            description=(
+                "Not `Content-Type: application/json`. Refused before dialling "
+                "out, so the app hears about the header rather than getting "
+                "booking-api's answer about the payload after a round trip."
+            ),
+            examples=[
+                OpenApiExample(
+                    "Unsupported media type",
+                    value={
+                        "detail": 'Unsupported media type "application/x-www-form-urlencoded" in request.',
+                        "code": "unsupported_media_type",
+                        "errors": [
+                            {
+                                "field": None,
+                                "code": "unsupported_media_type",
+                                "message": 'Unsupported media type "application/x-www-form-urlencoded" in request.',
+                            }
+                        ],
+                    },
+                )
+            ],
+        ),
+        422: OpenApiResponse(
+            response={"type": "object"},
+            description=(
+                "booking-api's own shape, NOT this project's envelope. It owns "
+                "payload validation, including the money check: a figure that "
+                "disagrees with the server's quote comes back with the correct "
+                "one so the app can show the customer what changed."
+            ),
+            examples=[
+                OpenApiExample(
+                    "Validation error",
+                    value={
+                        "detail": "The booking could not be created.",
+                        "code": "validation_error",
+                        "errors": [
+                            {
+                                "field": "total",
+                                "code": "amount_mismatch",
+                                "message": "The price changed.",
+                                "expected": 226.25,
+                            }
+                        ],
+                    },
+                )
+            ],
+        ),
+        503: OpenApiResponse(
+            response=_OUR_ENVELOPE,
+            description=(
+                "booking-api was unreachable, timed out, or answered with "
+                "non-JSON. `booking_api_unavailable` is the one to branch on: "
+                "the request never arrived, so nothing was created and a retry "
+                "is safe. A 5xx that came FROM booking-api is forwarded as "
+                "itself and carries no such promise."
+            ),
+            examples=[
+                OpenApiExample(
+                    "Booking service unavailable",
+                    value={
+                        "detail": "Booking is temporarily unavailable. Please try again.",
+                        "code": "service_unavailable",
+                        "errors": [
+                            {
+                                "field": None,
+                                "code": "booking_api_unavailable",
+                                "message": "Booking is temporarily unavailable. Please try again.",
+                            }
+                        ],
+                    },
+                )
+            ],
+        ),
+    },
 )
 class BookingCreateView(APIView):
     """POST /api/v1/booking — forwards to gostyle-booking-api."""
