@@ -478,6 +478,24 @@ def salon_cards_for_refs(salon_refs):
         .annotate(
             branch_name=Subquery(branch.values("name")[:1], output_field=TextField()),
             branch_city=Subquery(branch.values("city")[:1], output_field=TextField()),
+            # THE NAME THE CUSTOMER SEES, which is the one they picked the
+            # salon by. `branch.name` is the operator's own label for the
+            # premises -- "Main" -- and putting that on a booking card shows
+            # someone a booking at a salon they have never heard of. Same
+            # rule and same source as the discover card
+            # (with_published_card_fields), so one salon cannot be called two
+            # different things on two screens.
+            published_name=Subquery(
+                StorefrontVersion.objects
+                .filter(id=OuterRef("live_version_id"))
+                .annotate(
+                    name=KeyTextTransform(
+                        "nameEn", KeyTransform("IDENTITY", "snapshot")
+                    )
+                )
+                .values("name")[:1],
+                output_field=TextField(),
+            ),
             # The same LOGO rule the discover card uses: public, approved,
             # newest first. A second spelling of it here is how one screen
             # starts showing a logo the other has already moderated away.
@@ -507,6 +525,7 @@ def salon_cards_for_refs(salon_refs):
             "slug",
             "branch_id",
             "branch_name",
+            "published_name",
             "branch_city",
             "logo_url",
             "cancel_window_hours",
@@ -522,7 +541,10 @@ def salon_cards_for_refs(salon_refs):
     for row in rows:
         card = {
             "id": str(row["id"]),
-            "name": row["branch_name"],
+            # Published first; the branch label only as a fallback for a
+            # salon that never published an IDENTITY section, which must
+            # still be nameable rather than blank.
+            "name": row["published_name"] or row["branch_name"],
             "logo_url": row["logo_url"],
             "city": row["branch_city"],
             "cancel_window_hours": row["cancel_window_hours"],

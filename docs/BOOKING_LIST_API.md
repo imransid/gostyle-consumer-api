@@ -84,8 +84,9 @@ reading — the rules that matter are there and are tested there:
    someone turns up for an appointment that is not there.
 3. **A visit in progress stays on `upcoming` until it ends**, not until it
    starts — measuring from the start moves it to history mid-haircut.
-4. **A `DRAFT` checkout is on none of the three.** Inside its hold window it
-   is not a booking yet; expired, it is simply gone rather than archived.
+4. **A live `DRAFT` checkout IS listed**, so an interrupted payment can be
+   found and resumed. An abandoned one — window run out — stays hidden: that
+   is litter, not history.
 5. **`recurring` answers an empty page, not a 422.** "You have no routines"
    and "there is no such tab" are different sentences, and only the first one
    is true.
