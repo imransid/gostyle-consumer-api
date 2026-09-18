@@ -235,6 +235,13 @@ all read one shape. The shape is `BOOKING_CREATE_API.md` §8.
    booking" and "not yours" have to be indistinguishable from outside.
 2. **No query parameters.** Services, products and stylists always come
    expanded, never as bare ids.
+2. **`salon` is the FULL object here**, not the four-key card a list row
+   carries: `id, name, slug, logo_url, cover_url, address, region,
+   country_code, city, timezone, latitude, longitude`. A list row is
+   something to scan; a booking drawer is a place someone is about to travel
+   to, so it carries the street and a map pin. Both come from one lookup, so
+   a salon cannot be named one thing on the list and another on the booking
+   it opens. `null` when it cannot be resolved — see §5.
 3. **`DRAFT` bookings are readable**, so an interrupted checkout can be
    resumed. `expires_at` is present while the hold window is running and gone
    once the booking is paid.
@@ -274,13 +281,21 @@ through a Python float. Responds `200` with the full booking, same shape as
 | `payment_method`      | cond.    | `WALLET`, `CARD`, `GOOGLE`, `APPLE`, `OTHERS`. Required unless `PAY_AFTER_CHECK_IN`. |
 | `advance_paid_amount` | yes      | What the gateway actually took. `0` for `PAY_AFTER_CHECK_IN`.            |
 | `due_amount`          | no       | Derived as `total - advance_paid_amount`; verified when sent.            |
-| `payment_reference`   | cond.    | The gateway's own id. Required whenever money moved.                     |
+| `payment_reference`   | no       | The gateway's own id. **Not required while payment is simulated** — see below. |
 
 1. **Only from `DRAFT`.** Anything else is `409` `already_paid`; refunds and
    top-ups are their own endpoints.
 2. **The amount is checked against the booking**, never accepted on trust.
-3. **`payment_reference` is unique.** The same one twice returns the same
-   booking rather than recording a second payment.
+3. **`payment_reference` is unique, and currently OPTIONAL.** The rule is
+   that a gateway reference is required whenever money moved, because it is
+   what makes a payment recordable only once — the same reference twice
+   returns the same booking instead of banking a second charge. There is no
+   gateway yet, so requiring it only forced callers to invent a fake id.
+   **The cost, while it is relaxed:** two identical patches are two payments.
+   `Idempotency-Key` still catches an app that retries, but nothing catches a
+   duplicate gateway callback. Restore the check with the gateway — the
+   plumbing either side of it is still wired, and a reference that IS sent is
+   still stored and still enforced unique.
 4. **A successful patch clears the hold** — the slot is firmly booked and
    `expires_at` disappears.
 5. **A failed payment is not a patch.** Leave the booking in `DRAFT` and let
@@ -297,7 +312,6 @@ through a Python float. Responds `200` with the full booking, same shape as
 | `payment_status` sent as `DRAFT`             | 422    | `invalid_payment_status`    |
 | `advance_paid_amount` disagrees with `total` | 422    | `amount_mismatch`           |
 | Deposit below the salon's minimum            | 422    | `deposit_too_low`           |
-| `payment_reference` missing when money moved | 422    | `missing_payment_reference` |
 | No such booking, or not the caller's         | 404    | `not_found`                 |
 
 The 415 is refused **here, before dialling out**, so the app hears about the

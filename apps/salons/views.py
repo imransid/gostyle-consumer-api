@@ -2003,6 +2003,19 @@ class BookingDetailView(APIView):
             )
         except BookingApiUnavailable as exc:
             raise BookingApiDown() from exc
+
+        # THE SALON, FILLED IN HERE. booking-api stores a branch id and
+        # cannot name a salon (its booking-list.md §9); this service reads
+        # the platform tables directly. Same lookup the list uses, so one
+        # booking cannot name its salon two ways on two screens.
+        if upstream_status == 200 and isinstance(body, dict):
+            body["salon"] = _salon_card(
+                salon_cards_for_refs([body.get("salon_id")]).get(
+                    body.get("salon_id")
+                ),
+                full=True,
+            )
+
         return Response(body, status=upstream_status)
 
     def patch(self, request, booking_id):
@@ -2102,6 +2115,44 @@ def _parse_iso(value):
     # A naive instant cannot be compared with an aware one, and guessing a
     # timezone for it would answer §2.4 wrongly half the time.
     return parsed if parsed.tzinfo is not None else None
+
+
+def _salon_card(card, *, full):
+    """
+    The `salon` object, in the shape the screen needs.
+
+    ONE SOURCE, TWO SHAPES. A list row is fixed at four keys by the contract
+    (§3) and must stay cheap; the drawer is a booking someone is about to
+    travel to, so it carries the street and a map pin as well. Both come from
+    the same lookup, so a salon cannot be named one thing on the list and
+    another on the booking it opens.
+
+    None in, None out — the caller renders "we could not find it" rather than
+    an object with a name-shaped hole in it.
+    """
+    if card is None:
+        return None
+
+    row = {
+        "id": card["id"],
+        "name": card["name"],
+        "logo_url": card["logo_url"],
+        "city": card["city"],
+    }
+    if not full:
+        return row
+
+    return {
+        **row,
+        "slug": card["slug"],
+        "cover_url": card["cover_url"],
+        "address": card["address"],
+        "region": card["region"],
+        "country_code": card["country_code"],
+        "timezone": card["timezone"],
+        "latitude": card["lat"],
+        "longitude": card["lng"],
+    }
 
 
 # The three the contract calls live (§2). Anything else is history, and
@@ -2299,16 +2350,7 @@ class BookingListView(APIView):
 
         for row in results:
             card = cards.get(row.get("salon_id"))
-            row["salon"] = (
-                None
-                if card is None
-                else {
-                    "id": card["id"],
-                    "name": card["name"],
-                    "logo_url": card["logo_url"],
-                    "city": card["city"],
-                }
-            )
+            row["salon"] = _salon_card(card, full=False)
             # One window answers both today. They are separate fields because
             # they are separate questions, and the day the salon publishes a
             # reschedule rule of its own only one of these changes.

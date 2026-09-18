@@ -2362,3 +2362,73 @@ class BookingDetailHeaderlessTests(SimpleTestCase):
             return call.call_args.kwargs["idempotency_key"]
 
         self.assertEqual(send(), send())
+
+
+class BookingDetailSalonTests(SimpleTestCase):
+    """
+    The drawer's `salon` object.
+
+    booking-api stores a branch id and cannot name a salon (its
+    booking-list.md §9), so this service fills it in from the platform
+    tables. The DRAWER carries more than a list row: a booking someone is
+    about to travel to needs the street and a map pin, not just a name.
+    """
+
+    BOOKING = "c4832b75-0ed1-4c70-a005-14a200f6638c"
+    SALON = "263e7e84-b93d-4cb3-bc38-20bb0e6c58a6"
+    CARD = {
+        "id": "c6c248ab-f2cd-4f12-a31e-243c6e64b3b5",
+        "name": "Green Wave Salon",
+        "logo_url": "https://cdn/logo.png",
+        "city": "Dhaka",
+        "cancel_window_hours": 24,
+        "timezone": "Asia/Dhaka",
+        "slug": "green-wave",
+        "cover_url": "https://cdn/cover.png",
+        "address": "12 Gulshan Ave",
+        "region": "Dhaka",
+        "country_code": "BD",
+        "lat": 23.79,
+        "lng": 90.41,
+    }
+
+    def get(self, *, cards=None, upstream=None):
+        request = APIRequestFactory().get(f"/api/v1/booking/{self.BOOKING}")
+        force_authenticate(request, user=Customer())
+        body = {"id": self.BOOKING, "salon_id": self.SALON, "total": 367.5}
+        with mock.patch(
+            "apps.salons.views.read_booking",
+            return_value=(200, body) if upstream is None else upstream,
+        ), mock.patch(
+            "apps.salons.views.salon_cards_for_refs",
+            return_value={self.SALON: self.CARD} if cards is None else cards,
+        ):
+            return BookingDetailView.as_view()(request, booking_id=self.BOOKING)
+
+    def test_the_drawer_carries_the_full_salon(self):
+        salon = self.get().data["salon"]
+        self.assertEqual(salon["name"], "Green Wave Salon")
+        self.assertEqual(salon["address"], "12 Gulshan Ave")
+        self.assertEqual(salon["latitude"], 23.79)
+        self.assertEqual(salon["longitude"], 90.41)
+        self.assertEqual(salon["timezone"], "Asia/Dhaka")
+
+    def test_the_policy_window_is_not_published_to_the_app(self):
+        # cancel_window_hours is how can_cancel is DECIDED here. The app is
+        # told the answer, not the rule, so it cannot apply its own version
+        # of a policy the salon owns.
+        self.assertNotIn("cancel_window_hours", self.get().data["salon"])
+
+    def test_a_salon_that_cannot_be_resolved_is_null(self):
+        # "We could not find it", rather than an object with a name-shaped
+        # hole in it. The booking is still returned.
+        response = self.get(cards={})
+        self.assertIsNone(response.data["salon"])
+        self.assertEqual(response.data["id"], self.BOOKING)
+
+    def test_a_refusal_is_passed_through_untouched(self):
+        body = {"detail": "No such booking.", "code": "validation_error"}
+        response = self.get(upstream=(404, body))
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.data, body)
+        self.assertNotIn("salon", response.data)

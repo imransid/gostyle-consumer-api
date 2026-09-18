@@ -519,6 +519,32 @@ def salon_cards_for_refs(salon_refs):
             branch_timezone=Subquery(
                 branch.values("timezone")[:1], output_field=TextField()
             ),
+            # The rest of the address, for the booking DRAWER. A list row
+            # needs a name and a city; a booking someone is about to travel
+            # to needs the street and a map pin.
+            branch_address=Subquery(
+                branch.values("address_line")[:1], output_field=TextField()
+            ),
+            branch_region=Subquery(
+                branch.values("region")[:1], output_field=TextField()
+            ),
+            branch_country=Subquery(
+                branch.values("country_code")[:1], output_field=TextField()
+            ),
+            lat=Subquery(branch.values("lat")[:1], output_field=FloatField()),
+            lng=Subquery(branch.values("lng")[:1], output_field=FloatField()),
+            cover_url=Subquery(
+                StorefrontMedia.objects.filter(
+                    storefront_id=OuterRef("pk"),
+                    deleted_at__isnull=True,
+                    is_public=True,
+                    moderation_status="APPROVED",
+                    kind="COVER",
+                )
+                .order_by("-created_at")
+                .values("url")[:1],
+                output_field=TextField(),
+            ),
         )
         .values(
             "id",
@@ -530,6 +556,12 @@ def salon_cards_for_refs(salon_refs):
             "logo_url",
             "cancel_window_hours",
             "branch_timezone",
+            "branch_address",
+            "branch_region",
+            "branch_country",
+            "lat",
+            "lng",
+            "cover_url",
         )
     )
 
@@ -549,6 +581,15 @@ def salon_cards_for_refs(salon_refs):
             "city": row["branch_city"],
             "cancel_window_hours": row["cancel_window_hours"],
             "timezone": row["branch_timezone"],
+            # Drawer-only fields. `salon_card` trims them off for a list row,
+            # which the contract fixes at four keys.
+            "slug": row["slug"],
+            "cover_url": row["cover_url"],
+            "address": row["branch_address"],
+            "region": row["branch_region"],
+            "country_code": row["branch_country"],
+            "lat": row["lat"],
+            "lng": row["lng"],
         }
         for key in (str(row["id"]), str(row["branch_id"]), row["slug"]):
             if key in by_key and by_key[key]["id"] != card["id"]:
