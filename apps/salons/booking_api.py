@@ -78,6 +78,40 @@ def create_booking(body, *, authorization, idempotency_key=None, tenant_id=None)
     return _send("POST", "/v1/mobile-booking", headers=headers, body=body)
 
 
+def read_booking(booking_id, *, authorization, tenant_id=None):
+    """
+    GET /v1/mobile-booking/<id>, returning (status, parsed body) as given.
+
+    A booking the caller may not see comes back 404, never 403 — an outsider
+    should not learn that a booking id exists. That rule is booking-api's;
+    this forwards its answer unchanged.
+    """
+    headers = {"Authorization": authorization}
+    if tenant_id:
+        headers["X-Tenant-Id"] = tenant_id
+
+    return _send("GET", f"/v1/mobile-booking/{booking_id}", headers=headers)
+
+
+def patch_booking(booking_id, body, *, authorization, idempotency_key=None, tenant_id=None):
+    """
+    PATCH /v1/mobile-booking/<id> — records the payment once the gateway answers.
+
+    Same raw-body rule as create: the bytes go across as they arrived, because
+    re-encoding rounds money through a float.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": authorization,
+    }
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    if tenant_id:
+        headers["X-Tenant-Id"] = tenant_id
+
+    return _send("PATCH", f"/v1/mobile-booking/{booking_id}", headers=headers, body=body)
+
+
 def get_branch_services(tenant_id, branch_id):
     """
     Services a branch offers, as booking-api reads them from the platform.

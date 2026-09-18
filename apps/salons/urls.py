@@ -18,6 +18,7 @@ from .views import (
     SalonStylistsView,
     StylistListView,
     ServiceListView,
+    BookingDetailView
 )
 
 urlpatterns = [
@@ -42,4 +43,5 @@ urlpatterns = [
     path("favourite", FavouriteListView.as_view(), name="favourite-list"),
     path("services", ServiceListView.as_view(), name="services"),
     path("services-details", ServiceDetailsView.as_view(), name="services-details"),
+    path("booking/<uuid:booking_id>", BookingDetailView.as_view(), name="booking-detail"),
 ]

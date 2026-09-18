@@ -1683,3 +1683,33 @@ class BookingCreateView(APIView):
         # Returned, not raised, so api_exception_handler never sees it and the
         # body reaches the app in booking-api's own shape.
         return Response(body, status=upstream_status)
+
+
+class BookingDetailView(APIView):
+    """GET and PATCH one booking. Forwards to booking-api unchanged."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, booking_id):
+        try:
+            upstream_status, body = read_booking(
+                booking_id,
+                authorization=request.META.get("HTTP_AUTHORIZATION", ""),
+                tenant_id=request.META.get("HTTP_X_TENANT_ID"),
+            )
+        except BookingApiUnavailable as exc:
+            raise BookingApiDown() from exc
+        return Response(body, status=upstream_status)
+
+    def patch(self, request, booking_id):
+        try:
+            upstream_status, body = patch_booking(
+                booking_id,
+                request.body,
+                authorization=request.META.get("HTTP_AUTHORIZATION", ""),
+                idempotency_key=request.META.get("HTTP_IDEMPOTENCY_KEY"),
+                tenant_id=request.META.get("HTTP_X_TENANT_ID"),
+            )
+        except BookingApiUnavailable as exc:
+            raise BookingApiDown() from exc
+        return Response(body, status=upstream_status)
