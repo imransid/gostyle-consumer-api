@@ -20,7 +20,6 @@ from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from .booking_api import BookingApiUnavailable, create_booking
 from .snapshot import field as snap_field
 from .params import (
     MAX_SERVICE_IDS,
@@ -32,6 +31,8 @@ from .params import (
     parse_services,
     parse_stylists,
 )
+
+from .booking_api import create_booking, read_booking, patch_booking, BookingApiUnavailable
 
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from apps.accounts.models import Favourite
