@@ -2459,3 +2459,83 @@ class BookingDetailSalonTests(SimpleTestCase):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.data, body)
         self.assertNotIn("salon", response.data)
+
+
+class BusyIntervalsClientTests(SimpleTestCase):
+    """
+    Where the slot picker learns who is already booked.
+
+    THE BUG THIS ENDS. The picker built its grid from `booking` in the
+    PLATFORM database — a table gostyle-booking-api has never written to,
+    because bookings live in ITS database. The grid was therefore computed
+    against ZERO bookings, and the endpoint offered slots that were already
+    sold. The customer found out only when the booking was refused, and the
+    refusal named the STYLIST, so it read as a roster problem.
+    """
+
+    BRANCH = "263e7e84-b93d-4cb3-bc38-20bb0e6c58a6"
+    STAFF = "50dcbb8f-c863-47a0-9f29-6dd5fb41da1c"
+    WINDOW = (
+        datetime(2026, 9, 21, tzinfo=dt_timezone.utc),
+        datetime(2026, 9, 23, tzinfo=dt_timezone.utc),
+    )
+
+    def answer(self, status=200, body=b'{"busy":[]}'):
+        response = mock.MagicMock()
+        response.status = status
+        response.read.return_value = body
+        response.__enter__.return_value = response
+        return mock.patch.object(
+            booking_api.urllib.request, "urlopen", return_value=response
+        )
+
+    def call(self):
+        return booking_api.busy_intervals(
+            self.BRANCH, [self.STAFF], *self.WINDOW
+        )
+
+    @override_settings(BOOKING_API_URL="http://booking/")
+    def test_the_window_and_staff_cross_as_the_query(self):
+        with self.answer() as urlopen:
+            self.call()
+        url = urlopen.call_args.args[0].get_full_url()
+        self.assertIn("branchId=263e7e84", url)
+        self.assertIn("staffIds=50dcbb8f", url)
+        self.assertIn("2026-09-21", url)
+
+    @override_settings(BOOKING_API_URL="http://booking/")
+    def test_busy_intervals_come_back_as_aware_instants(self):
+        body = (
+            b'{"busy":[{"staff_id":"' + self.STAFF.encode() + b'",'
+            b'"start_at":"2026-09-21T08:00:00.000Z",'
+            b'"end_at":"2026-09-21T08:30:00.000Z"}]}'
+        )
+        with self.answer(body=body):
+            rows = self.call()
+        self.assertEqual(len(rows), 1)
+        staff_id, start, end = rows[0]
+        self.assertEqual(staff_id, self.STAFF)
+        # Aware, or `.astimezone()` downstream reads it as server-local time
+        # and the appointment silently moves.
+        self.assertIsNotNone(start.tzinfo)
+        self.assertEqual((end - start).total_seconds(), 1800)
+
+    @override_settings(BOOKING_API_URL="http://booking/")
+    def test_a_failure_raises_rather_than_reporting_everyone_free(self):
+        """
+        THE HALF THAT MATTERS. An empty list means "nobody is busy", so
+        swallowing an error and returning one would put the picker straight
+        back to offering sold slots — silently, and exactly as before. The
+        endpoint must fail loudly instead.
+        """
+        for status in (500, 404, 422):
+            with self.subTest(status):
+                with self.answer(status=status, body=b"{}"):
+                    with self.assertRaises(BookingApiUnavailable):
+                        self.call()
+
+    @override_settings(BOOKING_API_URL="http://booking/")
+    def test_an_unparseable_body_also_raises(self):
+        with self.answer(body=b"[]"):
+            with self.assertRaises(BookingApiUnavailable):
+                self.call()

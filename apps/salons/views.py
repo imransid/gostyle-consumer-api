@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import urllib.parse
+import uuid
 from datetime import datetime, time, timedelta, timezone as dt_timezone
 from django.db.models import F
 from django.http import Http404
@@ -36,6 +37,7 @@ from .params import (
 )
 
 from .booking_api import (
+    busy_intervals,
     create_booking,
     list_bookings,
     read_booking,
@@ -52,7 +54,6 @@ from .hours import weekly_row as hours_row
 from .money import major
 from .selectors import (
     booking_route,
-    booking_rows,
     discoverable_salons,
     filter_by_category,
     filter_by_radius,
@@ -1209,15 +1210,25 @@ def _offers(salon, tz, params, duration, lead_minutes, now):
         for row in shift_rows(salon.tenant_id, salon.branch_id, staff_ids, day)
     }
 
-    # One booking query for both jobs: the blocks that stop a start, and the
-    # count of what each stylist already holds that day. The span runs to the
-    # day after next so an overnight shift's tail is included, since a salon
-    # open past midnight books past midnight too.
+    # WHO IS ALREADY BUSY COMES FROM gostyle-booking-api, which is the only
+    # service that knows. This used to read `booking` in the PLATFORM
+    # database -- a table booking-api has never written to, because bookings
+    # live in ITS database -- so the grid was computed against ZERO bookings
+    # and this endpoint offered slots that were already sold. The customer
+    # found out when the booking was refused, and the refusal named the
+    # stylist, so it read as a roster problem for as long as anyone cared to
+    # look.
+    #
+    # The span runs to the day after next so an overnight shift's tail is
+    # included, since a salon open past midnight books past midnight too.
     booked = {}
     day_end = day_start + timedelta(days=2)
-    for row in booking_rows(salon.tenant_id, staff_ids, day_start, day_end):
-        booked.setdefault(row["staff_id"], []).append(
-            (row["start_at"].astimezone(tz), row["end_at"].astimezone(tz))
+    for staff_id, start_at, end_at in busy_intervals(
+        salon.branch_id, staff_ids, day_start, day_end,
+        tenant_id=salon.tenant_id,
+    ):
+        booked.setdefault(uuid.UUID(str(staff_id)), []).append(
+            (start_at.astimezone(tz), end_at.astimezone(tz))
         )
 
     earliest = now + timedelta(minutes=lead_minutes)

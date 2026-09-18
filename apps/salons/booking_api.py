@@ -27,6 +27,7 @@ called it.
 import json
 import logging
 import urllib.error
+from datetime import datetime, timezone as dt_timezone
 import urllib.parse
 import urllib.request
 
@@ -116,6 +117,48 @@ def list_bookings(query, *, authorization, tenant_id=None):
         path = f"{path}?{query}"
 
     return _send("GET", path, headers=headers)
+
+
+def busy_intervals(branch_id, staff_ids, window_start, window_end, *, tenant_id=None):
+    """
+    When these stylists are already occupied, from the service that knows.
+
+    THE BUG THIS ENDS. The slot picker built its grid from `booking` in the
+    PLATFORM database — a table booking-api has never written to, because
+    bookings live in ITS database. So the picker computed free time against
+    zero bookings and offered slots that were already sold; the customer
+    picked one and the booking was refused, naming the stylist.
+
+    Returns a list of `(staff_id, start, end)` with aware UTC datetimes, or
+    raises. NEVER an empty list on failure: an empty list means "everyone is
+    free", which is precisely the wrong answer here — it would put the picker
+    straight back to offering sold slots, silently.
+    """
+    query = urllib.parse.urlencode({
+        "branchId": str(branch_id),
+        "staffIds": ",".join(str(s) for s in staff_ids),
+        "from": window_start.astimezone(dt_timezone.utc).isoformat(),
+        "to": window_end.astimezone(dt_timezone.utc).isoformat(),
+    })
+
+    headers = {}
+    if tenant_id:
+        headers["X-Tenant-Id"] = str(tenant_id)
+
+    status, body = _send("GET", f"/v1/mobile-booking/busy?{query}", headers=headers)
+    if status != 200 or not isinstance(body, dict):
+        raise BookingApiUnavailable(
+            f"booking-api answered {status} for the busy window"
+        )
+
+    return [
+        (
+            row["staff_id"],
+            datetime.fromisoformat(row["start_at"].replace("Z", "+00:00")),
+            datetime.fromisoformat(row["end_at"].replace("Z", "+00:00")),
+        )
+        for row in body.get("busy") or []
+    ]
 
 
 def patch_booking(booking_id, body, *, authorization, idempotency_key=None, tenant_id=None):
