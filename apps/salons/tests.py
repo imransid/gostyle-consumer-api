@@ -1575,10 +1575,23 @@ class BookingCreateViewTests(SimpleTestCase):
             self.post(HTTP_IDEMPOTENCY_KEY="key-1")
         self.assertEqual(create.call_args.kwargs["idempotency_key"], "key-1")
 
-    def test_optional_headers_are_none_when_not_sent(self):
+    def test_an_idempotency_key_is_always_sent_now(self):
+        """
+        CHANGED DELIBERATELY. This used to forward None when the app sent no
+        header, which left a double tap on a flaky connection creating two
+        bookings and two charges. The key is now derived from the request
+        itself, so a retry is replayed whether or not the client thought
+        about it. See BookingRoutingTests.
+        """
         with self.call((201, {})) as create:
             self.post()
-        self.assertIsNone(create.call_args.kwargs["idempotency_key"])
+        self.assertTrue(create.call_args.kwargs["idempotency_key"])
+
+    def test_no_tenant_is_sent_for_a_salon_that_resolves_to_nothing(self):
+        # This payload's salon_id is not a real one, so nothing is derived
+        # and nothing is guessed.
+        with self.call((201, {})) as create:
+            self.post()
         self.assertIsNone(create.call_args.kwargs["tenant_id"])
 
     def test_tenant_header_is_forwarded_when_sent(self):
@@ -1609,21 +1622,28 @@ class BookingCreateViewTests(SimpleTestCase):
         create.assert_not_called()
 
 
-class BookingTenantHeaderTests(SimpleTestCase):
+class BookingRoutingTests(SimpleTestCase):
     """
-    Which tenant a forwarded booking is stamped with.
+    What the app has to send, and what this service works out for itself.
 
-    booking-api reads X-Tenant-Id and nothing else — its TenantMiddleware runs
-    before the guard, so the token's claim is not available to it — and with no
-    tenant it resolves no platform services and refuses the booking. The app
-    does not send the header, so it is derived from the salon in the payload.
+    THE PROBLEM THIS SOLVES. booking-api's payload calls the field `salon_id`
+    and reads it straight into `branchId`, while every other endpoint in this
+    service returns STOREFRONT uuids. An app that booked with the id it had
+    just browsed with sent the wrong one — and the refusal named the stylist
+    ("that stylist does not work at this salon"), because a wrong branch
+    first shows up as an empty roster. Two uuids, one field, and an error
+    pointing at neither.
+
+    Now the app sends `salon_id` and nothing else: no `X-Tenant-Id`, no
+    `Idempotency-Key`, no knowing that "salon" secretly means "branch".
     """
 
-    TENANT = uuid.UUID("11111111-1111-1111-1111-111111111111")
-    OTHER_TENANT = uuid.UUID("22222222-2222-2222-2222-222222222222")
-    SALON = uuid.UUID("55555555-5555-5555-5555-555555555555")
+    TENANT = "11111111-1111-1111-1111-111111111111"
+    OTHER_TENANT = "22222222-2222-2222-2222-222222222222"
+    STOREFRONT = "55555555-5555-5555-5555-555555555555"
+    BRANCH = "66666666-6666-6666-6666-666666666666"
 
-    def post(self, body, **headers):
+    def send(self, body, *, resolves="default", **headers):
         request = APIRequestFactory().post(
             "/api/v1/booking",
             data=body,
@@ -1631,14 +1651,10 @@ class BookingTenantHeaderTests(SimpleTestCase):
             **headers,
         )
         force_authenticate(request, user=Customer())
-        return request
-
-    def send(self, body, *, resolves=None, **headers):
-        request = self.post(body, **headers)
-        # Faithful to the real selector in the one way that matters here: a
-        # reference it cannot use resolves to nothing.
+        if resolves == "default":
+            resolves = {"tenant_id": self.TENANT, "branch_id": self.BRANCH}
         with mock.patch(
-            "apps.salons.views.tenant_for_salon",
+            "apps.salons.views.booking_route",
             side_effect=lambda ref: resolves if isinstance(ref, str) and ref.strip() else None,
         ) as lookup, mock.patch(
             "apps.salons.views.create_booking", return_value=(201, {})
@@ -1647,61 +1663,128 @@ class BookingTenantHeaderTests(SimpleTestCase):
         self.lookup = lookup
         return create.call_args
 
-    def test_the_callers_own_header_wins_untouched(self):
+    def sent_body(self, call):
+        return json.loads(call.args[0])
+
+    # ---------------------------------------------------------- the rewrite
+
+    def test_a_storefront_id_is_rewritten_to_the_branch_booking_api_means(self):
+        # THE WHOLE POINT. The app sends what it browsed with; booking-api
+        # receives what it actually reads into branchId.
+        call = self.send(('{"salon_id":"%s"}' % self.STOREFRONT).encode())
+        self.assertEqual(self.sent_body(call)["salon_id"], self.BRANCH)
+
+    def test_a_branch_id_is_left_exactly_as_it_arrived(self):
         """
-        An app that knows its tenant is the better source, and it is not
-        second-guessed: the salon is not even looked up.
+        An app already sending the branch uuid resolves to that same branch,
+        so there is nothing to rewrite — and the bytes are not re-encoded at
+        all, which keeps the common case away from the JSON writer.
+        """
+        body = ('{"salon_id":"%s","total":120.00}' % self.BRANCH).encode()
+        call = self.send(body)
+        self.assertEqual(call.args[0], body)
+
+    def test_every_figure_survives_the_rewrite(self):
+        """
+        MONEY IS THE RISK IN RE-ENCODING. Python parses a JSON number into
+        the same double a JavaScript client does and writes back the shortest
+        string that reads as that identical double, so nothing is rounded and
+        a third decimal — which booking-api refuses — stays a third decimal.
         """
         call = self.send(
-            b'{"salon_id":"' + str(self.SALON).encode() + b'"}',
-            resolves=self.OTHER_TENANT,
-            HTTP_X_TENANT_ID=str(self.TENANT),
+            ('{"salon_id":"%s","total":367.5,"tax":17.25,"qty":2,"bad":12.005}'
+             % self.STOREFRONT).encode()
         )
-        self.assertEqual(call.kwargs["tenant_id"], str(self.TENANT))
-        self.lookup.assert_not_called()
+        body = self.sent_body(call)
+        self.assertEqual(body["total"], 367.5)
+        self.assertEqual(body["tax"], 17.25)
+        self.assertEqual(body["bad"], 12.005)
+        # An integer does not sprout a .0 on the way through.
+        self.assertIsInstance(body["qty"], int)
 
-    def test_the_salons_tenant_is_derived_when_no_header_was_sent(self):
+    def test_nothing_else_in_the_payload_is_touched(self):
         call = self.send(
-            b'{"salon_id":"' + str(self.SALON).encode() + b'"}',
-            resolves=self.TENANT,
+            ('{"salon_id":"%s","services":[{"id":"svc","amount":350}],'
+             '"status":"BOOKED"}' % self.STOREFRONT).encode()
         )
-        self.assertEqual(self.lookup.call_args.args[0], str(self.SALON))
-        self.assertEqual(call.kwargs["tenant_id"], str(self.TENANT))
+        body = self.sent_body(call)
+        self.assertEqual(body["services"], [{"id": "svc", "amount": 350}])
+        self.assertEqual(body["status"], "BOOKED")
 
-    def test_an_unresolvable_salon_sends_no_tenant_at_all(self):
+    # ---------------------------------------------------------- the tenant
+
+    def test_the_tenant_is_derived_from_the_same_lookup(self):
+        call = self.send(('{"salon_id":"%s"}' % self.STOREFRONT).encode())
+        self.assertEqual(call.kwargs["tenant_id"], self.TENANT)
+
+    def test_the_callers_own_tenant_header_still_wins(self):
+        # An app that knows its tenant is the better source and is not
+        # second-guessed.
+        call = self.send(
+            ('{"salon_id":"%s"}' % self.STOREFRONT).encode(),
+            HTTP_X_TENANT_ID=self.OTHER_TENANT,
+        )
+        self.assertEqual(call.kwargs["tenant_id"], self.OTHER_TENANT)
+        # ...but the salon is still resolved, because the BRANCH is needed
+        # whatever the tenant header said.
+        self.assertEqual(self.sent_body(call)["salon_id"], self.BRANCH)
+
+    # ----------------------------------------------------- nothing guessed
+
+    def test_a_salon_that_resolves_to_nothing_changes_nothing(self):
         """
-        Not a guess, and not a refusal either: the booking goes on to
-        booking-api exactly as it did before, and that service answers.
+        Not a guess, and not a refusal either: the booking goes on exactly as
+        it arrived and booking-api answers, which is where the refusal was
+        before this existed.
         """
-        call = self.send(b'{"salon_id":"marina-walk"}', resolves=None)
+        body = b'{"salon_id":"marina-walk"}'
+        call = self.send(body, resolves=None)
+        self.assertEqual(call.args[0], body)
         self.assertIsNone(call.kwargs["tenant_id"])
 
-    def test_a_payload_with_no_salon_sends_no_tenant(self):
-        call = self.send(b'{"services":[]}', resolves=self.TENANT)
+    def test_a_payload_with_no_salon_is_forwarded_untouched(self):
+        call = self.send(b'{"services":[]}')
+        self.assertEqual(call.args[0], b'{"services":[]}')
         self.assertIsNone(call.kwargs["tenant_id"])
         self.lookup.assert_called_once_with(None)
 
     def test_an_unreadable_body_is_still_booking_apis_422_to_give(self):
         for body in (b"", b"not json", b"[]", b'"a string"'):
             with self.subTest(body):
-                call = self.send(body, resolves=self.TENANT)
-                self.assertIsNone(call.kwargs["tenant_id"])
-                # Forwarded anyway, untouched, so the refusal comes from the
-                # service that owns the payload contract.
+                call = self.send(body)
                 self.assertEqual(call.args[0], body)
+                self.assertIsNone(call.kwargs["tenant_id"])
 
-    def test_the_body_still_crosses_byte_for_byte(self):
+    # ------------------------------------------------------- idempotency
+
+    def test_a_key_is_derived_when_the_app_sends_none(self):
         """
-        Reading salon_id out of the payload must not re-serialise it:
-        booking-api hashes these bytes to recognise a retry, so key order and
-        the exact spelling of every number have to survive.
+        booking-api replays a repeat under the same key rather than booking
+        twice. Leaving that to the client meant a client that forgot got two
+        bookings and two charges from one flaky tap, with no warning.
         """
-        # 120.00 re-serialises to 120.0 and the keys would come back sorted;
-        # neither happens, because the parsed copy is only read from.
-        body = b'{"total":216.25,"salon_id":"marina-walk","services":[{"amount":120.00}]}'
-        call = self.send(body, resolves=self.TENANT)
-        self.assertEqual(call.kwargs["tenant_id"], str(self.TENANT))
-        self.assertEqual(call.args[0], body)
+        call = self.send(('{"salon_id":"%s"}' % self.STOREFRONT).encode())
+        self.assertTrue(call.kwargs["idempotency_key"])
+
+    def test_the_same_booking_retried_derives_the_same_key(self):
+        # DERIVED, NOT RANDOM. A random uuid per request would satisfy the
+        # header and protect nobody.
+        body = ('{"salon_id":"%s","start":"17:00"}' % self.STOREFRONT).encode()
+        first = self.send(body).kwargs["idempotency_key"]
+        second = self.send(body).kwargs["idempotency_key"]
+        self.assertEqual(first, second)
+
+    def test_a_different_booking_derives_a_different_key(self):
+        a = self.send(('{"salon_id":"%s","start":"17:00"}' % self.STOREFRONT).encode())
+        b = self.send(('{"salon_id":"%s","start":"18:00"}' % self.STOREFRONT).encode())
+        self.assertNotEqual(a.kwargs["idempotency_key"], b.kwargs["idempotency_key"])
+
+    def test_the_callers_own_key_is_used_untouched(self):
+        call = self.send(
+            ('{"salon_id":"%s"}' % self.STOREFRONT).encode(),
+            HTTP_IDEMPOTENCY_KEY="mine-007",
+        )
+        self.assertEqual(call.kwargs["idempotency_key"], "mine-007")
 
 
 class TenantForSalonGuardTests(SimpleTestCase):

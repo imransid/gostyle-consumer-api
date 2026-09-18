@@ -378,6 +378,61 @@ def tenant_for_salon(salon_ref):
     return tenants[0]
 
 
+def booking_route(salon_ref):
+    """
+    Everything `POST /booking` has to know about a salon, from its id alone.
+
+    Returns `{"tenant_id": str, "branch_id": str}`, or None when the
+    reference cannot be resolved to exactly one salon.
+
+    WHY THIS EXISTS. booking-api's payload calls the field `salon_id` and
+    then reads it straight into `branchId` -- so the field is named for a
+    storefront and holds a branch. Every other endpoint in this service
+    returns storefront uuids, so an app that books with the id it just
+    browsed with sends the wrong one, and the refusal it gets back names the
+    STYLIST ("that stylist does not work at this salon") because the roster
+    lookup is where a bad branch first shows up. Two uuids, one field, and an
+    error message pointing at neither.
+
+    Resolving it here ends that. The app sends the id it already has,
+    whichever of the three spellings it is, and this finds the branch and the
+    tenant that go with it.
+
+    NONE RATHER THAN A GUESS, the same rule `tenant_for_salon` follows. A
+    reference matching two salons resolves to neither: `slug` is unique per
+    tenant and not globally, and picking the first row would file a real
+    booking, with real money, against another salon's diary.
+    """
+    if not isinstance(salon_ref, str) or not salon_ref.strip():
+        return None
+
+    salon_ref = salon_ref.strip()
+    live = Storefront.objects.filter(deleted_at__isnull=True)
+
+    try:
+        parsed = uuid.UUID(salon_ref)
+    except ValueError:
+        match = live.filter(slug=salon_ref)
+    else:
+        match = live.filter(Q(id=parsed) | Q(branch_id=parsed))
+
+    # Two is all it takes to know the answer is ambiguous.
+    rows = list(match.values("tenant_id", "branch_id").distinct()[:2])
+    if len(rows) != 1:
+        if rows:
+            logger.warning(
+                "salon reference %r belongs to more than one salon; refusing "
+                "to route the booking rather than guessing a branch.",
+                salon_ref,
+            )
+        return None
+
+    return {
+        "tenant_id": str(rows[0]["tenant_id"]),
+        "branch_id": str(rows[0]["branch_id"]),
+    }
+
+
 def salon_cards_for_refs(salon_refs):
     """
     `{ id, name, logo_url, city }` and the cancellation window, for the salon

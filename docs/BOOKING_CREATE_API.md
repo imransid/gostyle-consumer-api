@@ -8,6 +8,53 @@ forwarded to **gostyle-booking-api**, which holds them in its own database
 
 ---
 
+## 0. `salon_id` is the only id you need
+
+Send the **salon id this service already gave you** — the storefront uuid
+from `/discover`, `/salon/<id>` or `/salon/<id>/stylists`. Nothing else:
+
+```jsonc
+{ "salon_id": "c6c248ab-f2cd-4f12-a31e-243c6e64b3b5", ... }
+```
+
+No `X-Tenant-Id`. No `Idempotency-Key`. Both are resolved here.
+
+**What this spares you.** booking-api's payload calls the field `salon_id`
+and then reads it straight into `branchId` — so the field is named for a
+storefront and holds a *branch*. Every other endpoint in this service returns
+storefront uuids, so an app that booked with the id it had just browsed with
+sent the wrong one. Both are uuids, so nothing complained about the id: the
+refusal came back three steps later as
+
+> `stylist_unavailable` — "That stylist does not work at this salon."
+
+...because a wrong branch first shows up as an empty roster. One field, two
+id spaces, and an error naming neither.
+
+Now `salon_id` accepts **any of the three** and resolves them all to the same
+salon:
+
+| You send | Resolves |
+| ------------------ | -------- |
+| storefront uuid    | ✅ |
+| branch uuid        | ✅ (left exactly as sent) |
+| storefront slug    | ✅ |
+
+**Nothing is guessed.** A reference matching no salon, or two, is forwarded
+untouched with no tenant — booking-api then refuses it, which is where the
+refusal was before. A slug is unique per tenant and *not* globally, so two
+salons can share one; picking the first would file a real booking, with real
+money, against another salon's diary.
+
+**Idempotency comes free.** When you send no `Idempotency-Key`, one is
+derived from the customer and the body. The same booking retried produces the
+same key and is replayed; a different booking produces a different one. A
+double tap on a flaky connection is one booking, not two charges — which
+previously depended on every client remembering the header. Send your own if
+you do your own retry accounting, and it is used untouched.
+
+---
+
 ## 1. What this endpoint does, exactly
 
 ```

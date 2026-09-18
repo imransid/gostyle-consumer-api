@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import urllib.parse
@@ -50,6 +51,7 @@ from .hours import resolve as resolve_hours
 from .hours import weekly_row as hours_row
 from .money import major
 from .selectors import (
+    booking_route,
     booking_rows,
     discoverable_salons,
     filter_by_category,
@@ -1278,50 +1280,114 @@ def _offers(salon, tz, params, duration, lead_minutes, now):
     return offers
 
 
-def _tenant_for_booking(request):
+# The header booking-api hashes a request body under to recognise a retry.
+# Derived rather than demanded: see _idempotency_key.
+_IDEMPOTENCY_NAMESPACE = "gostyle-customer-api/booking"
+
+
+def _route_booking(request):
     """
-    The `X-Tenant-Id` to forward: the caller's own, else the salon's.
+    Resolve `salon_id` into the body and headers booking-api actually needs.
 
-    THE CALLER'S WINS, verbatim and unexamined. An app that knows its tenant
-    is the better source, and second-guessing it here would make this service
-    the thing that decides which salon's books a booking lands in.
+    Returns `(body_bytes, tenant_id)`.
 
-    Only when the app sent none is one derived, and DERIVED IS NOT INVENTED:
-    it is the tenant that the storefront named in the payload actually belongs
-    to, read from the same table `/salon/<id>` serves. booking-api cannot do
-    this for itself — its TenantMiddleware runs before the guard and reads the
-    header or nothing (tenant.middleware.ts) — and with no tenant it resolves
-    no platform services and refuses the booking with `unknown_service`.
+    ONE ID IN, EVERYTHING ELSE DERIVED. The app sends the `salon_id` it
+    already has — the storefront uuid every other endpoint here returns —
+    and this finds the branch and the tenant that go with it. Before, the
+    caller had to know that `salon_id` secretly means `branch_id`, and had to
+    send `X-Tenant-Id` besides; getting either wrong produced a refusal that
+    named the STYLIST, because a wrong branch first shows up as an empty
+    roster.
 
-    Anything unreadable comes back as None and NO header is sent, which leaves
-    the refusal exactly where it was. The body is read here, never rewritten:
-    what crosses the network is still `request.body`, byte for byte, because
-    booking-api hashes those bytes to recognise a retry.
+    THE CALLER'S OWN VALUES STILL WIN. A body already carrying a branch uuid
+    resolves to that same branch and is rewritten to itself; an `X-Tenant-Id`
+    header is forwarded verbatim and the salon is not consulted for it.
+
+    NOTHING IS GUESSED. A salon that resolves to no branch, or to two, leaves
+    the body exactly as it arrived and sends no tenant — which puts the
+    refusal back where it was rather than inventing a salon to book at.
     """
-    sent = request.META.get("HTTP_X_TENANT_ID")
-    if sent:
-        return sent
+    sent_tenant = request.META.get("HTTP_X_TENANT_ID")
 
     try:
         payload = json.loads(request.body or b"")
     except ValueError:
         # A malformed body is booking-api's 422 to give, not ours to pre-empt.
-        return None
+        return request.body, sent_tenant
 
     if not isinstance(payload, dict):
-        return None
+        return request.body, sent_tenant
 
-    tenant_id = tenant_for_salon(payload.get("salon_id"))
-    if tenant_id is None:
+    salon_ref = payload.get("salon_id")
+    route = booking_route(salon_ref)
+    if route is None:
         logger.warning(
-            "No X-Tenant-Id sent and salon_id %r resolved to no tenant; "
-            "forwarding the booking without one, which booking-api will "
-            "refuse with unknown_service.",
-            payload.get("salon_id"),
+            "salon_id %r resolved to no branch; forwarding the booking "
+            "untouched, which booking-api will refuse.",
+            salon_ref,
         )
-        return None
+        return request.body, sent_tenant
 
-    return str(tenant_id)
+    if payload.get("salon_id") == route["branch_id"]:
+        # Already a branch uuid. Left byte-for-byte rather than re-encoded,
+        # so the common case never goes near the JSON writer.
+        return request.body, sent_tenant or route["tenant_id"]
+
+    payload["salon_id"] = route["branch_id"]
+    return _reencode(payload), sent_tenant or route["tenant_id"]
+
+
+def _reencode(payload):
+    """
+    The rewritten body, with every figure still the number that was sent.
+
+    THE MONEY SURVIVES THIS. Python parses a JSON number into the same IEEE
+    754 double a JavaScript client does, and `repr` emits the shortest string
+    that reads back as that identical double — so `367.5` leaves as `367.5`
+    and a value with a third decimal stays one, which is what booking-api's
+    `aedToFils` refuses. Integers are parsed and written as integers and do
+    not sprout a `.0`.
+
+    Re-encoding at all is a cost: booking-api hashes the body to recognise a
+    retry, so the bytes it sees are no longer the bytes the app sent. That is
+    why `_idempotency_key` derives the key from the body the APP sent, before
+    any of this — the hash it needs is taken on our side of the rewrite.
+    """
+    return json.dumps(payload, separators=(",", ":")).encode()
+
+
+def _idempotency_key(request):
+    """
+    The caller's `Idempotency-Key`, or one derived from the request itself.
+
+    NO LONGER SOMETHING THE APP MUST REMEMBER. booking-api stores this key
+    with a hash of the body and replays the original answer to a repeat, so
+    without one a customer who taps Book twice on a flaky connection gets two
+    bookings and two charges. Demanding the header put that safety behind a
+    thing every client had to implement, and a client that forgot got no
+    warning at all.
+
+    DERIVED FROM WHAT THE REQUEST IS, never random. The key is a hash of the
+    customer plus the body as they sent it, so the SAME booking retried
+    produces the SAME key and is replayed, while a genuinely different
+    booking produces a different one. A random uuid per request would satisfy
+    the header and protect nobody.
+
+    A key the caller sent is used untouched — an app doing its own retry
+    accounting is the better source, and this must not override it.
+    """
+    sent = request.META.get("HTTP_IDEMPOTENCY_KEY")
+    if sent:
+        return sent
+
+    fingerprint = hashlib.sha256()
+    fingerprint.update(_IDEMPOTENCY_NAMESPACE.encode())
+    # WHOSE BOOKING IS IN THE HASH. Two customers sending byte-identical
+    # bodies are two bookings, and a key that collided across them would
+    # replay one customer's booking to the other.
+    fingerprint.update(str(getattr(request.user, "id", "")).encode())
+    fingerprint.update(request.body or b"")
+    return fingerprint.hexdigest()
 
 
 class BookingApiDown(APIException):
@@ -1381,7 +1447,19 @@ _BOOKING_REQUEST = {
         "booking_type",
     ],
     "properties": {
-        "salon_id": {"type": "string", "example": "marina-walk"},
+        "salon_id": {
+            "type": "string",
+            "format": "uuid",
+            "example": "c6c248ab-f2cd-4f12-a31e-243c6e64b3b5",
+            "description": (
+                "THE SALON ID THIS SERVICE ALREADY GAVE YOU — the storefront "
+                "uuid from /discover, /salon/<id> or /salon/<id>/stylists. "
+                "Send that and nothing else: the branch booking-api books "
+                "against, and the tenant it belongs to, are both resolved "
+                "here. A branch uuid or a storefront slug are also accepted "
+                "and resolve to the same salon."
+            ),
+        },
         "services": {
             "type": "array",
             "minItems": 1,
@@ -1465,12 +1543,15 @@ _BOOKING_REQUEST = {
 @extend_schema(
     summary="Create a booking",
     description=(
-        "Create a booking. The body is forwarded to gostyle-booking-api "
-        "unchanged — raw bytes, never parsed and re-serialised, because that "
-        "service hashes the body to recognise a retry — and its answer is "
-        "returned unchanged, including 409 slot_taken and 422 validation "
-        "errors, which carry that service's error shape rather than this "
-        "one's. Send `Idempotency-Key` to make a retry safe.\n\n"
+        "Create a booking. **`salon_id` is the only id you need** — send "
+        "the storefront uuid this service already gave you, and the branch "
+        "booking-api books against, plus the tenant that owns it, are "
+        "resolved here. No `X-Tenant-Id`, no `Idempotency-Key`, and no "
+        "knowing that booking-api's `salon_id` secretly means a branch.\n\n"
+        "The rest of the body is forwarded to gostyle-booking-api and its "
+        "answer returned unchanged, including 409 slot_taken and 422 "
+        "validation errors, which carry that service's error shape rather "
+        "than this one's.\n\n"
         "The body below is booking-api's contract, documented here but not "
         "validated here: nothing in this service checks it, and its 422 is "
         "the only answer about the payload. See docs/BOOKING_CREATE_API.md."
@@ -1482,11 +1563,12 @@ _BOOKING_REQUEST = {
             location=OpenApiParameter.HEADER,
             required=False,
             description=(
-                "A UUID per booking attempt, reused for that attempt's retries. "
-                "booking-api stores it with a hash of the body and returns the "
-                "original response to a repeat, so a customer who taps twice "
-                "gets one booking. Forwarded only when sent — never invented "
-                "here, which would make every retry a second booking."
+                "OPTIONAL, and not something the app has to remember. When it "
+                "is not sent, a key is derived from the customer and the body, "
+                "so the SAME booking retried is replayed rather than booked a "
+                "second time — which is what a double tap on a flaky "
+                "connection used to cost. Send your own only if you are doing "
+                "your own retry accounting; it is then used untouched."
             ),
         ),
         OpenApiParameter(
@@ -1495,13 +1577,11 @@ _BOOKING_REQUEST = {
             location=OpenApiParameter.HEADER,
             required=False,
             description=(
-                "The tenant whose books the booking lands in. Optional: when "
-                "it is not sent, the tenant that owns the payload's "
-                "`salon_id` is looked up and sent instead, because "
-                "booking-api reads this header and nothing else to resolve "
-                "the services. A header the caller does send is forwarded "
-                "verbatim and the salon is not consulted. Nothing is guessed "
-                "— a salon that cannot be resolved sends no tenant at all."
+                "OPTIONAL — do not send it. The tenant is resolved from "
+                "`salon_id`, because booking-api reads this header and "
+                "nothing else to find the services. A header you do send is "
+                "forwarded verbatim and overrides the lookup. Nothing is "
+                "guessed: a salon that resolves to no tenant sends none."
             ),
         ),
     ],
@@ -1673,19 +1753,20 @@ class BookingCreateView(APIView):
         if media_type != "application/json":
             raise UnsupportedMediaType(media_type or "none")
 
+        # ONE ID IN. `salon_id` is resolved to the branch booking-api means
+        # by it, and to the tenant it belongs to, so the app sends the id it
+        # already has and no headers at all. See _route_booking.
+        body, tenant_id = _route_booking(request)
+
         try:
             upstream_status, body = create_booking(
-                # request.body, NOT request.data: the bytes go across exactly
-                # as they arrived. See booking_api.create_booking.
-                request.body,
+                body,
                 authorization=request.META.get("HTTP_AUTHORIZATION", ""),
-                # Never invented: forwarded only if the caller sent one,
-                # because a made-up key would turn a retry into a second
-                # booking.
-                idempotency_key=request.META.get("HTTP_IDEMPOTENCY_KEY"),
-                # The caller's own, or the tenant the payload's salon belongs
-                # to. Never a guess — see _tenant_for_booking.
-                tenant_id=_tenant_for_booking(request),
+                # The caller's, or one derived from this exact request, so a
+                # double tap is replayed rather than booked twice even when
+                # the app sends no header. See _idempotency_key.
+                idempotency_key=_idempotency_key(request),
+                tenant_id=tenant_id,
             )
         except BookingApiUnavailable as exc:
             raise BookingApiDown() from exc
