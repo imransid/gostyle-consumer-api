@@ -177,7 +177,7 @@ def salon_products(storefront):
     default_variant = ProductVariant.objects.filter(
         product_id=OuterRef("pk"),
         deleted_at__isnull=True,
-    ).order_by("position")
+    ).order_by("position", "id")
 
     return (
         Product.objects.filter(
@@ -188,10 +188,11 @@ def salon_products(storefront):
         )
         .annotate(
             price_minor=Subquery(default_variant.values("sale_price_minor")[:1]),
+            variant_id=Subquery(default_variant.values("id")[:1]),
         )
         # A product with no priced variant cannot be sold, and rendering it
         # with a null price would put a broken card in the shop.
-        .filter(price_minor__isnull=False)
+        .filter(price_minor__gt=0)
         .order_by("name")
     )
 

@@ -240,12 +240,12 @@ Expert step. See `BOOKING_EXPERT_API.md`.
 **Four fields are permanently null right now.** The keys are present so
 the response shape stays stable. Treat null as "hide this element".
 
-| Field              | Why                                                |
-| ------------------ | -------------------------------------------------- |
-| `rating`           | Reviews attach to the salon; no `staff_id` column   |
-| `review_count`     | Same table, same reason                            |
-| `years_experience` | No column anywhere, no screen ever collects it      |
-| `day_off`          | Shift data exists but a day off is not stored       |
+| Field              | Why                                               |
+| ------------------ | ------------------------------------------------- |
+| `rating`           | Reviews attach to the salon; no `staff_id` column |
+| `review_count`     | Same table, same reason                           |
+| `years_experience` | No column anywhere, no screen ever collects it    |
+| `day_off`          | Shift data exists but a day off is not stored     |
 
 The first two are blocked on a platform ticket to add `staff_id` to the
 review table. `day_off` may become derivable from the shift roster
@@ -310,6 +310,7 @@ strikethrough row in that case.
   "products": [
     {
       "id": "cccccccc-cccc-cccc-cccc-ccccccccccc0",
+      "variant_id": "dddddddd-dddd-dddd-dddd-ddddddddddd0",
       "name": "Iron Beard Oil",
       "price": 180.0,
       "image_url": "https://picsum.photos/seed/prod0/400/400"

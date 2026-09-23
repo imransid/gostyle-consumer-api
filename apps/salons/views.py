@@ -777,6 +777,7 @@ class SalonProductsView(APIView):
         products = [
             {
                 "id": str(p.id),
+                "variant_id": str(p.variant_id),
                 "name": p.name,
                 "price": major(p.price_minor),
                 "image_url": p.image_url,
@@ -1517,9 +1518,9 @@ _BOOKING_REQUEST = {
             "type": "array",
             "items": _LINE,
             "description": (
-                "Refused with 422 products_not_supported when non-empty: there "
-                "is no product catalogue to price a line against, and a product "
-                "silently dropped from a basket is money the salon does not take."
+                "Each line's `id` is the `variant_id` from "
+                "GET /salon/<id>/products, never its `id`. `quantity` is "
+                "optional and means 1 when omitted."
             ),
         },
         "stylists": {
