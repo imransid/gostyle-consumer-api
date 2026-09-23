@@ -20,7 +20,7 @@ from apps.salons.hours import is_within, next_opening, next_opening_at, resolve
 from apps.salons.money import bps_to_percent, major
 from apps.salons.snapshot import field, items, normalize
 
-from apps.salons.selectors import tenant_for_salon
+from apps.salons.selectors import salon_products, tenant_for_salon
 from apps.salons.params import (
     MAX_SERVICE_IDS,
     ParamError,
@@ -34,6 +34,7 @@ from apps.salons.views import (
     BookingCreateView,
     NearestAvailableView,
     BookingDetailView,
+    SalonProductsView,
     BookingListView,
     ServiceDetailsView,
     _stylist_order,
@@ -2527,7 +2528,7 @@ class BusyIntervalsClientTests(SimpleTestCase):
             b'"end_at":"2026-09-21T08:30:00.000Z"}]}'
         )
         with self.answer(body=body):
-            rows = self.call()
+            rows, _window = self.call()
         self.assertEqual(len(rows), 1)
         staff_id, start, end = rows[0]
         self.assertEqual(staff_id, self.STAFF)
@@ -2549,6 +2550,28 @@ class BusyIntervalsClientTests(SimpleTestCase):
                 with self.answer(status=status, body=b"{}"):
                     with self.assertRaises(BookingApiUnavailable):
                         self.call()
+
+    @override_settings(BOOKING_API_URL="http://booking/")
+    def test_the_engines_bookable_day_comes_back_with_it(self):
+        """
+        The engine searches a fixed window and nothing outside it, whatever
+        hours a branch keeps. The picker reads the branch's real hours, so a
+        salon opening at 09:00 had its first hour offered and then refused --
+        "09:00 is no longer available" about a slot that was never
+        reachable. Read from booking-api rather than copied, so it cannot
+        drift out of step.
+        """
+        with self.answer(body=b'{"day":{"from_min":600,"to_min":1320},"busy":[]}'):
+            _rows, window = self.call()
+        self.assertEqual(window, (600, 1320))
+
+    @override_settings(BOOKING_API_URL="http://booking/")
+    def test_an_older_booking_api_that_omits_the_day_clamps_nothing(self):
+        # None means "it did not say", and the caller then behaves exactly
+        # as it did before -- not "the day is zero minutes long".
+        with self.answer(body=b'{"busy":[]}'):
+            _rows, window = self.call()
+        self.assertIsNone(window)
 
     @override_settings(BOOKING_API_URL="http://booking/")
     def test_an_unparseable_body_also_raises(self):
@@ -2605,3 +2628,136 @@ class NearestAvailableUnavailableTests(SimpleTestCase):
         # and only the second one is true here. Answering the first would
         # send the customer away from a salon that has free slots.
         self.assertNotIn("offers", self.get().data)
+
+
+class SalonProductsViewTests(SimpleTestCase):
+    """
+    GET /api/v1/salon/<uuid>/products, with both selectors mocked.
+
+    THE POINT. Each card now carries `variant_id`, and that, not `id`, is what
+    a booking's product line must send. Getting the two mixed up is a basket
+    booking-api cannot price.
+    """
+
+    SALON = uuid.UUID("55555555-5555-5555-5555-555555555555")
+    PRODUCT = uuid.UUID("cccccccc-cccc-cccc-cccc-ccccccccccc0")
+    VARIANT = uuid.UUID("dddddddd-dddd-dddd-dddd-ddddddddddd0")
+
+    def product(self, **overrides):
+        return types.SimpleNamespace(**{
+            "id": self.PRODUCT,
+            "variant_id": self.VARIANT,
+            "name": "Iron Beard Oil",
+            "price_minor": 18000,
+            "image_url": "https://picsum.photos/seed/prod0/400/400",
+            **overrides,
+        })
+
+    def get(self, *, salon=True, rows=()):
+        request = APIRequestFactory().get(f"/api/v1/salon/{self.SALON}/products")
+        found = types.SimpleNamespace(id=self.SALON, tenant_id=uuid.uuid4())
+        with mock.patch(
+            "apps.salons.views.salon_profile",
+            return_value=found if salon else None,
+        ), mock.patch(
+            "apps.salons.views.salon_products", return_value=list(rows)
+        ) as selector:
+            self.selector = selector
+            self.found = found
+            return SalonProductsView.as_view()(request, salon_id=self.SALON)
+
+    def test_each_card_carries_its_variant_id_as_a_string(self):
+        response = self.get(rows=[self.product()])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["products"][0]["variant_id"], str(self.VARIANT))
+
+    def test_variant_id_is_not_the_product_id(self):
+        card = self.get(rows=[self.product()]).data["products"][0]
+        self.assertEqual(card["id"], str(self.PRODUCT))
+        self.assertNotEqual(card["id"], card["variant_id"])
+
+    def test_the_card_shape_is_exactly_the_documented_keys(self):
+        card = self.get(rows=[self.product()]).data["products"][0]
+        self.assertEqual(
+            set(card), {"id", "variant_id", "name", "price", "image_url"}
+        )
+
+    def test_price_is_converted_from_minor_units(self):
+        card = self.get(rows=[self.product(price_minor=18050)]).data["products"][0]
+        self.assertEqual(card["price"], Decimal("180.50"))
+
+    def test_the_selector_order_is_kept(self):
+        other = uuid.uuid4()
+        rows = [self.product(), self.product(id=other, variant_id=uuid.uuid4())]
+        ids = [c["id"] for c in self.get(rows=rows).data["products"]]
+        self.assertEqual(ids, [str(self.PRODUCT), str(other)])
+
+    def test_the_selector_is_asked_about_the_salon_that_was_found(self):
+        self.get(rows=[])
+        self.selector.assert_called_once_with(self.found)
+
+    def test_no_products_is_an_empty_list_not_a_404(self):
+        response = self.get(rows=[])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {"products": []})
+
+    def test_an_unknown_salon_is_404_and_the_shop_is_never_queried(self):
+        response = self.get(salon=False)
+        self.assertEqual(response.status_code, 404)
+        self.selector.assert_not_called()
+
+
+class SalonProductsQueryShapeTests(SimpleTestCase):
+    """
+    salon_products() without a database: the queryset is built and inspected,
+    never run. This checks what the query ASKS for, not what it returns.
+    What it returns needs real product/product_variant rows, and those tables
+    are unmanaged, so they do not exist in the test database.
+    """
+
+    def setUp(self):
+        storefront = types.SimpleNamespace(tenant_id=uuid.uuid4())
+        self.qs = salon_products(storefront)
+
+    def subquery(self, name):
+        # Once annotated, Django stores a Subquery as its inner sql Query.
+        return self.qs.query.annotations[name]
+
+    def lookups(self):
+        """(field or annotation name, lookup) for every WHERE condition."""
+        names = {id(q): n for n, q in self.qs.query.annotations.items()}
+        return {
+            (names.get(id(c.lhs)) or c.lhs.target.name, c.lookup_name)
+            for c in self.qs.query.where.children
+        }
+
+    def test_variant_id_is_annotated(self):
+        self.assertIn("variant_id", self.qs.query.annotations)
+
+    def test_price_and_variant_id_come_from_the_same_ordering(self):
+        # If the two subqueries sorted differently, a card could show one
+        # variant's price and book another variant.
+        self.assertEqual(
+            self.subquery("price_minor").order_by,
+            self.subquery("variant_id").order_by,
+        )
+
+    def test_the_default_variant_order_has_a_tie_break(self):
+        # Two variants at the same position would otherwise let Postgres
+        # choose, and it may choose differently for price and for id.
+        self.assertEqual(tuple(self.subquery("variant_id").order_by), ("position", "id"))
+
+    def test_both_subqueries_take_one_row(self):
+        for name in ("price_minor", "variant_id"):
+            q = self.subquery(name)
+            self.assertEqual((q.low_mark, q.high_mark), (0, 1), name)
+
+    def test_unpriced_products_are_filtered_with_gt_zero(self):
+        self.assertIn(("price_minor", "gt"), self.lookups())
+        rhs = [c.rhs for c in self.qs.query.where.children
+               if c.lhs is self.subquery("price_minor")]
+        self.assertEqual(rhs, [0])
+
+    def test_sorted_by_name(self):
+        self.assertEqual(tuple(self.qs.query.order_by), ("name",))
+
