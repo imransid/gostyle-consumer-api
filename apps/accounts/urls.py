@@ -12,7 +12,8 @@ from .views import (
     PasswordResetView,
     PasswordVerifyView,
     RegisterView,
-    OtpReSendView
+    OtpReSendView,
+    UserLookupView,
 )
 
 urlpatterns = [
@@ -29,4 +30,5 @@ urlpatterns = [
     path("auth/password/forgot", PasswordForgotView.as_view()),
     path("auth/password/verify", PasswordVerifyView.as_view()),
     path("auth/password/reset", PasswordResetView.as_view()),
+    path("user/lookup", UserLookupView.as_view()),
 ]

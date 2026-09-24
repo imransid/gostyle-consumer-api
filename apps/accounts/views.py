@@ -1,5 +1,5 @@
 from rest_framework import status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.generics import RetrieveUpdateAPIView
 # from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -8,11 +8,17 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
+from drf_spectacular.utils import (
+    OpenApiParameter,
+    OpenApiResponse,
+    extend_schema,
+    extend_schema_view,
+)
 
 from .models import Favourite
 
 from . import ratelimit, services
+from .permissions import IsVerified
 from .serializers import (
     DetailSerializer,
     LoginSerializer,
@@ -30,6 +36,8 @@ from .serializers import (
     RegisterResponseSerializer,
     RegisterSerializer,
     TokenPairSerializer,
+    UserLookupResultSerializer,
+    UserLookupSerializer,
 )
 # Constant OTP-request response. It carries nothing derived from the request or
 # from account existence, so the body is byte-identical for every identifier.
@@ -283,3 +291,53 @@ class PasswordResetView(APIView):
             {"detail": "Password reset. Please sign in."},
             status=status.HTTP_200_OK,
         )
+
+
+class UserLookupView(APIView):
+    """
+    POST /api/v1/user/lookup
+
+    Find a member by phone or email: 200 with {id, name, image}, or 404 with
+    the standard error body.
+
+    IsVerified, not IsAuthenticated. The daily cap is per account, and a cap
+    per account is worth nothing while a fresh, unverified account is free.
+
+    An unverified account and no account at all answer with the same 404,
+    byte for byte. If they differed, this would be a free check of who has
+    signed up. The service folds both into None; keep it that way.
+    """
+
+    permission_classes = [IsVerified]
+    throttle_classes = []  # rate-limited in the service via Redis
+
+    @extend_schema(
+        request=UserLookupSerializer,
+        responses={
+            200: UserLookupResultSerializer,
+            404: OpenApiResponse(
+                description=(
+                    "No verified member has this contact. Identical whether "
+                    "the account is missing or unverified."
+                ),
+            ),
+            429: OpenApiResponse(
+                description=(
+                    f"More than {ratelimit.LOOKUP_PER_ACCOUNT_DAILY} lookups "
+                    "by this account today. Hits and misses both count."
+                ),
+            ),
+        },
+    )
+    def post(self, request):
+        s = UserLookupSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+
+        match = services.lookup_account(
+            caller=request.user,
+            destination=s.validated_data["destination"],
+            destination_type=s.validated_data["destination_type"],
+        )
+        if match is None:
+            raise NotFound()
+        return Response(UserLookupResultSerializer(match).data, status=status.HTTP_200_OK)

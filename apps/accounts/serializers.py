@@ -135,6 +135,30 @@ class LogoutSerializer(serializers.Serializer):
     refresh = serializers.CharField()
 
 
+class UserLookupSerializer(DestinationMixin, serializers.Serializer):
+    """A JSON body, not a query string. A query string reaches the nginx and
+    gunicorn access logs, and an unencoded "+" in one decodes to a space,
+    which breaks every E.164 number.
+    """
+
+    destination_type = serializers.ChoiceField(choices=DestinationType.choices)
+    destination = serializers.CharField(max_length=254)
+
+    def validate(self, attrs):
+        return self._normalize(attrs)
+
+
+class UserLookupResultSerializer(serializers.Serializer):
+    """Everything a lookup reveals about a member. Deliberately not
+    ProfileSerializer, which carries phone, email and verification dates: the
+    caller learns who the contact belongs to and nothing else about it.
+    """
+
+    id = serializers.UUIDField()
+    name = serializers.CharField(source="full_name")
+    image = serializers.URLField()
+
+
 # --- response shapes (for OpenAPI docs) ---------------------------------
 class TokenPairSerializer(serializers.Serializer):
     access = serializers.CharField()
