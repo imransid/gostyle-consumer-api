@@ -15,17 +15,22 @@ import uuid
 import zoneinfo
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from unittest import mock
 
+from django.core.cache import cache
 from django.test import SimpleTestCase, override_settings
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from apps.salons import booking_api
 from apps.salons import group_translate as gt
 from apps.salons.booking_api import BookingApiUnavailable
-from apps.salons.group_serializers import GroupAvailabilityRequestSerializer
+from apps.salons.group_serializers import (
+    GroupAvailabilityRequestSerializer,
+    GroupBookingRequestSerializer,
+)
 from apps.salons.group_translate import EngineClock
-from apps.salons.group_views import GroupAvailabilityView
+from apps.salons.group_views import GroupAvailabilityView, GroupBookingCreateView
 
 # ------------------------------------------------------------ the fixture
 
@@ -49,8 +54,31 @@ STRANGER = "7d1e0000-0000-4000-8000-00000000000c"  # not on this salon's roster
 
 MINUTES = {CUT: 45, NAILS: 60}
 
+GROUP_ID = "b2c6b0a9-17aa-4be8-91b2-11668d3b2e5a"
+HOLD_ID = "05b9f8df-2c02-4178-8aaa-688f803bed6e"
+
+
+def member(ref, kind, services, *, age_group="adult", **extra):
+    return {
+        "ref": ref,
+        "kind": kind,
+        "age_group": age_group,
+        "services": [{"id": s, "amount": 120} for s in services],
+        **extra,
+    }
+
+
+def party():
+    """The booker in the MIDDLE, so every reorder is visible."""
+    return [
+        member(0, "guest", [CUT], name="Amal"),
+        member(1, "self", [NAILS], id=str(USER_ID), stylist_id=MAYA),
+        member(2, "registered", [CUT], id=RANA, name="typed by the booker", age_group="child"),
+    ]
+
+
 def resolved():
-    """A party as the booking view holds it: validated, and every name filled in."""
+    """party() as the view holds it: validated, and every name filled in."""
     return [
         {"ref": 0, "kind": "guest", "id": None, "name": "Amal", "age_group": "adult",
          "service_ids": [CUT], "stylist_id": None},
@@ -130,19 +158,40 @@ class PartyTranslationTests(SimpleTestCase):
             self.assertNotIn("customerId", p)
             self.assertNotIn("guestName", p)
 
-    def test_the_plan_body_holds_only_what_its_route_accepts(self):
+    def test_each_engine_body_holds_only_what_its_route_accepts(self):
         """
         booking-api refuses any key it does not declare (forbidNonWhitelisted),
-        so this set IS its DTO. Nothing the app sent beyond it -- kinds, refs,
-        ages -- may leak into it.
+        so these sets ARE its DTOs. Nothing the app sent beyond them -- ages,
+        kinds, refs, products, amounts -- may leak into one.
         """
-        plan = gt.plan_body(BRANCH, "2026-10-11", [660, 690], resolved(), [1, 0, 2])
+        members, order = resolved(), [1, 0, 2]
+        plan = gt.plan_body(BRANCH, "2026-10-11", [660, 690], members, order)
+        hold = gt.hold_body(BRANCH, "2026-10-11", 1020, members, order)
+        confirm = gt.confirm_body(HOLD_ID, members, order)
+
         self.assertEqual(set(plan), {"branchId", "day", "targetMins", "mode", "participants"})
-        for p in plan["participants"]:
+        self.assertEqual(set(hold), {"branchId", "day", "targetMin", "mode", "arrangement", "participants"})
+        self.assertEqual(set(confirm), {"holdId", "participants"})
+        for p in plan["participants"] + confirm["participants"]:
             self.assertLessEqual(set(p), {"label", "serviceIds", "preferredStaffId"})
-        wire = json.dumps(plan)
-        for leaked in ("age_group", "adult", "child", "kind", "registered", "ref"):
+        for p in hold["participants"]:
+            self.assertLessEqual(set(p), {"label", "serviceIds", "customerId", "guestName", "preferredStaffId"})
+
+        wire = json.dumps([plan, hold, confirm])
+        for leaked in ("age_group", "adult", "child", "amount", "products", "kind", "registered", "ref"):
             self.assertNotIn(f'"{leaked}"', wire)
+
+    def test_everyone_arrives_together_and_the_booker_pays(self):
+        hold = gt.hold_body(BRANCH, "2026-10-11", 1020, resolved(), [1, 0, 2])
+        self.assertEqual((hold["mode"], hold["arrangement"]), ("TOGETHER", "ORGANIZER"))
+
+    def test_confirm_repeats_the_hold_in_the_same_order(self):
+        hold = gt.hold_body(BRANCH, "2026-10-11", 1020, resolved(), [1, 0, 2])
+        confirm = gt.confirm_body(HOLD_ID, resolved(), [1, 0, 2])
+        self.assertEqual(
+            [(p["label"], p["serviceIds"]) for p in confirm["participants"]],
+            [(p["label"], p["serviceIds"]) for p in hold["participants"]],
+        )
 
     def test_a_visit_is_the_sum_of_its_services(self):
         members = [{"service_ids": [CUT, NAILS]}, {"service_ids": ["not-on-the-menu"]}]
@@ -186,6 +235,29 @@ class OfferedStartTests(SimpleTestCase):
         self.assertEqual([len(r) for r in runs], [24, 24, 2])
         self.assertEqual(sum(runs, []), list(range(50)))
         self.assertEqual(gt.batches([]), [])
+
+
+class StartRefusalTests(SimpleTestCase):
+    """What POST /booking/group holds a start to: the day view's own rule."""
+
+    OPEN = (at("09:00"), at("21:00"))
+    ENGINE = gt.engine_span(DAY, CLOCK)
+
+    def refusal(self, start, *, open_span=OPEN, earliest=at("07:00"), longest=60):
+        found = gt.start_refusal(start, open_span, self.ENGINE, earliest, longest)
+        return found and found[0]
+
+    def test_a_start_the_day_view_would_offer(self):
+        self.assertIsNone(self.refusal(at("15:00")))
+
+    def test_off_the_half_hour_is_still_a_time(self):
+        self.assertIsNone(self.refusal(at("15:10")))
+
+    def test_the_refusals(self):
+        self.assertEqual(self.refusal(at("15:00"), open_span=None), "salon_closed")
+        self.assertEqual(self.refusal(at("15:00"), earliest=at("15:30")), "too_soon")
+        self.assertEqual(self.refusal(at("08:30")), "outside_hours")     # before opening
+        self.assertEqual(self.refusal(at("19:30")), "outside_hours")     # ends after 20:00, the engine's close
 
 
 # ------------------------------------------------------------ answers back
@@ -280,6 +352,122 @@ class DaySlotsTests(SimpleTestCase):
                                  "Evening": ["17:00"]})
 
 
+def held_answer(body):
+    """booking-api's 201 to POST /v1/groups/holds, for this body."""
+    minute = body["targetMin"]
+    lanes = []
+    for i, p in enumerate(body["participants"]):
+        end = minute + sum(MINUTES.get(s, 0) for s in p["serviceIds"])
+        lanes.append({"label": p["label"], "staffId": STAFF[i],
+                      "start": f"{minute // 60:02d}:{minute % 60:02d}",
+                      "end": f"{end // 60:02d}:{end % 60:02d}"})
+    return {"groupId": GROUP_ID, "holdId": HOLD_ID, "expiresAt": "2026-10-11T09:15:00.000Z",
+            "expiresInSeconds": 900, "mode": "TOGETHER", "lanes": lanes}
+
+
+def confirmed_answer(body, shares=("AED 415.00", "AED 0.00", "AED 0.00")):
+    """booking-api's 201 to POST /v1/groups/:id/confirm. ORGANIZER: the booker carries it all."""
+    return {"groupId": GROUP_ID, "status": "CONFIRMED", "bookings": [
+        {"label": p["label"], "code": f"GS-{1280 + i}", "staffId": STAFF[i],
+         "start": "17:00", "share": shares[i]}
+        for i, p in enumerate(body["participants"])
+    ]}
+
+
+CATALOGUE = {
+    CUT: {"name": "Cut", "price": Decimal("120.00")},
+    NAILS: {"name": "Nails", "price": Decimal("175.00")},
+}
+
+
+class BookingFromConfirmTests(SimpleTestCase):
+    ORDER = [1, 0, 2]
+
+    def translate(self, catalogue=CATALOGUE, **kw):
+        hold = gt.hold_body(BRANCH, "2026-10-11", 1020, resolved(), self.ORDER)
+        confirm = gt.confirm_body(HOLD_ID, resolved(), self.ORDER)
+        return gt.booking_from_confirm(
+            held_answer(hold), confirmed_answer(confirm, **kw),
+            day_iso="2026-10-11", members=resolved(), order=self.ORDER, clock=CLOCK,
+            tz=DUBAI, cards=CARDS, catalogue=catalogue, salon_id=SALON_ID,
+            date_iso="2026-10-11", created_at="2026-10-09T14:02:11+04:00",
+        )
+
+    def test_the_party_in_the_apps_order_and_dialect(self):
+        body, problems = self.translate()
+        self.assertEqual(problems, [])
+        self.assertEqual(
+            {k: body[k] for k in ("id", "salon_id", "booking_type", "status", "payment_status",
+                                  "date", "start_time", "end_time", "created_at")},
+            {"id": GROUP_ID, "salon_id": SALON_ID, "booking_type": "GROUP",
+             "status": "CONFIRMED_BY_SALON", "payment_status": "PAY_AFTER_CHECK_IN",
+             "date": "2026-10-11", "start_time": "2026-10-11T15:00:00+04:00",
+             "end_time": "2026-10-11T16:00:00+04:00", "created_at": "2026-10-09T14:02:11+04:00"},
+        )
+        amal, dana, rana = body["members"]
+        self.assertEqual([m["ref"] for m in body["members"]], [0, 1, 2])
+        self.assertEqual(dana, {
+            "ref": 1, "id": None, "booking_code": "GS-1280", "user_id": str(USER_ID),
+            "name": "Dana", "kind": "self", "age_group": "adult",
+            "services": [{"id": NAILS, "name": "Nails", "amount": Decimal("175.00")}],
+            "products": [], "stylist": CARDS[MAYA],
+            "start_time": "2026-10-11T15:00:00+04:00", "end_time": "2026-10-11T16:00:00+04:00",
+            "total": Decimal("175.00"),
+        })
+        # The confirm answer has no end; it is the start plus the held length.
+        self.assertEqual(amal["end_time"], "2026-10-11T15:45:00+04:00")
+        self.assertEqual((amal["user_id"], amal["kind"], amal["booking_code"]), (None, "guest", "GS-1281"))
+        self.assertEqual((rana["user_id"], rana["age_group"]), (RANA, "child"))
+        self.assertEqual(rana["stylist"], {"id": STRANGER, "name": None})
+
+    def test_member_totals_add_up_to_what_was_booked(self):
+        body, _ = self.translate()
+        totals = [m["total"] for m in body["members"]]
+        self.assertEqual(totals, [Decimal("120.00"), Decimal("175.00"), Decimal("120.00")])
+        self.assertEqual(sum(totals), body["amount_without_tax"])
+        self.assertEqual(body["total"], Decimal("415.00"))
+        self.assertEqual(body["currency"], "AED")
+
+    def test_what_a_group_does_not_carry(self):
+        body, _ = self.translate()
+        self.assertIsNone(body["tax_amount"])        # not computed, which is not zero
+        self.assertEqual((body["discount"], body["promo_code"]), (Decimal("0.00"), None))
+        self.assertEqual((body["deposit_percent"], body["deposit_amount"]), (0, Decimal("0.00")))
+        self.assertEqual((body["advance_paid_amount"], body["due_amount"]), (Decimal("0.00"), body["total"]))
+        self.assertEqual((body["pass_qr_code"], body["expires_at"]), (None, None))
+
+    def test_prices_that_do_not_add_up_are_null_never_wrong(self):
+        body, problems = self.translate(shares=("AED 400.00", "AED 0.00", "AED 0.00"))
+        self.assertEqual(body["total"], Decimal("400.00"))  # booking-api's figure stands
+        self.assertEqual([m["total"] for m in body["members"]], [None, None, None])
+        self.assertEqual(body["members"][0]["services"], [{"id": CUT, "name": "Cut", "amount": None}])
+        self.assertEqual(len(problems), 1)
+
+    def test_a_service_without_a_price_breaks_down_nothing(self):
+        catalogue = {**CATALOGUE, CUT: {"name": "Cut", "price": None}}
+        body, problems = self.translate(catalogue=catalogue)
+        self.assertEqual([m["total"] for m in body["members"]], [None, None, None])
+        self.assertTrue(problems)
+
+    def test_an_unreadable_share_is_null_and_reported_never_zero(self):
+        body, problems = self.translate(shares=("320", "AED 0.00", "AED 0.00"))
+        self.assertIsNone(body["total"])
+        self.assertIsNone(body["due_amount"])
+        self.assertEqual([m["total"] for m in body["members"]], [None, None, None])
+        self.assertEqual(len(problems), 1)
+
+    def test_two_currencies_have_no_total(self):
+        body, problems = self.translate(shares=("AED 1.00", "BDT 0.00", "AED 0.00"))
+        self.assertIsNone(body["total"])
+        self.assertTrue(problems)
+
+    def test_the_share_is_read_strictly(self):
+        self.assertEqual(gt.share_amount("AED 320.00"), ("AED", Decimal("320.00")))
+        for bad in ("320.00", "AED 320", "AED 3.2", "aed 320.00", "", None, 320):
+            with self.subTest(bad), self.assertRaises(ValueError):
+                gt.share_amount(bad)
+
+
 # ------------------------------------------------------------ the request
 
 
@@ -287,9 +475,28 @@ def availability_body(**over):
     return {"salon_id": SALON_ID, "date": "2026-10-11", "members": party_to_plan(), **over}
 
 
+def booking_body(user_id=USER_ID, **over):
+    # The app's extras ride along: money figures, a promo code, the statuses.
+    # All accepted, none forwarded; the server decides every one.
+    members = party()
+    members[1]["id"] = str(user_id)
+    return {
+        "salon_id": SALON_ID, "date": "2026-10-11",
+        "start_time": "2026-10-11T15:00:00+04:00", "members": members,
+        "amount_without_tax": 999, "tax_amount": 1, "discount": 5, "promo_code": "X",
+        "total": 999, "deposit_percent": 20, "advance_paid_amount": 0, "due_amount": 999,
+        "payment_status": "DRAFT", "status": "BOOKED", "booking_type": "GROUP",
+        **over,
+    }
+
+
 class GroupRequestTests(SimpleTestCase):
-    def codes(self, body):
-        s = GroupAvailabilityRequestSerializer(data=body)
+    def check(self, serializer_class, body):
+        context = {"booker_id": USER_ID} if serializer_class is GroupBookingRequestSerializer else {}
+        return serializer_class(data=body, context=context)
+
+    def codes(self, serializer_class, body):
+        s = self.check(serializer_class, body)
         self.assertFalse(s.is_valid())
         found = []
 
@@ -306,35 +513,127 @@ class GroupRequestTests(SimpleTestCase):
         walk(s.errors)
         return found
 
+    def book_codes(self, members):
+        return self.codes(GroupBookingRequestSerializer, booking_body(members=members))
+
     def test_a_good_party_is_accepted(self):
-        s = GroupAvailabilityRequestSerializer(data=availability_body())
-        self.assertTrue(s.is_valid(), s.errors)
+        for cls, body in ((GroupAvailabilityRequestSerializer, availability_body()),
+                          (GroupBookingRequestSerializer, booking_body())):
+            with self.subTest(cls.__name__):
+                s = self.check(cls, body)
+                self.assertTrue(s.is_valid(), s.errors)
 
     def test_two_to_eight(self):
         one = [{"ref": 0, "service_ids": [CUT]}]
         nine = [{"ref": i, "service_ids": [CUT]} for i in range(9)]
         for members in (one, nine):
             with self.subTest(len(members)):
-                self.assertEqual(self.codes(availability_body(members=members)), ["invalid_party_size"])
+                self.assertEqual(self.codes(GroupAvailabilityRequestSerializer,
+                                            availability_body(members=members)),
+                                 ["invalid_party_size"])
+        self.assertEqual(self.book_codes(party()[:1]), ["invalid_party_size"])
 
     def test_every_ref_is_its_own(self):
         members = party_to_plan()
         members[1]["ref"] = members[0]["ref"]
-        self.assertEqual(self.codes(availability_body(members=members)), ["duplicate_ref"])
+        self.assertEqual(self.codes(GroupAvailabilityRequestSerializer, availability_body(members=members)),
+                         ["duplicate_ref"])
 
     def test_every_member_needs_a_service(self):
-        members = party_to_plan()
-        members[0]["service_ids"] = []
-        self.assertEqual(self.codes(availability_body(members=members)), ["member_no_services"])
+        planned = party_to_plan()
+        planned[0]["service_ids"] = []
+        self.assertEqual(self.codes(GroupAvailabilityRequestSerializer, availability_body(members=planned)),
+                         ["member_no_services"])
+        booked = party()
+        booked[0]["services"] = []
+        self.assertEqual(self.book_codes(booked), ["member_no_services"])
+
+    def test_exactly_one_self_and_it_is_the_caller(self):
+        none = party()
+        none[1]["kind"] = "registered"
+        two = party()
+        two[0].update(kind="self", id=str(USER_ID))
+        someone_else = party()
+        someone_else[1]["id"] = RANA
+        twice = party()
+        twice[0].update(kind="registered", id=RANA)
+        for name, members in (("none", none), ("two", two), ("not me", someone_else),
+                              ("one account twice", twice)):
+            with self.subTest(name):
+                self.assertEqual(self.book_codes(members), ["invalid_member_kind"])
+
+    def test_self_matches_however_the_uuid_is_spelled(self):
+        members = party()
+        members[1]["id"] = str(USER_ID).upper()
+        self.assertTrue(self.check(GroupBookingRequestSerializer, booking_body(members=members)).is_valid())
+
+    def test_an_account_member_needs_its_id(self):
+        for position in (1, 2):
+            members = party()
+            members[position]["id"] = None
+            with self.subTest(members[position]["kind"]):
+                self.assertIn("member_id_required", self.book_codes(members))
+
+    def test_a_guest_needs_a_name_and_loses_any_id(self):
+        members = party()
+        members[0]["name"] = "  "
+        self.assertEqual(self.book_codes(members), ["required"])
+
+        members = party()
+        members[0]["id"] = RANA
+        s = self.check(GroupBookingRequestSerializer, booking_body(members=members))
+        self.assertTrue(s.is_valid(), s.errors)
+        self.assertIsNone(s.validated_data["members"][0]["id"])
+
+    def test_age_group_is_adult_or_child(self):
+        members = party()
+        members[0]["age_group"] = "ADULT"
+        self.assertEqual(self.book_codes(members), ["invalid_choice"])
+        del members[0]["age_group"]
+        self.assertEqual(self.book_codes(members), ["required"])
+
+    def test_products_and_packages_are_refused_never_dropped(self):
+        members = party()
+        members[0]["products"] = [{"id": "variant-1", "amount": 40, "quantity": 1}]
+        self.assertEqual(self.book_codes(members), ["products_not_supported"])
+        members = party()
+        members[2]["packages"] = [{"id": "pkg-1"}]
+        self.assertEqual(self.book_codes(members), ["packages_not_supported"])
+
+    def test_empty_products_are_fine(self):
+        members = party()
+        members[0]["products"] = []
+        self.assertTrue(self.check(GroupBookingRequestSerializer, booking_body(members=members)).is_valid())
 
     def test_ids_are_uuids(self):
-        members = party_to_plan()
-        members[0]["service_ids"] = ["svc_fade"]
-        self.assertEqual(self.codes(availability_body(members=members)), ["invalid"])
+        planned = party_to_plan()
+        planned[0]["service_ids"] = ["svc_fade"]
+        self.assertEqual(self.codes(GroupAvailabilityRequestSerializer, availability_body(members=planned)),
+                         ["invalid"])
 
     def test_a_date_that_is_not_a_date(self):
         # booking-api answers this one with a 500. It never gets the chance.
-        self.assertIn("invalid", self.codes(availability_body(date="2027-13-01")))
+        self.assertIn("invalid", self.codes(GroupAvailabilityRequestSerializer, availability_body(date="2027-13-01")))
+
+    def test_a_start_needs_an_offset(self):
+        self.assertEqual(self.codes(GroupBookingRequestSerializer, booking_body(start_time="2026-10-11T15:00:00")),
+                         ["offset_required"])
+        self.assertEqual(self.codes(GroupBookingRequestSerializer, booking_body(start_time="at three")),
+                         ["invalid"])
+
+    def test_the_money_and_statuses_are_accepted_and_go_nowhere(self):
+        s = self.check(GroupBookingRequestSerializer, booking_body())
+        self.assertTrue(s.is_valid(), s.errors)
+        for dropped in ("total", "promo_code", "deposit_percent", "payment_status", "booking_type"):
+            self.assertNotIn(dropped, s.validated_data)
+
+    def test_what_the_view_is_handed(self):
+        s = self.check(GroupBookingRequestSerializer, booking_body())
+        self.assertTrue(s.is_valid(), s.errors)
+        amal, dana, rana = s.validated_data["members"]
+        self.assertEqual((amal["service_ids"], amal["stylist_id"], amal["name"]), ([CUT], None, "Amal"))
+        self.assertEqual((dana["id"], dana["stylist_id"]), (str(USER_ID), MAYA))
+        self.assertEqual((rana["kind"], rana["id"], rana["age_group"]), ("registered", RANA, "child"))
 
 
 # ------------------------------------------------------------ the client
@@ -392,6 +691,12 @@ class GroupClientTests(SimpleTestCase):
         cases = (
             (lambda: booking_api.plan_group({"a": 1}, authorization="Bearer t", tenant_id=TENANT),
              "POST", "http://booking/v1/bookings/availability/group"),
+            (lambda: booking_api.hold_group({"a": 1}, authorization="Bearer t", tenant_id=TENANT),
+             "POST", "http://booking/v1/groups/holds"),
+            (lambda: booking_api.confirm_group(GROUP_ID, {"a": 1}, authorization="Bearer t", tenant_id=TENANT),
+             "POST", f"http://booking/v1/groups/{GROUP_ID}/confirm"),
+            (lambda: booking_api.release_group_hold(HOLD_ID, authorization="Bearer t", tenant_id=TENANT),
+             "DELETE", f"http://booking/v1/groups/holds/{HOLD_ID}"),
         )
         for call, method, url in cases:
             with self.subTest(url), self.respond(201, b'{"ok":true}') as urlopen:
@@ -406,14 +711,14 @@ class GroupClientTests(SimpleTestCase):
 
     def test_a_refusal_is_an_answer(self):
         with self.refuse(409, b'{"message":"Nobody available covers Dana\'s services at this time."}'):
-            status, body = booking_api.plan_group({}, authorization="Bearer t")
+            status, body = booking_api.hold_group({}, authorization="Bearer t")
         self.assertEqual(status, 409)
         self.assertIn("Nobody available", body["message"])
 
     def test_unreachable_or_html_raises(self):
         with mock.patch.object(booking_api.urllib.request, "urlopen", side_effect=TimeoutError("slow")):
             with self.assertRaises(BookingApiUnavailable):
-                booking_api.plan_group({}, authorization="Bearer t")
+                booking_api.confirm_group(GROUP_ID, {}, authorization="Bearer t")
         with self.respond(502, b"<html>Bad Gateway</html>"), self.assertRaises(BookingApiUnavailable):
             booking_api.plan_group({}, authorization="Bearer t")
 
@@ -473,11 +778,15 @@ class ViewSeams:
                 row for row in TIMING if str(row["id"]) in ids]),
             "salon_stylists": mock.Mock(return_value=STYLISTS),
             "stylist_service_coverage": mock.Mock(return_value=COVERAGE),
+            "_bookable_accounts": mock.Mock(return_value={RANA: "Rana Hassan"}),
             "_open_span": mock.Mock(side_effect=lambda salon, tz, day, day_start: (
                 day_start + timedelta(hours=9), day_start + timedelta(hours=21))),
             "_now": mock.Mock(side_effect=lambda tz: self.NOW.astimezone(tz)),
             "engine_clock": mock.Mock(return_value=CLOCK),
             "plan_group": mock.Mock(side_effect=lambda body, **kw: planned(body)),
+            "hold_group": mock.Mock(side_effect=lambda body, **kw: (201, held_answer(body))),
+            "confirm_group": mock.Mock(side_effect=lambda gid, body, **kw: (201, confirmed_answer(body))),
+            "release_group_hold": mock.Mock(return_value=(200, {"released": True})),
         }
         seams.update(over)
         patches = [mock.patch(f"apps.salons.group_views.{name}", fake) for name, fake in seams.items()]
@@ -669,3 +978,268 @@ class GroupAvailabilityViewTests(PartyChecks, ViewSeams, SimpleTestCase):
         self.assert_refused(response, "invalid_party_size", "members")
         self.assertEqual(response.data["code"], "validation_error")
         s.plan_group.assert_not_called()
+
+
+@override_settings(CACHES={"default": {
+    "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+    "LOCATION": "group-booking-tests",
+}})
+class GroupBookingViewTests(PartyChecks, ViewSeams, SimpleTestCase):
+    PATH = "/api/v1/booking/group"
+    SERVICES_FIELD = "services"
+
+    def setUp(self):
+        cache.clear()
+
+    def send(self, body=None, **kw):
+        return self.post(GroupBookingCreateView, self.PATH, body or booking_body(), **kw)
+
+    book = send
+
+    def with_services(self, service_id):
+        body = booking_body()
+        body["members"][0]["services"] = [{"id": service_id, "amount": 1}]
+        return body
+
+    def with_stylist(self, stylist_id, everyone=False):
+        body = booking_body()
+        # The self member asks for NAILS, so it is the one a cut-only stylist fails.
+        for m in body["members"] if everyone else body["members"][1:2]:
+            m["stylist_id"] = stylist_id
+        return body
+
+    # ---- the happy path
+
+    def test_hold_then_confirm_then_the_party(self):
+        with self.seams() as s:
+            response = self.book()
+        self.assertEqual(response.status_code, 201, response.data)
+        s.hold_group.assert_called_once()
+        s.confirm_group.assert_called_once()
+        s.release_group_hold.assert_not_called()
+
+        data = response.data
+        self.assertEqual((data["id"], data["booking_type"], data["status"], data["salon_id"], data["date"]),
+                         (GROUP_ID, "GROUP", "CONFIRMED_BY_SALON", SALON_ID, "2026-10-11"))
+        self.assertEqual([(m["ref"], m["name"]) for m in data["members"]],
+                         [(0, "Amal"), (1, "Dana"), (2, "Rana Hassan")])
+        self.assertEqual(data["members"][1]["booking_code"], "GS-1280")
+        self.assertEqual([m["total"] for m in data["members"]],
+                         [Decimal("120.00"), Decimal("175.00"), Decimal("120.00")])
+        self.assertEqual((data["total"], data["deposit_amount"], data["payment_status"]),
+                         (Decimal("415.00"), Decimal("0.00"), "PAY_AFTER_CHECK_IN"))
+        self.assertEqual(data["created_at"], "2026-10-11T07:00:00+04:00")
+
+    def test_what_the_engine_is_asked(self):
+        with self.seams() as s:
+            self.book()
+        hold = s.hold_group.call_args.args[0]
+        self.assertEqual((hold["day"], hold["targetMin"]), ("2026-10-11", 1020))  # 15:00 Dubai, 17:00 engine
+        self.assertEqual(hold["participants"], [
+            {"label": "Dana", "serviceIds": [NAILS], "customerId": str(USER_ID), "preferredStaffId": MAYA},
+            {"label": "Amal", "serviceIds": [CUT], "guestName": "Amal"},
+            {"label": "Rana Hassan", "serviceIds": [CUT], "customerId": RANA},
+        ])
+        for leaked in ("deposit_percent", "promo_code", "child"):
+            self.assertNotIn(leaked, json.dumps(hold))
+        gid, confirm = s.confirm_group.call_args.args
+        self.assertEqual((gid, confirm["holdId"]), (GROUP_ID, HOLD_ID))
+        s._bookable_accounts.assert_called_once_with([RANA])
+
+    def test_an_account_the_party_cannot_book_is_unknown(self):
+        with self.seams(_bookable_accounts=mock.Mock(return_value={})) as s:
+            response = self.book()
+        self.assert_refused(response, "unknown_user", "id")
+        s.hold_group.assert_not_called()
+
+    def test_an_account_without_a_name_keeps_the_one_typed(self):
+        with self.seams(_bookable_accounts=mock.Mock(return_value={RANA: ""})):
+            response = self.book(user=Customer(full_name=""))
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["members"][2]["name"], "typed by the booker")
+        self.assertIsNone(response.data["members"][1]["name"])
+
+    # ---- refusals
+
+    def test_a_party_that_does_not_fit_is_slot_taken_in_words(self):
+        refusal = {"statusCode": 409, "message": "Only 1 professional can cover this party.",
+                   "error": "Conflict"}
+        with self.seams(hold_group=mock.Mock(return_value=(409, refusal))) as s:
+            response = self.book()
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["errors"], [
+            {"field": None, "code": "slot_taken", "message": "Only 1 professional can cover this party."}])
+        s.confirm_group.assert_not_called()
+        s.release_group_hold.assert_not_called()
+
+    def test_slot_taken_without_the_engines_words(self):
+        with self.seams(hold_group=mock.Mock(return_value=(409, {"message": ["a", "list"]}))):
+            response = self.book()
+        self.assertEqual(response.data["errors"][0]["code"], "slot_taken")
+        self.assertEqual(response.data["detail"], "That time no longer fits the whole party. Pick another time.")
+
+    def test_a_confirm_that_no_longer_fits_releases_and_is_slot_taken(self):
+        for code in (409, 410):
+            with self.subTest(code):
+                cache.clear()
+                refusal = {"statusCode": code, "message": f"refused {code}"}
+                with self.seams(confirm_group=mock.Mock(return_value=(code, refusal))) as s:
+                    response = self.book()
+                self.assertEqual((response.status_code, response.data["errors"][0]["code"]), (409, "slot_taken"))
+                self.assertEqual(s.release_group_hold.call_args.args, (HOLD_ID,))
+
+    def test_any_other_confirm_refusal_releases_the_hold_and_is_forwarded(self):
+        for code in (422, 500):
+            refusal = {"statusCode": code, "message": f"refused {code}"}
+            with self.subTest(code):
+                cache.clear()
+                with self.seams(confirm_group=mock.Mock(return_value=(code, refusal))) as s:
+                    response = self.book()
+                self.assertEqual((response.status_code, response.data), (code, refusal))
+                s.release_group_hold.assert_called_once()
+
+    def test_a_refusal_is_not_remembered(self):
+        with self.seams(hold_group=mock.Mock(return_value=(409, {"message": "no"}))):
+            self.book()
+        with self.seams() as s:
+            response = self.book()
+        self.assertEqual(response.status_code, 201)
+        s.hold_group.assert_called_once()
+
+    # ---- the ambiguous moment
+
+    def test_confirm_timeout_and_the_hold_freed_means_nothing_was_booked(self):
+        with self.seams(confirm_group=mock.Mock(side_effect=BookingApiUnavailable("timed out"))) as s:
+            response = self.book()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data["errors"][0]["code"], "booking_api_unavailable")
+        s.release_group_hold.assert_called_once()
+        with self.seams() as s:
+            self.assertEqual(self.book().status_code, 201)   # a retry is a fresh try
+        s.hold_group.assert_called_once()
+
+    def test_confirm_timeout_and_the_hold_already_gone_is_unknown(self):
+        for release in (mock.Mock(return_value=(200, {"released": False})),
+                        mock.Mock(side_effect=BookingApiUnavailable("down")),
+                        mock.Mock(return_value=(500, None))):
+            with self.subTest(release=release):
+                cache.clear()
+                with self.seams(confirm_group=mock.Mock(side_effect=BookingApiUnavailable("timed out")),
+                                release_group_hold=release):
+                    response = self.book()
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(response.data["errors"][0]["code"], "group_status_unknown")
+                self.assertEqual(response.data["group_id"], GROUP_ID)
+                self.assertEqual(response.data["code"], "service_unavailable")
+
+    def test_unknown_stays_unknown(self):
+        with self.seams(confirm_group=mock.Mock(side_effect=BookingApiUnavailable("timed out")),
+                        release_group_hold=mock.Mock(return_value=(200, {"released": False}))):
+            self.book()
+        with self.seams() as s:
+            response = self.book()
+        self.assertEqual(response.data["errors"][0]["code"], "group_status_unknown")
+        s.hold_group.assert_not_called()   # never a second party beside the first
+
+    def test_booked_but_unreadable_is_unknown_not_failed(self):
+        with self.seams(confirm_group=mock.Mock(return_value=(201, {"groupId": GROUP_ID, "bookings": []}))) as s:
+            response = self.book()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data["errors"][0]["code"], "group_status_unknown")
+        s.release_group_hold.assert_not_called()   # it IS booked
+
+    def test_unreachable_before_anything_is_held_is_a_plain_503(self):
+        for name in ("engine_clock", "hold_group"):
+            with self.subTest(name):
+                cache.clear()
+                with self.seams(**{name: mock.Mock(side_effect=BookingApiUnavailable("down"))}) as s:
+                    response = self.book()
+                self.assertEqual(response.data["errors"][0]["code"], "booking_api_unavailable")
+                s.confirm_group.assert_not_called()
+
+    # ---- one Redis key for the pair
+
+    def test_the_same_request_twice_books_once(self):
+        with self.seams() as s:
+            first = self.book()
+            second = self.book()
+        self.assertEqual((first.status_code, second.status_code), (201, 201))
+        self.assertEqual(json.dumps(first.data, default=str), json.dumps(second.data, default=str))
+        s.hold_group.assert_called_once()
+        s.confirm_group.assert_called_once()
+
+    def test_while_the_first_is_running_the_second_is_409(self):
+        from apps.salons import group_views
+
+        def in_flight(body, **kw):
+            # The second tap lands while the first is between hold and confirm.
+            inner = self.book()
+            self.assertEqual(inner.status_code, 409)
+            self.assertEqual(inner.data["errors"][0]["code"], "request_in_progress")
+            return 201, held_answer(body)
+
+        with self.seams(hold_group=mock.Mock(side_effect=in_flight)):
+            self.assertEqual(self.book().status_code, 201)
+        self.assertTrue(group_views.IN_PROGRESS_SECONDS < group_views.RECEIPT_SECONDS)
+
+    def test_a_callers_key_reused_for_another_party_is_refused(self):
+        with self.seams():
+            self.book(HTTP_IDEMPOTENCY_KEY="k-1")
+            other = booking_body(start_time="2026-10-11T16:00:00+04:00")
+            response = self.book(other, HTTP_IDEMPOTENCY_KEY="k-1")
+        self.assert_refused(response, "idempotency_key_reused")
+
+    def test_two_customers_never_share_a_key(self):
+        with self.seams() as s:
+            for someone in (uuid.uuid4(), uuid.uuid4()):
+                response = self.book(booking_body(user_id=someone), HTTP_IDEMPOTENCY_KEY="same",
+                                     user=Customer(someone))
+                self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(s.hold_group.call_count, 2)
+
+    def test_the_cache_down_is_not_a_refusal(self):
+        broken = mock.Mock(side_effect=ConnectionError("redis down"))
+        with self.seams(), mock.patch("apps.salons.group_views.cache.add", broken), \
+                mock.patch("apps.salons.group_views.cache.set", broken), \
+                mock.patch("apps.salons.group_views.cache.delete", broken):
+            self.assertEqual(self.book().status_code, 201)
+
+    # ---- the start, held to the day view's rule
+
+    def test_a_start_on_another_day_is_422_and_asks_nobody(self):
+        with self.seams() as s:
+            response = self.book(booking_body(start_time="2026-10-12T15:00:00+04:00"))
+        self.assert_refused(response, "date_mismatch", "start_time")
+        s.engine_clock.assert_not_called()
+
+    def test_starts_the_day_view_would_not_offer(self):
+        cases = (
+            ("2026-10-11T07:15:00+04:00", "too_soon"),        # before now plus notice
+            ("2026-10-11T19:30:00+04:00", "outside_hours"),   # an hour of nails ends after 20:00
+        )
+        for start, code in cases:
+            with self.subTest(code):
+                cache.clear()
+                with self.seams() as s:
+                    response = self.book(booking_body(start_time=start))
+                self.assert_refused(response, code, "start_time")
+                s.hold_group.assert_not_called()
+        with self.seams(_open_span=mock.Mock(return_value=None)) as s:
+            self.assertEqual(self.book().data["errors"][0]["code"], "salon_closed")
+
+    def test_a_refused_start_can_be_fixed_and_sent_again(self):
+        with self.seams():
+            self.book(booking_body(start_time="2026-10-11T19:30:00+04:00"))
+        with self.seams() as s:
+            self.assertEqual(self.book(booking_body(start_time="2026-10-11T19:30:00+04:00")).status_code, 422)
+        s.engine_clock.assert_called_once()   # asked again, not replayed
+
+    def test_the_door(self):
+        with self.seams() as s:
+            self.assertEqual(self.book(authenticated=False).status_code, 401)
+            self.assertEqual(self.book(body=b"x=1", content_type="application/x-www-form-urlencoded").status_code, 415)
+            body = booking_body()
+            body["members"][1]["products"] = [{"id": "v1", "amount": 25, "quantity": 1}]
+            self.assert_refused(self.book(body), "products_not_supported")
+            self.assert_refused(self.book(booking_body(user_id=uuid.uuid4())), "invalid_member_kind")
+        s.hold_group.assert_not_called()

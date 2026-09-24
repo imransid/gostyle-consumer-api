@@ -25,6 +25,7 @@ changes there, this follows.
 import re
 from collections import namedtuple
 from datetime import date, datetime, time, timedelta, timezone as dt_timezone
+from decimal import Decimal
 
 from . import slots
 
@@ -37,6 +38,15 @@ GROUP_STEP_MINUTES = 30
 # in more than one call.
 MAX_GROUP_STARTS = 24
 
+# What booking-api writes on every lane of a confirmed group, whatever the
+# single-booking deposit rules would say: confirmed, no deposit, nothing
+# charged in the app (group-confirm.repository.ts: status confirmed,
+# depositFils 0, paymentStatus none_required). Spelled as its mobile contract
+# spells those two states for a single booking, so a group reads the same as
+# the booker's own row in /bookings.
+GROUP_STATUS = "CONFIRMED_BY_SALON"
+GROUP_PAYMENT_STATUS = "PAY_AFTER_CHECK_IN"
+
 # The app's three sections of the day, by the salon-local minute a slot
 # starts at: [from, to).
 BANDS = (
@@ -45,6 +55,8 @@ BANDS = (
     ("Evening", 17 * 60, None),
 )
 
+# The engine's share, as display text: "AED 320.00", and nothing else.
+_SHARE = re.compile(r"^([A-Z]{3}) (\d+\.\d{2})$")
 _HHMM = re.compile(r"^(\d{2}):(\d{2})$")
 
 
@@ -185,6 +197,33 @@ def plan_body(branch_id, day_iso, minutes, members, order):
     }
 
 
+def hold_body(branch_id, day_iso, minute, members, order):
+    """POST /v1/groups/holds. Everyone arrives together; the booker pays."""
+    return {
+        "branchId": str(branch_id),
+        "day": day_iso,
+        "targetMin": minute,
+        "mode": "TOGETHER",
+        # The party is paid together, by the booker: a guest added by name
+        # has no account to pay with.
+        "arrangement": "ORGANIZER",
+        "participants": participants(members, order),
+    }
+
+
+def confirm_body(hold_id, members, order):
+    """
+    POST /v1/groups/:id/confirm. The SAME participants, in the SAME order.
+
+    The engine re-plans on confirm and matches by position; a different count
+    comes back as 410 "hold expired", which would be the wrong sentence.
+    """
+    return {
+        "holdId": hold_id,
+        "participants": participants(members, order, planning=True),
+    }
+
+
 # ------------------------------------------------------------ when
 
 
@@ -224,6 +263,34 @@ def offered_starts(open_span, engine_span_, day_start, longest_minutes,
 def batches(starts, size=MAX_GROUP_STARTS):
     """`starts` in runs of at most `size`: one engine call each."""
     return [starts[i:i + size] for i in range(0, len(starts), size)]
+
+
+def start_refusal(start, open_span, engine_span_, earliest, longest_minutes):
+    """
+    Why this start cannot be booked, as (code, message), or None if it can.
+
+    The engine plans a party against its diary and nothing else: it does not
+    know the salon's hours or the clock, and would book a party at 21:00 in a
+    salon that shut at 20:00, or yesterday. So the booking route holds a
+    start to the same rule the day view offers them by -- anything the day
+    view would not show as available is refused here rather than booked.
+
+    Not the half-hour grid: a start between two offered ones is still a real
+    time, and the engine accepts it.
+    """
+    if open_span is None:
+        return "salon_closed", "The salon is closed on that day."
+    if start < earliest:
+        return "too_soon", "That time has passed, or is too soon to book."
+
+    finish = start + timedelta(minutes=longest_minutes)
+    latest_finish = min(open_span[1], engine_span_[1])
+    if start < max(open_span[0], engine_span_[0]) or finish > latest_finish:
+        return (
+            "outside_hours",
+            "The party would not start and finish within the salon's hours.",
+        )
+    return None
 
 
 # ------------------------------------------------------------ answers back
@@ -320,3 +387,142 @@ def banded(offered, day_slots_, day_start):
         if rows:
             bands.append({"label": name, "slots": rows})
     return bands
+
+
+def share_amount(text):
+    """
+    The engine's share string as (currency, Decimal).
+
+    booking-api sends a participant's share as display text, "AED 320.00".
+    Read strictly: anything else is a ValueError, never a zero. A zero would
+    tell a customer they owe nothing.
+    """
+    match = _SHARE.match(text if isinstance(text, str) else "")
+    if match is None:
+        raise ValueError(f"not a share this service can read: {text!r}")
+    return match.group(1), Decimal(match.group(2))
+
+
+def _breakdown(members, catalogue, total):
+    """
+    What each member's services cost, and each member's total, from the
+    salon's own prices -- or None for both when those prices do not add up
+    to the total booking-api booked.
+
+    booking-api prices the party as ONE figure, on the booker (ORGANIZER),
+    and names no per-person price. The app needs one per member. The
+    catalogue's prices give it, and the engine's total checks it: a
+    breakdown that does not sum to what was booked is a wrong number, and a
+    wrong number is worse than none.
+    """
+    per_member = []
+    for m in members:
+        lines = [(sid, (catalogue.get(sid) or {}).get("price")) for sid in m["service_ids"]]
+        if any(price is None for _, price in lines):
+            return None
+        per_member.append(lines)
+
+    if total is None or sum(p for lines in per_member for _, p in lines) != total:
+        return None
+    return per_member
+
+
+def booking_from_confirm(held, confirmed, *, day_iso, members, order, clock, tz,
+                         cards, catalogue, salon_id, date_iso, created_at):
+    """
+    The confirmed party, in the app's order and dialect.
+
+    Returns `(body, problems)`. `problems` lists anything the engine sent
+    that could not be read -- a share in a shape this does not know, prices
+    that do not add up. The party IS booked when this runs, so an unreadable
+    figure becomes a null and a logged problem, never a failed response the
+    app would retry into a second party.
+
+    The confirm answer carries a start but no end, so each end is the start
+    the confirm reports plus the length of the lane the hold reserved.
+    """
+    lanes = held.get("lanes") or []
+    bookings = confirmed.get("bookings") or []
+    if len(lanes) != len(order) or len(bookings) != len(order):
+        raise ValueError("the engine answered a different number of lanes")
+
+    problems, currencies, shares, spans = [], set(), [], []
+    engine = {}
+    for position, lane, booking in zip(order, lanes, bookings):
+        length = hhmm_minutes(lane["end"]) - hhmm_minutes(lane["start"])
+        begins = from_engine(day_iso, hhmm_minutes(booking["start"]), clock)
+        ends = begins + timedelta(minutes=length)
+        spans.append((begins, ends))
+        try:
+            currency, share = share_amount(booking.get("share"))
+            currencies.add(currency)
+            shares.append(share)
+        except ValueError as exc:
+            problems.append(str(exc))
+            shares.append(None)
+        engine[position] = (booking, begins, ends)
+
+    readable = None not in shares and len(currencies) == 1
+    if len(currencies) > 1:
+        problems.append(f"shares in more than one currency: {sorted(currencies)}")
+    total = sum(shares) if readable else None
+
+    breakdown = _breakdown(members, catalogue, total)
+    if total is not None and breakdown is None:
+        problems.append(f"the salon's prices do not add up to the booked total {total}")
+
+    out_members = []
+    for i, m in enumerate(members):
+        booking, begins, ends = engine[i]
+        lines = breakdown[i] if breakdown else [(sid, None) for sid in m["service_ids"]]
+        out_members.append({
+            "ref": m["ref"],
+            # booking-api gives a member no id of its own. `booking_code` is
+            # the member's own booking at the salon's desk.
+            "id": None,
+            "booking_code": booking.get("code"),
+            "user_id": m.get("id"),
+            "name": m.get("name"),
+            "kind": m["kind"],
+            "age_group": m["age_group"],
+            "services": [
+                {"id": sid, "name": (catalogue.get(sid) or {}).get("name"), "amount": price}
+                for sid, price in lines
+            ],
+            "products": [],
+            "stylist": stylist_card(booking.get("staffId"), cards),
+            "start_time": begins.astimezone(tz).isoformat(),
+            "end_time": ends.astimezone(tz).isoformat(),
+            "total": sum(p for _, p in lines) if breakdown else None,
+        })
+
+    zero = Decimal("0.00")
+    return {
+        "id": confirmed.get("groupId") or held.get("groupId"),
+        "salon_id": salon_id,
+        "booking_type": "GROUP",
+        "status": GROUP_STATUS,
+        "payment_status": GROUP_PAYMENT_STATUS,
+        "date": date_iso,
+        "start_time": min(b for b, _ in spans).astimezone(tz).isoformat(),
+        "end_time": max(e for _, e in spans).astimezone(tz).isoformat(),
+        "members": out_members,
+        "currency": currencies.pop() if readable else None,
+        "amount_without_tax": total,
+        # booking-api computes no VAT for a group (§8). Null, not zero: zero
+        # would say the salon charges none.
+        "tax_amount": None,
+        "discount": zero,
+        "promo_code": None,
+        "total": total,
+        # What booking-api writes on every group lane. See GROUP_PAYMENT_STATUS.
+        "deposit_percent": 0,
+        "deposit_amount": zero,
+        "advance_paid_amount": zero,
+        "due_amount": total,
+        # One pass per member (`booking_code`), not one for the party.
+        "pass_qr_code": None,
+        # Confirmed on the spot: there is no draft to expire.
+        "expires_at": None,
+        "created_at": created_at,
+    }, problems

@@ -1,7 +1,8 @@
 """
-Group bookings for the app: when a whole party fits.
+Group bookings for the app: when a whole party fits, and booking it.
 
     POST /api/v1/booking/group-availability   every start of the day, and who fits
+    POST /api/v1/booking/group                hold the party, then confirm it
 
 gostyle-booking-api does the planning and owns the bookings; this service
 does what apps/salons/booking_api.py does for a single booking -- resolve the
@@ -14,13 +15,17 @@ Kept apart from views.py on purpose: nothing a single booking does changes
 here, and the helpers it shares are imported from there untouched.
 """
 
+import hashlib
 import logging
 import uuid
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 
+from django.core.cache import cache
 from django.http import Http404
 from drf_spectacular.utils import OpenApiExample, OpenApiResponse, extend_schema
+from rest_framework import status
 from rest_framework.exceptions import (
+    APIException,
     ErrorDetail,
     UnsupportedMediaType,
     ValidationError,
@@ -29,10 +34,25 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.accounts.models import ConsumerAccount
+
 from . import group_translate as gt
 from . import timezones
-from .booking_api import BookingApiUnavailable, engine_clock, plan_group
-from .group_serializers import GroupAvailabilityRequestSerializer
+from .booking_api import (
+    BookingApiUnavailable,
+    confirm_group,
+    engine_clock,
+    hold_group,
+    plan_group,
+    release_group_hold,
+)
+from .group_serializers import (
+    REGISTERED,
+    SELF,
+    GroupAvailabilityRequestSerializer,
+    GroupBookingRequestSerializer,
+)
+from .money import major
 from .selectors import (
     booking_route,
     salon_profile,
@@ -40,9 +60,26 @@ from .selectors import (
     service_timing_rows,
     stylist_service_coverage,
 )
-from .views import _OUR_ENVELOPE, BookingApiDown, _open_span
+from .views import _OUR_ENVELOPE, BookingApiDown, _idempotency_key, _open_span
 
 logger = logging.getLogger(__name__)
+
+# How long a group booking in flight keeps its key. Longer than the slowest
+# path it guards -- settings, hold, confirm and a release, each bounded by
+# BOOKING_API_TIMEOUT -- and short enough that a worker that died mid-request
+# does not lock the customer out for long.
+IN_PROGRESS_SECONDS = 90
+
+# How long a finished answer is replayed to a retry of the same request.
+RECEIPT_SECONDS = 24 * 60 * 60
+
+_RECEIPT_NAMESPACE = "gostyle-customer-api/group-booking"
+
+_STATUS_UNKNOWN = (
+    "We could not confirm whether this group booking went through. Check "
+    "your bookings before trying again."
+)
+
 
 def _now(tz):
     """The clock, in one place, so a test can stand at any moment."""
@@ -160,6 +197,52 @@ def _check_stylists(salon, members, roster):
             )
 
 
+def _bookable_accounts(ids):
+    """
+    {id: full_name} for those of `ids` that are active, verified accounts.
+
+    The test GET /user/lookup applies, so an id lookup would never have
+    returned is not one a party can be booked for.
+    """
+    wanted = []
+    for raw in ids:
+        try:
+            wanted.append(uuid.UUID(raw))
+        except (TypeError, ValueError):
+            continue
+    if not wanted:
+        return {}
+    return {
+        str(pk): name
+        for pk, name in ConsumerAccount.objects.filter(
+            id__in=wanted, is_active=True, account_verified=True
+        ).values_list("id", "full_name")
+    }
+
+
+def _name_members(booker, members):
+    """
+    Every member's display name, and `unknown_user` for an account that
+    cannot be booked for.
+
+    Missing, unverified and disabled all answer `unknown_user` alike, as
+    they all answer the same 404 from GET /user/lookup. The account's own
+    name wins over one the app typed; a guest is the name the app sent.
+    """
+    names = _bookable_accounts([m["id"] for m in members if m["kind"] == REGISTERED])
+    for m in members:
+        if m["kind"] == SELF:
+            m["name"] = getattr(booker, "full_name", "") or m["name"]
+        elif m["kind"] == REGISTERED:
+            if m["id"] not in names:
+                raise _refuse(
+                    "id",
+                    "That account could not be found. Add this person as a guest instead.",
+                    "unknown_user",
+                )
+            m["name"] = names[m["id"]] or m["name"]
+
+
 def _party_timing(rows, members):
     """
     The longest visit in the party, and the notice the party needs.
@@ -175,6 +258,17 @@ def _party_timing(rows, members):
     longest = max(gt.member_minutes(members, minutes))
     lead = max([row["lead_time_minutes"] or 0 for row in rows.values()] or [0])
     return longest, lead
+
+
+def _catalogue(rows):
+    """Each chosen service's name and price, as the services tab shows them."""
+    return {
+        sid: {
+            "name": row.get("name"),
+            "price": major(row.get("branch_price_minor") or row.get("price_minor")),
+        }
+        for sid, row in rows.items()
+    }
 
 
 def _clock(authorization, route):
@@ -353,3 +447,416 @@ class GroupAvailabilityView(APIView):
             logger.warning("booking-api answered %r for %d starts", planned, len(batch))
             raise BookingApiDown()
         return None, entries
+
+
+# ------------------------------------------------------------ booking
+
+
+class SlotTaken(APIException):
+    """409 slot_taken: the party no longer fits at that time. Nothing was booked."""
+
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = "That time no longer fits the whole party. Pick another time."
+    default_code = "slot_taken"
+
+
+def _engine_sentence(body):
+    """booking-api's refusal in words, when it sent one worth showing."""
+    message = body.get("message") if isinstance(body, dict) else None
+    return message if isinstance(message, str) and message.strip() else None
+
+
+class GroupRequestInProgress(APIException):
+    """409: the same group booking is already being made by another request."""
+
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = (
+        "This group booking is already being made. Wait a moment, then check "
+        "your bookings."
+    )
+    default_code = "request_in_progress"
+
+
+def _status_unknown(group_id):
+    """
+    503 group_status_unknown, in this project's envelope plus `group_id`.
+
+    Returned rather than raised: the envelope handler rebuilds every raised
+    error into {detail, code, errors} and would drop the id -- which is the
+    one thing the customer, or support, needs to find the party.
+    """
+    return Response(
+        {
+            "detail": _STATUS_UNKNOWN,
+            "code": "service_unavailable",
+            "errors": [
+                {"field": None, "code": "group_status_unknown", "message": _STATUS_UNKNOWN}
+            ],
+            "group_id": group_id,
+        },
+        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
+
+
+def _receipt_key(request):
+    """
+    One Redis key for the whole hold-then-confirm pair.
+
+    Built on the same key POST /booking uses -- the caller's Idempotency-Key,
+    or a hash of the customer and the body they sent -- and hashed again with
+    the customer's id, because a key the CALLER chose carries no customer:
+    two customers who both sent "abc" must not share a receipt.
+    """
+    digest = hashlib.sha256()
+    digest.update(_RECEIPT_NAMESPACE.encode())
+    digest.update(str(getattr(request.user, "id", "")).encode())
+    digest.update(_idempotency_key(request).encode())
+    return f"group-booking:{digest.hexdigest()}"
+
+
+def _fingerprint(request):
+    return hashlib.sha256(request.body or b"").hexdigest()
+
+
+def _claim(key, fingerprint):
+    """
+    Mark the key in progress. None when this request now owns it, the stored
+    receipt when another request got there first.
+
+    REDIS DOWN IS NOT A REFUSAL. The booking goes ahead unprotected and the
+    failure is logged, the rule booking-api's own idempotency store follows:
+    refusing every group booking during a cache outage would break working
+    requests to guard against a retry that may never come.
+    """
+    mark = {"state": "in_progress", "fingerprint": fingerprint}
+    try:
+        for _ in range(2):
+            if cache.add(key, mark, timeout=IN_PROGRESS_SECONDS):
+                return None
+            existing = cache.get(key)
+            if existing is not None:
+                return existing
+            # Expired between the two calls: claim it again.
+    except Exception:  # noqa: BLE001 -- any cache failure means the same thing
+        logger.warning("group booking receipts unavailable; booking unprotected", exc_info=True)
+    return None
+
+
+def _remember(key, receipt):
+    try:
+        cache.set(key, receipt, timeout=RECEIPT_SECONDS)
+    except Exception:  # noqa: BLE001
+        # The booking already happened. Failing the response now would send
+        # the app into the very retry this was meant to absorb.
+        logger.warning("could not store a group booking receipt", exc_info=True)
+
+
+def _forget(key):
+    try:
+        cache.delete(key)
+    except Exception:  # noqa: BLE001
+        logger.warning("could not clear a group booking mark", exc_info=True)
+
+
+def _replay(receipt, fingerprint):
+    """The answer a stored receipt gives to a request that finds it."""
+    if receipt.get("fingerprint") != fingerprint:
+        # Only a caller-chosen key can land here: a derived key IS the body.
+        raise ValidationError(ErrorDetail(
+            "This Idempotency-Key was already used for a different group booking.",
+            code="idempotency_key_reused",
+        ))
+    state = receipt.get("state")
+    if state == "done":
+        return Response(receipt["body"], status=receipt["status"])
+    if state == "unknown":
+        return _status_unknown(receipt.get("group_id"))
+    raise GroupRequestInProgress()
+
+
+_MEMBER_EXAMPLE = {
+    "ref": 0,
+    "id": None,
+    "booking_code": "GS-1280",
+    "user_id": "11111111-1111-4111-8111-111111111111",
+    "name": "Sarah Kassem",
+    "kind": "self",
+    "age_group": "adult",
+    "services": [{"id": "0b7c…", "name": "Signature Fade", "amount": 250.0}],
+    "products": [],
+    "stylist": {"id": "7d1e…", "name": "Anna Petrova"},
+    "start_time": "2026-10-11T15:00:00+04:00",
+    "end_time": "2026-10-11T16:00:00+04:00",
+    "total": 250.0,
+}
+
+
+@extend_schema(
+    summary="Book the whole party",
+    description=(
+        "Holds every member's lane at `start_time`, then confirms them: one "
+        "booking per member at the salon's desk, everyone arriving together, "
+        "or nothing at all.\n\n"
+        "`self` is the signed-in customer; `registered` members are booked "
+        "on their own accounts, `guest`s by name. Every figure is the "
+        "server's: prices from the salon's own records, no VAT, discount, "
+        "child price or deposit (booking-api has none for a group), and "
+        "nothing paid in the app -- `payment_status` is PAY_AFTER_CHECK_IN.\n\n"
+        "RETRY-SAFE WITHOUT A HEADER. The same request sent again within 24 "
+        "hours replays the first answer rather than booking a second party; "
+        "sent while the first is still running it is 409 "
+        "`request_in_progress`. A refusal is not remembered, so fixing the "
+        "request and sending it again works. See docs/BOOKING_GROUP_API.md, "
+        "including what a group booking does NOT carry (§8)."
+    ),
+    request=GroupBookingRequestSerializer,
+    responses={
+        201: OpenApiResponse(
+            description="Booked. One booking code per member.",
+            examples=[
+                OpenApiExample(
+                    "Booked",
+                    value={
+                        "id": "b2c6b0a9-17aa-4be8-91b2-11668d3b2e5a",
+                        "salon_id": "c6c248ab-f2cd-4f12-a31e-243c6e64b3b5",
+                        "booking_type": "GROUP",
+                        "status": "CONFIRMED_BY_SALON",
+                        "payment_status": "PAY_AFTER_CHECK_IN",
+                        "date": "2026-10-11",
+                        "start_time": "2026-10-11T15:00:00+04:00",
+                        "end_time": "2026-10-11T16:00:00+04:00",
+                        "members": [_MEMBER_EXAMPLE],
+                        "currency": "AED",
+                        "amount_without_tax": 250.0,
+                        "tax_amount": None,
+                        "discount": 0.0,
+                        "promo_code": None,
+                        "total": 250.0,
+                        "deposit_percent": 0,
+                        "deposit_amount": 0.0,
+                        "advance_paid_amount": 0.0,
+                        "due_amount": 250.0,
+                        "pass_qr_code": None,
+                        "expires_at": None,
+                        "created_at": "2026-10-09T14:02:11+04:00",
+                    },
+                )
+            ],
+        ),
+        404: OpenApiResponse(response=_OUR_ENVELOPE, description="No such salon."),
+        409: OpenApiResponse(
+            response=_OUR_ENVELOPE,
+            description=(
+                "`slot_taken`: the party no longer fits at that time, and "
+                "nothing was booked. `request_in_progress`: the same request "
+                "is still being made."
+            ),
+        ),
+        415: OpenApiResponse(response=_OUR_ENVELOPE, description="Not application/json."),
+        422: OpenApiResponse(
+            response=_OUR_ENVELOPE,
+            description=(
+                _PARTY_422 + " Also `invalid_member_kind` (not exactly one "
+                "`self`, `self` not the signed-in account, or one account "
+                "twice), `member_id_required`, `unknown_user`, "
+                "`products_not_supported`, `packages_not_supported`; on "
+                "`start_time`: `offset_required`, `date_mismatch`, "
+                "`salon_closed`, `too_soon`, `outside_hours`; and "
+                "`idempotency_key_reused`."
+            ),
+        ),
+        503: OpenApiResponse(
+            response=_OUR_ENVELOPE,
+            description=(
+                "`booking_api_unavailable`: nothing was booked, and a retry is "
+                "safe. `group_status_unknown`: booking-api stopped answering "
+                "after the party was held, and it may have been booked -- the "
+                "body carries `group_id`, and the app should send the "
+                "customer to their bookings rather than retry."
+            ),
+        ),
+    },
+)
+class GroupBookingCreateView(APIView):
+    """POST /api/v1/booking/group"""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        _json_only(request)
+        # FIRST, before request.data: DRF parses by reading the stream, and
+        # Django refuses request.body once the stream has been read. The key
+        # and the fingerprint are both taken from the bytes the app sent.
+        key, fingerprint = _receipt_key(request), _fingerprint(request)
+
+        data = _validated(GroupBookingRequestSerializer, request, booker_id=request.user.id)
+        salon, route = _salon_and_route(data["salon_id"])
+        members = data["members"]
+        _name_members(request.user, members)
+        rows = _service_rows(salon, members, "services")
+        roster = _roster(salon)
+        _check_stylists(salon, members, roster)
+
+        tz = timezones.resolve(salon.branch_timezone, salon.id)
+        start = data["start_time"]
+        if start.astimezone(tz).date() != data["date"]:
+            raise _refuse(
+                "start_time",
+                "start_time must fall on `date` in the salon's own time.",
+                "date_mismatch",
+            )
+
+        existing = _claim(key, fingerprint)
+        if existing is not None:
+            return _replay(existing, fingerprint)
+
+        try:
+            kind, code, body = self._book(request, data, salon, route, tz, rows, roster)
+        except Exception:
+            # A refusal, or booking-api unreachable before anything was
+            # booked. Nothing to remember: the same request may be sent again
+            # as it is. (A worker killed mid-request skips this on purpose;
+            # its mark lapses after IN_PROGRESS_SECONDS.)
+            _forget(key)
+            raise
+
+        if kind == "done":
+            _remember(key, {"state": "done", "fingerprint": fingerprint, "status": code, "body": body})
+            return Response(body, status=code)
+        if kind == "unknown":
+            # Remembered, so a retry hears the same thing instead of holding
+            # a second party beside one that may already be booked.
+            _remember(key, {"state": "unknown", "fingerprint": fingerprint, "group_id": body})
+            return _status_unknown(body)
+
+        _forget(key)
+        return Response(body, status=code)
+
+    def _book(self, request, data, salon, route, tz, rows, roster):
+        """
+        Hold, then confirm. Returns (kind, status, body).
+
+        kind is "done" (booked: status 201 and the app's body), "refused"
+        (booking-api's answer, forwarded as it is) or "unknown" (body is the
+        group id). Raises for anything this service refuses itself,
+        `slot_taken` included.
+        """
+        authorization = request.META.get("HTTP_AUTHORIZATION", "")
+        members = data["members"]
+        start, day = data["start_time"], data["date"]
+        day_start = datetime.combine(day, time.min, tzinfo=tz)
+
+        longest, lead = _party_timing(rows, members)
+        clock = _clock(authorization, route)
+        engine_day, minute = gt.to_engine(start, clock)
+
+        refusal = gt.start_refusal(
+            start,
+            _open_span(salon, tz, day, day_start),
+            gt.engine_span(date.fromisoformat(engine_day), clock),
+            earliest=_now(tz) + timedelta(minutes=lead),
+            longest_minutes=longest,
+        )
+        if refusal is not None:
+            code, message = refusal
+            raise _refuse("start_time", message, code)
+
+        order = gt.booker_first(members)
+        tenant = route["tenant_id"]
+
+        # ---- hold. Every lane or none.
+        try:
+            code, held = hold_group(
+                gt.hold_body(route["branch_id"], engine_day, minute, members, order),
+                authorization=authorization, tenant_id=tenant,
+            )
+        except BookingApiUnavailable as exc:
+            # Unknown whether a hold was placed; if it was, nothing was
+            # booked on it and it lapses on its own in fifteen minutes.
+            raise BookingApiDown() from exc
+        if code == status.HTTP_409_CONFLICT:
+            # The party does not fit at that time. booking-api says why in
+            # words ("Only 1 professional can cover this party"), worth
+            # showing as they are.
+            raise SlotTaken(_engine_sentence(held))
+        if code not in (200, 201):
+            if code == 400:
+                logger.warning("booking-api refused a group hold body: %r", held)
+            return "refused", code, held
+
+        group_id = (held or {}).get("groupId")
+        hold_id = (held or {}).get("holdId")
+        if not group_id or not hold_id:
+            logger.error("booking-api held a group without naming it: %r", held)
+            raise BookingApiDown()
+
+        # ---- confirm. Anything but a booked party gives the lanes back.
+        try:
+            code, confirmed = confirm_group(
+                group_id, gt.confirm_body(hold_id, members, order),
+                authorization=authorization, tenant_id=tenant,
+            )
+        except BookingApiUnavailable:
+            # The one ambiguous moment: the confirm may have landed. Releasing
+            # is safe either way and its answer says which side we are on --
+            # `released: true` means the hold was still there, so nothing was
+            # booked. Anything else, and the party may exist.
+            if self._release(hold_id, authorization, tenant) is True:
+                raise BookingApiDown() from None
+            logger.warning(
+                "group %s: confirm unanswered and the hold was not released; status unknown",
+                group_id,
+            )
+            return "unknown", None, group_id
+
+        if code not in (200, 201):
+            # Nothing was written: booking-api's confirm is one transaction.
+            # Free the party's professionals now rather than in fifteen
+            # minutes, or a retry competes with its own leftover hold.
+            self._release(hold_id, authorization, tenant)
+            if code == status.HTTP_409_CONFLICT:
+                # Re-planned on confirm and no longer fits.
+                raise SlotTaken(_engine_sentence(confirmed))
+            if code == status.HTTP_410_GONE:
+                # The hold lapsed between the two calls. Nothing was booked,
+                # and what the customer can do is the same: pick again.
+                raise SlotTaken()
+            return "refused", code, confirmed
+
+        try:
+            body, problems = gt.booking_from_confirm(
+                held, confirmed or {},
+                day_iso=engine_day, members=members, order=order, clock=clock,
+                tz=tz, cards=roster, catalogue=_catalogue(rows),
+                salon_id=str(salon.id), date_iso=day.isoformat(),
+                created_at=_now(tz).replace(microsecond=0).isoformat(),
+            )
+        except Exception:  # noqa: BLE001 -- the party is booked; nothing may undo that
+            # Booked, but in a shape this cannot read. Saying so beats
+            # saying "failed", which the app would retry into a second party.
+            logger.error("group %s confirmed but its answer is unreadable: %r",
+                         group_id, confirmed, exc_info=True)
+            return "unknown", None, group_id
+        if problems:
+            logger.error("group %s confirmed with unreadable parts: %s", group_id, problems)
+
+        return "done", status.HTTP_201_CREATED, body
+
+    @staticmethod
+    def _release(hold_id, authorization, tenant):
+        """
+        True when THIS call freed the hold. False, or None, otherwise.
+
+        Best effort: a failure here is logged and the hold lapses on its own.
+        """
+        try:
+            code, body = release_group_hold(
+                hold_id, authorization=authorization, tenant_id=tenant
+            )
+        except BookingApiUnavailable:
+            logger.warning("could not release group hold %s; it lapses on its own", hold_id)
+            return None
+        if code != 200 or not isinstance(body, dict):
+            logger.warning("releasing group hold %s answered %s", hold_id, code)
+            return None
+        return body.get("released")
