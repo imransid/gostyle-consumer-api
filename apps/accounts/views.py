@@ -295,10 +295,14 @@ class PasswordResetView(APIView):
 
 class UserLookupView(APIView):
     """
-    POST /api/v1/user/lookup
+    GET /api/v1/user/lookup?contact=<email or E.164 phone>
 
     Find a member by phone or email: 200 with {id, name, image}, or 404 with
     the standard error body.
+
+    A GET, so the contact is in the URL. nginx and gunicorn both drop the
+    query from their access logs for this path (nginx/log-format-json.conf,
+    config/gunicorn_logging.py).
 
     IsVerified, not IsAuthenticated. The daily cap is per account, and a cap
     per account is worth nothing while a fresh, unverified account is free.
@@ -312,7 +316,18 @@ class UserLookupView(APIView):
     throttle_classes = []  # rate-limited in the service via Redis
 
     @extend_schema(
-        request=UserLookupSerializer,
+        parameters=[
+            OpenApiParameter(
+                "contact",
+                str,
+                required=True,
+                description=(
+                    "One email, or one phone in E.164. URL-encoded: a `+` is "
+                    "`%2B`. Exact match only. 422 `invalid_contact` when it "
+                    "is neither."
+                ),
+            ),
+        ],
         responses={
             200: UserLookupResultSerializer,
             404: OpenApiResponse(
@@ -329,8 +344,8 @@ class UserLookupView(APIView):
             ),
         },
     )
-    def post(self, request):
-        s = UserLookupSerializer(data=request.data)
+    def get(self, request):
+        s = UserLookupSerializer(data=request.query_params)
         s.is_valid(raise_exception=True)
 
         match = services.lookup_account(

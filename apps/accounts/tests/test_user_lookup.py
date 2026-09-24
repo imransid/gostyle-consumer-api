@@ -1,5 +1,5 @@
 """
-Tests for `POST /user/lookup`: find a member by phone or email.
+Tests for `GET /user/lookup?contact=`: find a member by phone or email.
 
 Three properties matter more than the happy path, and each has tests that
 should fail loudly if it breaks:
@@ -63,18 +63,18 @@ class UserLookupTestCase(TestCase):
         token = tokens_for(account)["access"]
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
 
-    def lookup(self, destination, destination_type="phone", ip=IP_A):
-        return self.client.post(
+    def lookup(self, contact, ip=IP_A):
+        # The test client URL-encodes the query, so a "+" travels as %2B.
+        return self.client.get(
             URL,
-            {"destination_type": destination_type, "destination": destination},
-            format="json",
+            {"contact": contact},
             REMOTE_ADDR=ip,
             HTTP_X_FORWARDED_FOR=ip,
         )
 
-    def spend_allowance(self, destination, ip=IP_A):
+    def spend_allowance(self, contact, ip=IP_A):
         for i in range(LIMIT):
-            resp = self.lookup(destination, ip=ip)
+            resp = self.lookup(contact, ip=ip)
             self.assertIn(resp.status_code, (200, 404), f"call {i + 1}: {resp.content}")
 
 
@@ -122,7 +122,7 @@ class LookupAnswerTests(UserLookupTestCase):
     def test_a_mixed_case_email_matches(self):
         member = self.make_account(email="kevin@example.com")
 
-        resp = self.lookup("  Kevin@Example.COM ", "email")
+        resp = self.lookup("  Kevin@Example.COM ")
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["id"], str(member.id))
@@ -134,13 +134,22 @@ class LookupAnswerTests(UserLookupTestCase):
         self.assertEqual(resp.json()["id"], str(self.target.id))
 
     def test_a_uae_number_keeps_its_plus(self):
-        """Why this is a POST body: in a query string the + would be a space."""
         member = self.make_account(phone="+971501234567")
 
         resp = self.lookup("+971 50 123 4567")
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["id"], str(member.id))
+
+    def test_an_unencoded_plus_is_refused_never_read_as_someone_else(self):
+        """A bare "+" in a query string decodes to a space. Nothing guesses it
+        back: the number is read as a national one and fails."""
+        self.make_account(phone="+971501234567")
+
+        resp = self.client.get(f"{URL}?contact=+971501234567")
+
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["errors"][0]["code"], "invalid_contact")
 
     def test_a_malformed_contact_is_422_not_a_match(self):
         # A legacy row holding the malformed string verbatim. If the raw input
@@ -150,11 +159,28 @@ class LookupAnswerTests(UserLookupTestCase):
         resp = self.lookup("12345678")
 
         self.assertEqual(resp.status_code, 422)
-        self.assertEqual(resp.json()["errors"][0]["field"], "destination")
+        self.assertEqual(
+            resp.json()["errors"][0],
+            {
+                "field": "contact",
+                "code": "invalid_contact",
+                "message": "Enter a valid email address or phone number.",
+            },
+        )
 
     def test_a_malformed_email_is_422(self):
-        resp = self.lookup("kevin@", "email")
+        resp = self.lookup("kevin@")
         self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["errors"][0]["code"], "invalid_contact")
+
+    def test_no_contact_is_422(self):
+        resp = self.client.get(URL)
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["errors"][0]["field"], "contact")
+
+    def test_the_contact_goes_in_the_query_not_a_body(self):
+        resp = self.client.post(URL, {"contact": TARGET_PHONE}, format="json")
+        self.assertEqual(resp.status_code, 405)
 
 
 class LookupAccessTests(UserLookupTestCase):
@@ -227,9 +253,9 @@ class LookupEchoTests(UserLookupTestCase):
         responses = {
             "phone hit": (self.lookup("01712345678"), ["01712345678", "1712345678"]),
             "phone miss": (self.lookup(MISSING_PHONE), ["1899999999"]),
-            "email hit": (self.lookup("Kevin@Example.com", "email"), ["kevin@example.com"]),
-            "email miss": (self.lookup("nobody@example.com", "email"), ["nobody@example.com"]),
-            "malformed": (self.lookup("kevin@", "email"), ["kevin@"]),
+            "email hit": (self.lookup("Kevin@Example.com"), ["kevin@example.com"]),
+            "email miss": (self.lookup("nobody@example.com"), ["nobody@example.com"]),
+            "malformed": (self.lookup("kevin@"), ["kevin@"]),
         }
         # Spend what is left of the allowance to reach the 429 as well.
         for _ in range(LIMIT - 4):

@@ -135,17 +135,32 @@ class LogoutSerializer(serializers.Serializer):
     refresh = serializers.CharField()
 
 
-class UserLookupSerializer(DestinationMixin, serializers.Serializer):
-    """A JSON body, not a query string. A query string reaches the nginx and
-    gunicorn access logs, and an unencoded "+" in one decodes to a space,
-    which breaks every E.164 number.
+class UserLookupSerializer(serializers.Serializer):
+    """`?contact=`: one email or one phone, told apart by the "@".
+
+    A query string reaches the access logs, so nginx and gunicorn both blank
+    it for this one path (nginx/log-format-json.conf,
+    config/gunicorn_logging.py). A "+" must arrive as %2B: a bare one
+    decodes to a space, the number is then read as a national one, and a
+    UAE number fails as invalid_contact rather than matching anyone.
     """
 
-    destination_type = serializers.ChoiceField(choices=DestinationType.choices)
-    destination = serializers.CharField(max_length=254)
+    contact = serializers.CharField(max_length=254)
 
     def validate(self, attrs):
-        return self._normalize(attrs)
+        contact = attrs.pop("contact")
+        kind = DestinationType.EMAIL if "@" in contact else DestinationType.PHONE
+        try:
+            attrs["destination"] = normalize_destination(contact, kind)
+        except InvalidDestination:
+            # One wording for both kinds: saying "not a valid phone" would
+            # tell the caller which of the two it was read as.
+            raise serializers.ValidationError({"contact": [serializers.ErrorDetail(
+                "Enter a valid email address or phone number.",
+                code="invalid_contact",
+            )]})
+        attrs["destination_type"] = kind
+        return attrs
 
 
 class UserLookupResultSerializer(serializers.Serializer):
