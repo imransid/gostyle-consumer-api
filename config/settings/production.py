@@ -33,3 +33,7 @@ REST_FRAMEWORK = {
     **REST_FRAMEWORK,  # noqa: F405
     "NUM_PROXIES": env.int("DJANGO_NUM_PROXIES", default=1),
 }
+
+
+
+STORAGES = {**STORAGES, "default": S3_STORAGE} 

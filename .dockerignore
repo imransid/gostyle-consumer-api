@@ -27,3 +27,5 @@ docs/
 *.md
 .vscode/
 .idea/
+
+media/

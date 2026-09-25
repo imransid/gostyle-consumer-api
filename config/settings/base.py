@@ -63,6 +63,33 @@ STORAGES = {
     },
 }
 
+
+
+# File uploads (apps/uploads). Same bucket and same variable names as
+# gostyle-platform, so the server's .env lines can be copied from there.
+# Empty means "no S3": files go to MEDIA_ROOT on this disk (local dev only).
+AWS_BUCKET_NAME = env("AWS_BUCKET_NAME", default="")
+AWS_REGION = env("AWS_REGION", default="")
+
+# boto3 reads AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY from the
+# environment by itself, so they are not read here.
+S3_STORAGE = {
+    "BACKEND": "storages.backends.s3.S3Storage",
+    "OPTIONS": {
+        "bucket_name": AWS_BUCKET_NAME,
+        "region_name": AWS_REGION,
+        # Our own top-level folder. Never "tenants/": the platform treats
+        # every key under it as a salon's.
+        "location": "customers",
+        # Plain public URL, in the same shape the platform builds.
+        "custom_domain": f"{AWS_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com",
+        "querystring_auth": False,
+    },
+}
+
+if AWS_BUCKET_NAME:
+    STORAGES["default"] = S3_STORAGE
+
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
