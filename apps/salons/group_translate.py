@@ -526,3 +526,102 @@ def booking_from_confirm(held, confirmed, *, day_iso, members, order, clock, tz,
         "expires_at": None,
         "created_at": created_at,
     }, problems
+
+
+# ------------------------------------------------------------ the mobile route
+#
+# GROUP_BOOKING_V2: one call to booking-api's POST /v1/mobile-booking/group
+# instead of the hold and confirm above. That route speaks the app's own
+# dialect (docs/APP_GROUP_BOOKING_SPEC.md), so there is little to translate:
+# the salon becomes its branch, and every time in the answer is put back on
+# the salon's own clock.
+
+# The app's figures, forwarded as sent. booking-api recomputes every one and
+# refuses a figure that disagrees, carrying the right one (its §5).
+MONEY_FIELDS = (
+    "amount_without_tax", "tax_amount", "discount", "promo_code", "total",
+    "deposit_percent", "advance_paid_amount", "due_amount",
+    "payment_status", "status", "booking_type",
+)
+
+
+def mobile_group_body(branch_id, start, members, sent):
+    """
+    The body for POST /v1/mobile-booking/group.
+
+    `members` as the serializer validated them, in the app's own order (the
+    spec keeps it). `sent` is the request as it arrived, for the money
+    figures, which are the app's to state and booking-api's to check.
+    """
+    body = {
+        "salon_id": str(branch_id),
+        "start_time": start.isoformat(),
+        "members": [
+            {
+                "ref": m["ref"],
+                "kind": m["kind"],
+                "id": m["id"],
+                "name": m.get("name"),
+                "age_group": m["age_group"],
+                "services": [{"id": str(s["id"]), "amount": s["amount"]} for s in m["services"]],
+                "products": list(m.get("products") or []),
+                "stylist_id": m.get("stylist_id"),
+            }
+            for m in members
+        ],
+    }
+    for key in MONEY_FIELDS:
+        if key in sent:
+            body[key] = sent[key]
+    return body
+
+
+def _on_clock(value, tz):
+    """An ISO instant from booking-api, on the salon's clock. Anything else as it came."""
+    if not isinstance(value, str):
+        return value
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return value
+    if moment.tzinfo is None:
+        return value
+    return moment.astimezone(tz).isoformat()
+
+
+def present_group(answer, *, salon_id, tz, names=None):
+    """
+    booking-api's party, as the app reads it.
+
+    The same object, with three things put right: `salon_id` is the salon the
+    app knows (not booking-api's branch), every time is on the salon's own
+    clock (booking-api reads every branch at +06:00), and `date` is the
+    salon-local day of the start. `names` fills in the members whose name
+    booking-api does not store (accounts), by `user_id`.
+    """
+    out = dict(answer)
+    if salon_id is not None:
+        out["salon_id"] = str(salon_id)
+    if tz is not None:
+        for key in ("start_time", "end_time", "expires_at", "created_at"):
+            if key in out:
+                out[key] = _on_clock(out[key], tz)
+        start = out.get("start_time")
+        if isinstance(start, str):
+            try:
+                out["date"] = datetime.fromisoformat(start).date().isoformat()
+            except ValueError:
+                pass
+    members = []
+    for m in out.get("members") or []:
+        m = dict(m)
+        if tz is not None:
+            for key in ("start_time", "end_time"):
+                if key in m:
+                    m[key] = _on_clock(m[key], tz)
+        if not m.get("name") and names and m.get("user_id") in names:
+            m["name"] = names[m["user_id"]] or None
+        members.append(m)
+    if "members" in out:
+        out["members"] = members
+    return out

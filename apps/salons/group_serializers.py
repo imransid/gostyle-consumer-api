@@ -23,6 +23,7 @@ server decides every one of them (§5).
 import uuid
 from datetime import datetime
 
+from django.conf import settings
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
@@ -108,6 +109,38 @@ class PartySerializer(serializers.ListSerializer):
             # one ref would each be given the other's stylist.
             raise _refusal("Every member needs its own ref.", "duplicate_ref")
         return members
+
+
+MAX_PRODUCT_QUANTITY = 99
+
+
+def _product_line(line):
+    """
+    One product line as booking-api's POST /v1/mobile-booking/group takes it.
+
+    Shape only: whether the variant is sold here, at that price and in stock,
+    is booking-api's answer (it asks the platform catalogue), in the same
+    words it gives a single booking.
+    """
+    if not isinstance(line, dict):
+        raise serializers.ValidationError("Each product is {id, amount, quantity}.", code="invalid")
+    try:
+        variant = str(uuid.UUID(str(line.get("id"))))
+    except ValueError:
+        raise serializers.ValidationError(
+            "A product's id is its variant id from GET /salon/<id>/products.",
+            code="unknown_product",
+        ) from None
+    amount = line.get("amount")
+    if isinstance(amount, bool) or not isinstance(amount, (int, float)) or amount < 0:
+        raise serializers.ValidationError("A product's amount is the price shown.", code="invalid")
+    quantity = line.get("quantity", 1)
+    if isinstance(quantity, bool) or not isinstance(quantity, int) or not 1 <= quantity <= MAX_PRODUCT_QUANTITY:
+        raise serializers.ValidationError(
+            f"A product's quantity is a whole number from 1 to {MAX_PRODUCT_QUANTITY}.",
+            code="invalid",
+        )
+    return {"id": variant, "amount": amount, "quantity": quantity}
 
 
 def _no_services():
@@ -212,8 +245,8 @@ class BookingMemberSerializer(serializers.Serializer):
     age_group = serializers.ChoiceField(
         choices=[ADULT, CHILD],
         help_text=(
-            "Echoed back. NOT priced: booking-api has no field for it, so "
-            "there is no child discount yet (docs/BOOKING_GROUP_API.md §8)."
+            "With GROUP_BOOKING_V2 on, booking-api prices it: a child pays "
+            "half of each service. Off, it is only echoed back."
         ),
     )
     services = GroupServiceLineSerializer(many=True)
@@ -222,9 +255,11 @@ class BookingMemberSerializer(serializers.Serializer):
         required=False,
         default=list,
         help_text=(
-            "Must be empty. booking-api's group bookings carry no products, "
-            "and dropping them silently would leave a customer believing "
-            "they bought something."
+            "With GROUP_BOOKING_V2 on: `{id, amount, quantity}` per line, `id` "
+            "the VARIANT id from GET /salon/<id>/products, as POST /booking "
+            "takes them. Off: must be empty, because the old path carries no "
+            "products and dropping them silently would leave a customer "
+            "believing they bought something."
         ),
     )
     packages = serializers.ListField(
@@ -248,12 +283,14 @@ class BookingMemberSerializer(serializers.Serializer):
         return value
 
     def validate_products(self, value):
-        if value:
+        if not value:
+            return value
+        if not settings.GROUP_BOOKING_V2:
             raise serializers.ValidationError(
                 "Group bookings cannot include products yet. Remove them to continue.",
                 code="products_not_supported",
             )
-        return value
+        return [_product_line(line) for line in value]
 
     def validate_packages(self, value):
         if value:

@@ -20,6 +20,7 @@ import logging
 import uuid
 from datetime import date, datetime, time, timedelta
 
+from django.conf import settings
 from django.core.cache import cache
 from django.http import Http404
 from drf_spectacular.utils import OpenApiExample, OpenApiResponse, extend_schema
@@ -40,10 +41,13 @@ from . import group_translate as gt
 from . import timezones
 from .booking_api import (
     BookingApiUnavailable,
+    cancel_group_booking,
     confirm_group,
+    create_group_booking,
     engine_clock,
     hold_group,
     plan_group,
+    read_group_booking,
     release_group_hold,
 )
 from .group_serializers import (
@@ -55,12 +59,13 @@ from .group_serializers import (
 from .money import major
 from .selectors import (
     booking_route,
+    salon_cards_for_refs,
     salon_profile,
     salon_stylists,
     service_timing_rows,
     stylist_service_coverage,
 )
-from .views import _OUR_ENVELOPE, BookingApiDown, _idempotency_key, _open_span
+from .views import _OUR_ENVELOPE, BookingApiDown, _idempotency_key, _open_span, _salon_card
 
 logger = logging.getLogger(__name__)
 
@@ -688,6 +693,7 @@ class GroupBookingCreateView(APIView):
         # Django refuses request.body once the stream has been read. The key
         # and the fingerprint are both taken from the bytes the app sent.
         key, fingerprint = _receipt_key(request), _fingerprint(request)
+        idempotency_key = _idempotency_key(request)
 
         data = _validated(GroupBookingRequestSerializer, request, booker_id=request.user.id)
         salon, route = _salon_and_route(data["salon_id"])
@@ -705,6 +711,11 @@ class GroupBookingCreateView(APIView):
                 "start_time must fall on `date` in the salon's own time.",
                 "date_mismatch",
             )
+
+        if settings.GROUP_BOOKING_V2:
+            # One call to booking-api's mobile route. Every check above has
+            # already run, exactly as for the old path.
+            return self._book_v2(request, data, salon, route, tz, rows, idempotency_key)
 
         existing = _claim(key, fingerprint)
         if existing is not None:
@@ -842,6 +853,60 @@ class GroupBookingCreateView(APIView):
 
         return "done", status.HTTP_201_CREATED, body
 
+    def _book_v2(self, request, data, salon, route, tz, rows, idempotency_key):
+        """
+        GROUP_BOOKING_V2: the party in ONE call to POST
+        /v1/mobile-booking/group, saved to pay at the salon.
+
+        The start is checked here first, against the salon's hours and the
+        services' notice, the same as the old path. Then booking-api holds,
+        prices (child price, VAT, products, deposit) and books every member,
+        or none. Its answer is the app's shape already; only the salon, the
+        clock and the date are put back to the salon's.
+
+        RETRY-SAFE through booking-api's own Idempotency-Key store: the same
+        key POST /booking derives (the caller's, or a hash of the customer
+        and the body), so sending the same party again returns the party
+        already booked rather than a second one. No Redis receipt is needed
+        for one call.
+        """
+        authorization = request.META.get("HTTP_AUTHORIZATION", "")
+        members = data["members"]
+        start, day = data["start_time"], data["date"]
+        day_start = datetime.combine(day, time.min, tzinfo=tz)
+
+        longest, lead = _party_timing(rows, members)
+        clock = _clock(authorization, route)
+        engine_day, _ = gt.to_engine(start, clock)
+        refusal = gt.start_refusal(
+            start,
+            _open_span(salon, tz, day, day_start),
+            gt.engine_span(date.fromisoformat(engine_day), clock),
+            earliest=_now(tz) + timedelta(minutes=lead),
+            longest_minutes=longest,
+        )
+        if refusal is not None:
+            code, message = refusal
+            raise _refuse("start_time", message, code)
+
+        try:
+            code, answer = create_group_booking(
+                gt.mobile_group_body(route["branch_id"], start, members, request.data),
+                authorization=authorization,
+                idempotency_key=idempotency_key,
+                tenant_id=route["tenant_id"],
+            )
+        except BookingApiUnavailable as exc:
+            # Safe to send again: the same key answers with the party if
+            # this one did land.
+            raise BookingApiDown() from exc
+
+        if code != status.HTTP_201_CREATED or not isinstance(answer, dict):
+            if code == 400:
+                logger.warning("booking-api refused a mobile group body: %r", answer)
+            return Response(answer, status=code)
+        return Response(gt.present_group(answer, salon_id=salon.id, tz=tz), status=code)
+
     @staticmethod
     def _release(hold_id, authorization, tenant):
         """
@@ -860,3 +925,90 @@ class GroupBookingCreateView(APIView):
             logger.warning("releasing group hold %s answered %s", hold_id, code)
             return None
         return body.get("released")
+
+
+# ------------------------------------------------------------ read and cancel
+
+
+def _account_names(user_ids):
+    """{user_id: full_name} for the accounts in a party, for display."""
+    wanted = []
+    for raw in user_ids:
+        try:
+            wanted.append(uuid.UUID(str(raw)))
+        except (TypeError, ValueError):
+            continue
+    if not wanted:
+        return {}
+    return {
+        str(pk): name
+        for pk, name in ConsumerAccount.objects.filter(id__in=wanted).values_list("id", "full_name")
+    }
+
+
+def _stored_party(body):
+    """
+    A party booking-api has stored, as the app reads it: the salon card, the
+    salon's own clock, and the account names booking-api does not keep.
+    """
+    ref = body.get("salon_id")
+    card = salon_cards_for_refs([ref]).get(ref) if isinstance(ref, str) else None
+    # The card carries the salon's own zone, so no second lookup.
+    tz = timezones.resolve(card.get("timezone"), card["id"]) if card else None
+    names = _account_names([m.get("user_id") for m in body.get("members") or []])
+    out = gt.present_group(body, salon_id=card["id"] if card else None, tz=tz, names=names)
+    out["salon"] = _salon_card(card, full=True)
+    return out
+
+
+def read_group_response(request, group_id):
+    """
+    GET /api/v1/booking/<id> for a party (GROUP_BOOKING_V2). Called by
+    BookingDetailView when the id is not a single booking's.
+    """
+    try:
+        code, body = read_group_booking(
+            group_id, authorization=request.META.get("HTTP_AUTHORIZATION", "")
+        )
+    except BookingApiUnavailable as exc:
+        raise BookingApiDown() from exc
+    if code != status.HTTP_200_OK or not isinstance(body, dict):
+        return Response(body, status=code)
+    return Response(_stored_party(body))
+
+
+@extend_schema(
+    summary="Cancel a whole party",
+    description=(
+        "Behind GROUP_BOOKING_V2. The booker only: every member is cancelled "
+        "together, or, if one cannot be (already checked in, say), none is "
+        "and the answer is 409 `cannot_cancel`. Sending it again after a "
+        "part-way failure finishes the job. Answers with the party, read "
+        "back. A single booking's id is 404 here."
+    ),
+    request=None,
+    responses={
+        200: OpenApiResponse(description="Cancelled. The party."),
+        404: OpenApiResponse(response=_OUR_ENVELOPE, description="No such party, or not the booker."),
+        409: OpenApiResponse(response=_OUR_ENVELOPE, description="`cannot_cancel`: nothing was cancelled."),
+        503: OpenApiResponse(response=_OUR_ENVELOPE, description="booking-api unreachable."),
+    },
+)
+class GroupBookingCancelView(APIView):
+    """POST /api/v1/booking/<id>/cancel"""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, booking_id):
+        if not settings.GROUP_BOOKING_V2:
+            raise Http404("Not found")
+        try:
+            code, body = cancel_group_booking(
+                booking_id, authorization=request.META.get("HTTP_AUTHORIZATION", "")
+            )
+        except BookingApiUnavailable as exc:
+            raise BookingApiDown() from exc
+        if code != status.HTTP_200_OK or not isinstance(body, dict):
+            return Response(body, status=code)
+        return Response(_stored_party(body))
+

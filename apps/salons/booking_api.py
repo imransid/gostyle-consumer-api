@@ -382,6 +382,51 @@ def release_group_hold(hold_id, *, authorization, tenant_id=None):
     )
 
 
+def create_group_booking(body, *, authorization, idempotency_key=None, tenant_id=None):
+    """
+    POST /v1/mobile-booking/group -- the whole party in one call, paid at the
+    salon. Behind GROUP_BOOKING_V2 here and MOBILE_GROUP_BOOKING there.
+
+    The same Idempotency-Key rule as POST /booking: the same party sent again
+    is answered with the party already booked, not a second one.
+    Returns (status, parsed body) as given.
+    """
+    headers = _group_headers(authorization, tenant_id)
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    return _send("POST", "/v1/mobile-booking/group", headers=headers, body=_encode(body))
+
+
+def read_group_booking(group_id, *, authorization, tenant_id=None):
+    """
+    GET /v1/mobile-booking/group/<id> -- a party read back as one booking.
+
+    booking-api knows the party's own tenant, so none is needed. 404 for a
+    party the caller may not see. Returns (status, parsed body) as given.
+    """
+    headers = {"Authorization": authorization}
+    if tenant_id:
+        headers["X-Tenant-Id"] = str(tenant_id)
+    return _send(
+        "GET", f"/v1/mobile-booking/group/{urllib.parse.quote(str(group_id), safe='')}",
+        headers=headers,
+    )
+
+
+def cancel_group_booking(group_id, *, authorization, tenant_id=None):
+    """
+    POST /v1/mobile-booking/group/<id>/cancel -- every member, together. The
+    booker only; 404 for anyone else. Returns (status, parsed body) as given.
+    """
+    headers = {"Authorization": authorization}
+    if tenant_id:
+        headers["X-Tenant-Id"] = str(tenant_id)
+    return _send(
+        "POST", f"/v1/mobile-booking/group/{urllib.parse.quote(str(group_id), safe='')}/cancel",
+        headers=headers,
+    )
+
+
 def _group_headers(authorization, tenant_id):
     headers = {"Content-Type": "application/json", "Authorization": authorization}
     if tenant_id:
@@ -390,5 +435,6 @@ def _group_headers(authorization, tenant_id):
 
 
 def _encode(body):
-    """A body this service built. Compact, and no floats: ids and minutes only."""
+    """A body this service built. Compact. The mobile group body carries the
+    app's own money figures, as numbers, for booking-api to check."""
     return json.dumps(body, separators=(",", ":")).encode()
