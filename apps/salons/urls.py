@@ -49,4 +49,5 @@ urlpatterns = [
     path("booking/<uuid:booking_id>", BookingDetailView.as_view(), name="booking-detail"),
     path("booking/group-availability", group_views.GroupAvailabilityView.as_view(), name="booking-group-availability"),
     path("booking/group", group_views.GroupBookingCreateView.as_view(), name="booking-group"),
+    path("booking/<uuid:booking_id>/cancel", group_views.GroupBookingCancelView.as_view(), name="booking-cancel"),
 ]

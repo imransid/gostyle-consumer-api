@@ -146,6 +146,14 @@ BOOKING_API_URL = env("BOOKING_API_URL", default="http://gostyle-booking_api:385
 # A customer is waiting on this call, so it fails fast rather than holding a
 # gunicorn worker open. Creating a booking is one transaction over there.
 BOOKING_API_TIMEOUT = env.int("BOOKING_API_TIMEOUT", default=10)
+
+# Group bookings through booking-api's mobile route, POST
+# /v1/mobile-booking/group (docs/GROUP_BOOKING_PLAN.md): one call, the party
+# saved to pay at the salon, products allowed, read back by group id, shown
+# as GROUP in /bookings and cancelled together. OFF keeps the old hold and
+# confirm path exactly as it was. Turn it on only where booking-api runs with
+# MOBILE_GROUP_BOOKING=true, or every group booking answers 404.
+GROUP_BOOKING_V2 = env.bool("GROUP_BOOKING_V2", default=False)
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",

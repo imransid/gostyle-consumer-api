@@ -4,6 +4,7 @@ import logging
 import urllib.parse
 import uuid
 from datetime import datetime, time, timedelta, timezone as dt_timezone
+from django.conf import settings
 from django.db.models import F
 from django.http import Http404
 from drf_spectacular.utils import (
@@ -2054,6 +2055,14 @@ class BookingDetailView(APIView):
             )
         except BookingApiUnavailable as exc:
             raise BookingApiDown() from exc
+
+        if upstream_status == 404 and settings.GROUP_BOOKING_V2:
+            # Not a single booking: a party's id is its group's
+            # (GROUP_BOOKING_V2). Imported here, as group_views imports this
+            # module.
+            from .group_views import read_group_response
+
+            return read_group_response(request, booking_id)
 
         # THE SALON, FILLED IN HERE. booking-api stores a branch id and
         # cannot name a salon (its booking-list.md §9); this service reads
