@@ -15,6 +15,19 @@ for line. **Read §8 before building the payment and pass screens.** A group
 booking carries less than the spec asks for, and the app must not promise
 the customer anything on that list.
 
+
+> **GROUP_BOOKING_V2 (off by default).** With it on, §4 to §8 below are out of
+> date: the party is booked in ONE call to booking-api's mobile route, saved to
+> pay at the salon (`CONFIRMED_BY_SALON`, `PAY_AFTER_CHECK_IN`, no
+> `expires_at`), with **products**, the **50% child price**, **VAT** and a
+> **deposit figure**; `members[].id` and one `pass_qr_code` are filled in;
+> `GET /api/v1/booking/<group id>` reads the party back; `/bookings` shows it
+> as one `booking_type: "GROUP"` row with `member_count`; and
+> `POST /api/v1/booking/<group id>/cancel` cancels every member together
+> (the booker only). Paying in the app is another team's work and is not
+> built. See `docs/GROUP_BOOKING_PLAN.md` (Status) and booking-api
+> `docs/api/MOBILE.md`, "Mobile group booking".
+
 ---
 
 ## 1. Endpoints
@@ -50,24 +63,21 @@ GET /user/lookup?contact=%2B971501234567
 then read as a local one. A UAE number fails as `invalid_contact`; it is
 never matched to someone else.
 
-### `200 OK`: an account matched
+### `200 OK`, found or not
 
 ```json
-{ "id": "3f0c…", "name": "Rana Hassan", "image": "https://cdn.gostyle.uk/users/rana.jpg" }
+{ "found": true, "user": { "id": "3f0c…", "name": "Rana Hassan", "image": "https://cdn.gostyle.uk/users/rana.jpg" } }
 ```
 
-Send `id` as the member's `id` with `kind: "registered"` (§4). Show `name` in
-place of what was typed. `image` is `null` when the account has no photo;
-show initials.
+```json
+{ "found": false, "user": null }
+```
 
-### `404`: nobody
+Send `user.id` as the member's `id` with `kind: "registered"` (§4). Show
+`user.name` in place of what was typed. `user.image` is `null` when the
+account has no photo; show initials. On `found: false`, offer "Add as Guest".
 
-The standard error body, `code: "not_found"`. **This is where the spec
-differs.** The spec asks for `200 {"found": false, "user": null}`. This
-endpoint answers `404`, and a match is the object above rather than
-`{found, user}`. On a `404`, offer "Add as Guest".
-
-The `404` is **identical, byte for byte**, for each of these:
+`found: false` is **identical, byte for byte**, for each of these:
 - no account
 - an account that never proved this contact
 - an unverified account
