@@ -173,6 +173,12 @@ class UserLookupResultSerializer(serializers.Serializer):
     name = serializers.CharField(source="full_name")
     image = serializers.URLField()
 
+class UserLookupResponseSerializer(serializers.Serializer):
+    """The lookup's answer: found, and the member or null."""
+
+    found = serializers.BooleanField()
+    user = UserLookupResultSerializer(allow_null=True)
+
 
 # --- response shapes (for OpenAPI docs) ---------------------------------
 class TokenPairSerializer(serializers.Serializer):
