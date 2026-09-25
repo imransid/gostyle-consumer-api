@@ -125,6 +125,7 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "GoStyle Customer API",
     "VERSION": "0.1.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    "SWAGGER_UI_SETTINGS": {"persistAuthorization": True},
 }
 
 # Cache / rate-limit store. The OTP flow enforces its limits here before it
