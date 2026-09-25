@@ -24,6 +24,8 @@ class IsVerified(BasePermission):
       * anything touching payments, deposits or refunds
       * writing a review, which is published under the member's name
       * registering a push device
+      * looking up another member by phone or email (`GET /user/lookup`),
+        whose cap is per account and so only holds if accounts cost something
 
     WHEN NOT TO APPLY IT
     --------------------

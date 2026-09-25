@@ -135,6 +135,45 @@ class LogoutSerializer(serializers.Serializer):
     refresh = serializers.CharField()
 
 
+class UserLookupSerializer(serializers.Serializer):
+    """`?contact=`: one email or one phone, told apart by the "@".
+
+    A query string reaches the access logs, so nginx and gunicorn both blank
+    it for this one path (nginx/log-format-json.conf,
+    config/gunicorn_logging.py). A "+" must arrive as %2B: a bare one
+    decodes to a space, the number is then read as a national one, and a
+    UAE number fails as invalid_contact rather than matching anyone.
+    """
+
+    contact = serializers.CharField(max_length=254)
+
+    def validate(self, attrs):
+        contact = attrs.pop("contact")
+        kind = DestinationType.EMAIL if "@" in contact else DestinationType.PHONE
+        try:
+            attrs["destination"] = normalize_destination(contact, kind)
+        except InvalidDestination:
+            # One wording for both kinds: saying "not a valid phone" would
+            # tell the caller which of the two it was read as.
+            raise serializers.ValidationError({"contact": [serializers.ErrorDetail(
+                "Enter a valid email address or phone number.",
+                code="invalid_contact",
+            )]})
+        attrs["destination_type"] = kind
+        return attrs
+
+
+class UserLookupResultSerializer(serializers.Serializer):
+    """Everything a lookup reveals about a member. Deliberately not
+    ProfileSerializer, which carries phone, email and verification dates: the
+    caller learns who the contact belongs to and nothing else about it.
+    """
+
+    id = serializers.UUIDField()
+    name = serializers.CharField(source="full_name")
+    image = serializers.URLField()
+
+
 # --- response shapes (for OpenAPI docs) ---------------------------------
 class TokenPairSerializer(serializers.Serializer):
     access = serializers.CharField()

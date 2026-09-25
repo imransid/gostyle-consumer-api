@@ -1273,9 +1273,17 @@ def service_timing_rows(storefront, service_ids, branch_id=None):
     Only services this salon really offers come back, so an id from another
     salon contributes no duration and no stylist — an empty answer rather than
     an error, which is what this endpoint promises for a bad service id.
+
+    `name` and `price_minor` (and `branch_price_minor`, where branch prices
+    are on) are the figures the services tab shows, for a caller that has to
+    name and price what it read the timing of.
     """
     if not service_ids:
         return []
+
+    fields = ["id", "name", "price_minor", "duration_minutes", "stage_minutes", "lead_time_minutes"]
+    if BRANCH_AVAILABILITY_ENABLED:
+        fields.append("branch_price_minor")
 
     stages = ServiceStage.objects.filter(service_id=OuterRef("pk")).values(
         "service_id"
@@ -1291,7 +1299,7 @@ def service_timing_rows(storefront, service_ids, branch_id=None):
         salon_services(storefront, branch_id)
         .filter(id__in=list(service_ids))
         .annotate(stage_minutes=Subquery(stages, output_field=IntegerField()))
-        .values("id", "duration_minutes", "stage_minutes", "lead_time_minutes")
+        .values(*fields)
     )
 
 

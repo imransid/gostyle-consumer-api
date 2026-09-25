@@ -1,4 +1,4 @@
-"""Redis-backed rate limits for the OTP flow.
+"""Redis-backed rate limits for the OTP flow and the user lookup.
 
 These run in the shared cache (Redis in production, local memory in dev/tests)
 and are checked before any Postgres work so a flood never reaches the database.
@@ -19,6 +19,9 @@ PER_IP_HOURLY = 20
 
 # verify_otp limits.
 VERIFY_PER_IP_HOURLY = 20
+
+# user lookup limits.
+LOOKUP_PER_ACCOUNT_DAILY = 20
 
 
 def _too_generic():
@@ -63,3 +66,10 @@ def enforce_request_otp(destination, purpose, ip):
 def enforce_verify_otp(ip):
     if ip:
         _bump(f"otpverify:ip:hour:{ip}", VERIFY_PER_IP_HOURLY, HOUR)
+
+
+def enforce_user_lookup(account_id):
+    # Keyed on the caller's account, never the IP. The endpoint is IsVerified,
+    # so an account costs a proven phone or email; an IP costs nothing to
+    # change and is shared by everyone behind the same carrier NAT.
+    _bump(f"lookup:acct:day:{account_id}", LOOKUP_PER_ACCOUNT_DAILY, DAY)

@@ -266,3 +266,129 @@ def _parse(raw, status, url):
             extra={"booking_api_status": status, "booking_api_url": url},
         )
         raise BookingApiUnavailable("booking-api did not answer with JSON") from exc
+
+
+# ------------------------------------------------------------ group bookings
+#
+# The engine's party routes. Unlike create_booking, these send a body this
+# service BUILT (group_translate.py) rather than bytes the app sent, so they
+# take a dict and encode it here. booking-api's group routes read no
+# Idempotency-Key, so none is sent: the pair of calls is made idempotent on
+# this side instead (group_views.py).
+
+
+def engine_clock(*, authorization, tenant_id=None, branch_id=None):
+    """
+    booking-api's clock and trading day, from GET /v1/bookings/settings.
+
+    Returns a group_translate.EngineClock: the fixed UTC offset every branch
+    runs on over there, and the minutes of its day it will plan at all.
+
+    READ, NEVER COPIED. The offset is +06:00 today and nothing here may
+    assume it: the day booking-api moves a branch, the conversion follows on
+    the next request. And NEVER GUESSED: an answer without all three numbers
+    raises, because a wrong offset books a party hours away from the time
+    the customer chose, and says nothing while doing it.
+
+    Behind booking-api's auth guard, so the caller's own token goes with it,
+    exactly as it does for /busy.
+    """
+    from .group_translate import EngineClock
+
+    headers = {"Authorization": authorization}
+    if tenant_id:
+        headers["X-Tenant-Id"] = str(tenant_id)
+
+    path = "/v1/bookings/settings"
+    if branch_id:
+        path = f"{path}?{urllib.parse.urlencode({'branchId': str(branch_id)})}"
+
+    status, body = _send("GET", path, headers=headers)
+
+    branch = (body or {}).get("branch") if isinstance(body, dict) else None
+    window = (body or {}).get("tradingWindow") if isinstance(body, dict) else None
+    numbers = (
+        (branch or {}).get("utcOffsetMinutes"),
+        (window or {}).get("fromMin"),
+        (window or {}).get("toMin"),
+    )
+    if status != 200 or not all(isinstance(n, int) and not isinstance(n, bool) for n in numbers):
+        # The status is in the message for the same reason as in
+        # busy_intervals: a 401, a 404 and a missing field are three fixes.
+        raise BookingApiUnavailable(
+            f"booking-api answered {status} for its settings, without a usable clock"
+        )
+    return EngineClock(*numbers)
+
+
+def plan_group(body, *, authorization, tenant_id=None):
+    """
+    POST /v1/bookings/availability/group, with `targetMins`: up to 24 starts
+    in one call, answered as `{starts: [...]}` in the order asked.
+
+    Holds nothing. Returns (status, parsed body) as given.
+    """
+    return _send(
+        "POST", "/v1/bookings/availability/group",
+        headers=_group_headers(authorization, tenant_id),
+        body=_encode(body),
+    )
+
+
+def hold_group(body, *, authorization, tenant_id=None):
+    """
+    POST /v1/groups/holds -- every lane of the party, or none of them.
+
+    Returns (status, parsed body) as given: 201 with `groupId`, `holdId` and
+    one lane per participant, or booking-api's refusal (409 when the party
+    does not fit, with the reason in words).
+    """
+    return _send(
+        "POST", "/v1/groups/holds",
+        headers=_group_headers(authorization, tenant_id),
+        body=_encode(body),
+    )
+
+
+def confirm_group(group_id, body, *, authorization, tenant_id=None):
+    """
+    POST /v1/groups/<id>/confirm -- the held party becomes one booking each.
+
+    booking-api re-plans on confirm, and writes nothing unless the whole
+    party still fits. Returns (status, parsed body) as given.
+    """
+    return _send(
+        "POST", f"/v1/groups/{urllib.parse.quote(str(group_id), safe='')}/confirm",
+        headers=_group_headers(authorization, tenant_id),
+        body=_encode(body),
+    )
+
+
+def release_group_hold(hold_id, *, authorization, tenant_id=None):
+    """
+    DELETE /v1/groups/holds/<id> -- give the party's lanes back now.
+
+    Idempotent over there and never a 404: `{released: true}` when this call
+    freed the hold, `{released: false}` when it was already gone -- which,
+    moments after placing it, means a confirm got to it first.
+    Returns (status, parsed body) as given.
+    """
+    headers = {"Authorization": authorization}
+    if tenant_id:
+        headers["X-Tenant-Id"] = str(tenant_id)
+    return _send(
+        "DELETE", f"/v1/groups/holds/{urllib.parse.quote(str(hold_id), safe='')}",
+        headers=headers,
+    )
+
+
+def _group_headers(authorization, tenant_id):
+    headers = {"Content-Type": "application/json", "Authorization": authorization}
+    if tenant_id:
+        headers["X-Tenant-Id"] = str(tenant_id)
+    return headers
+
+
+def _encode(body):
+    """A body this service built. Compact, and no floats: ids and minutes only."""
+    return json.dumps(body, separators=(",", ":")).encode()

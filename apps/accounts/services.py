@@ -41,6 +41,34 @@ def contact_verified(user, destination_type):
     return stamp is not None
 
 
+def lookup_account(caller, destination, destination_type):
+    """Find another member by phone or email. Returns {id, full_name, image}
+    or None.
+
+    The caller's daily allowance is charged first, and nothing is refunded, so
+    a hit and a miss cost the same and the counter cannot be read as an answer.
+
+    Every reason not to return a member lives in the one WHERE clause below:
+    no account, an account that never proved this contact, a disabled account.
+    All of them come back as the same None, so the view has nothing to tell
+    apart. A new exclusion belongs in that filter, not in an `if` after it.
+    """
+    ratelimit.enforce_user_lookup(caller.pk)
+
+    return (
+        ConsumerAccount.objects.filter(
+            **{
+                _account_field(destination_type): destination,
+                f"{_verified_field(destination_type)}__isnull": False,
+            },
+            account_verified=True,
+            is_active=True,
+        )
+        .values("id", "full_name", "image")
+        .first()
+    )
+
+
 def tokens_for(user):
     refresh = RefreshToken.for_user(user)
     return {"access": str(refresh.access_token), "refresh": str(refresh)}
