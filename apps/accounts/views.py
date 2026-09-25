@@ -36,6 +36,7 @@ from .serializers import (
     RegisterResponseSerializer,
     RegisterSerializer,
     TokenPairSerializer,
+    UserLookupResponseSerializer,
     UserLookupResultSerializer,
     UserLookupSerializer,
 )
@@ -297,8 +298,8 @@ class UserLookupView(APIView):
     """
     GET /api/v1/user/lookup?contact=<email or E.164 phone>
 
-    Find a member by phone or email: 200 with {id, name, image}, or 404 with
-    the standard error body.
+    Find a member by phone or email: 200 with {found: true, user: {id, name,
+    image}}, or 200 with {found: false, user: null}.
 
     A GET, so the contact is in the URL. nginx and gunicorn both drop the
     query from their access logs for this path (nginx/log-format-json.conf,
@@ -329,13 +330,7 @@ class UserLookupView(APIView):
             ),
         ],
         responses={
-            200: UserLookupResultSerializer,
-            404: OpenApiResponse(
-                description=(
-                    "No verified member has this contact. Identical whether "
-                    "the account is missing or unverified."
-                ),
-            ),
+            200: UserLookupResponseSerializer,
             429: OpenApiResponse(
                 description=(
                     f"More than {ratelimit.LOOKUP_PER_ACCOUNT_DAILY} lookups "
@@ -354,5 +349,8 @@ class UserLookupView(APIView):
             destination_type=s.validated_data["destination_type"],
         )
         if match is None:
-            raise NotFound()
-        return Response(UserLookupResultSerializer(match).data, status=status.HTTP_200_OK)
+            return Response({"found": False, "user": None}, status=status.HTTP_200_OK)
+        return Response(
+            {"found": True, "user": UserLookupResultSerializer(match).data},
+            status=status.HTTP_200_OK,
+        )

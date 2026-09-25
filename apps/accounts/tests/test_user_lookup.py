@@ -4,8 +4,8 @@ Tests for `GET /user/lookup?contact=`: find a member by phone or email.
 Three properties matter more than the happy path, and each has tests that
 should fail loudly if it breaks:
 
-  * An unverified account and no account at all are the same 404, byte for
-    byte. Otherwise the endpoint tells anyone who has signed up.
+  * An unverified account and no account at all are the same `found: false`,
+    byte for byte. Otherwise the endpoint tells anyone who has signed up.
   * The cap is 20 a day per CALLER ACCOUNT, charged after validation and
     before the query. Hits and misses cost the same; the IP plays no part.
   * The contact never comes back in the response, whatever the outcome.
@@ -30,6 +30,8 @@ IMAGE = "https://cdn.example.com/kevin.jpg"
 
 IP_A = "203.0.113.10"
 IP_B = "198.51.100.20"
+
+NOT_FOUND = {"found": False, "user": None}
 
 
 class UserLookupTestCase(TestCase):
@@ -73,9 +75,10 @@ class UserLookupTestCase(TestCase):
         )
 
     def spend_allowance(self, contact, ip=IP_A):
+        # Hits and misses are both 200 now, so anything else is a failure.
         for i in range(LIMIT):
             resp = self.lookup(contact, ip=ip)
-            self.assertIn(resp.status_code, (200, 404), f"call {i + 1}: {resp.content}")
+            self.assertEqual(resp.status_code, 200, f"call {i + 1}: {resp.content}")
 
 
 class LookupAnswerTests(UserLookupTestCase):
@@ -85,8 +88,22 @@ class LookupAnswerTests(UserLookupTestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(
             resp.json(),
-            {"id": str(self.target.id), "name": "Kevin Rogers", "image": IMAGE},
+            {
+                "found": True,
+                "user": {
+                    "id": str(self.target.id),
+                    "name": "Kevin Rogers",
+                    "image": IMAGE,
+                },
+            },
         )
+
+    def test_a_miss_is_200_with_found_false(self):
+        """No match is not an error: the app offers "Add as Guest" instead."""
+        resp = self.lookup(MISSING_PHONE)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), NOT_FOUND)
 
     def test_an_unverified_account_and_no_account_answer_identically(self):
         """The property the endpoint exists to keep. Same status, same bytes."""
@@ -96,12 +113,12 @@ class LookupAnswerTests(UserLookupTestCase):
         unverified = self.lookup(unverified_phone)
         missing = self.lookup(MISSING_PHONE)
 
-        self.assertEqual(unverified.status_code, 404)
-        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(unverified.status_code, 200)
+        self.assertEqual(missing.status_code, 200)
         self.assertEqual(unverified.content, missing.content)
-        self.assertEqual(missing.json()["code"], "not_found")
+        self.assertEqual(missing.json(), NOT_FOUND)
 
-    def test_a_disabled_account_and_an_unproved_contact_are_the_same_404(self):
+    def test_a_disabled_account_and_an_unproved_contact_are_the_same_miss(self):
         """The other exclusions in the WHERE fold into the same answer."""
         self.make_account(phone="+8801733333333", is_active=False)
         # Verified by email; the phone on file was never proved.
@@ -116,7 +133,7 @@ class LookupAnswerTests(UserLookupTestCase):
         for phone in ("+8801733333333", "+8801744444444"):
             with self.subTest(phone=phone):
                 resp = self.lookup(phone)
-                self.assertEqual(resp.status_code, 404)
+                self.assertEqual(resp.status_code, 200)
                 self.assertEqual(resp.content, missing.content)
 
     def test_a_mixed_case_email_matches(self):
@@ -125,13 +142,13 @@ class LookupAnswerTests(UserLookupTestCase):
         resp = self.lookup("  Kevin@Example.COM ")
 
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json()["id"], str(member.id))
+        self.assertEqual(resp.json()["user"]["id"], str(member.id))
 
     def test_a_national_bd_number_matches_its_e164_row(self):
         resp = self.lookup("01712345678")
 
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json()["id"], str(self.target.id))
+        self.assertEqual(resp.json()["user"]["id"], str(self.target.id))
 
     def test_a_uae_number_keeps_its_plus(self):
         member = self.make_account(phone="+971501234567")
@@ -139,7 +156,7 @@ class LookupAnswerTests(UserLookupTestCase):
         resp = self.lookup("+971 50 123 4567")
 
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json()["id"], str(member.id))
+        self.assertEqual(resp.json()["user"]["id"], str(member.id))
 
     def test_an_unencoded_plus_is_refused_never_read_as_someone_else(self):
         """A bare "+" in a query string decodes to a space. Nothing guesses it
