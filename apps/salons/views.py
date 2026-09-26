@@ -2421,8 +2421,15 @@ class BookingListView(APIView):
         # needing to know which timezone the salon is in.
         now = datetime.now(dt_timezone.utc)
 
-        for row in results:
+        # The Recurring tab (step 5) lists whole routines, not visits: each
+        # row goes on the salon's clock like its hub, and gets no
+        # can_cancel or can_reschedule, which are per visit (in the hub).
+        routines = request.query_params.get("filter") == "recurring"
+        for i, row in enumerate(results):
             card = cards.get(row.get("salon_id"))
+            if routines:
+                results[i] = self._routine_row(row, card)
+                continue
             row["salon"] = _salon_card(card, full=False)
             # One window answers both today. They are separate fields because
             # they are separate questions, and the day the salon publishes a
@@ -2443,6 +2450,25 @@ class BookingListView(APIView):
             "counts": body.get("counts") or {},
             "results": results,
         }
+
+    @staticmethod
+    def _routine_row(row, card):
+        """
+        One routine of the Recurring tab, as its hub shows it: every time on
+        the salon's own clock, and the salon's card. Imported here, not at
+        the top: the routine views import this module.
+        """
+        from . import series_translate as st
+
+        tz = timezones.resolve(card.get("timezone"), card["id"]) if card else None
+        out = st.present_row(
+            row,
+            salon_id=card["id"] if card else None,
+            tz=tz,
+            engine_tz=st.engine_zone_of(row),
+        )
+        out["salon"] = _salon_card(card, full=False)
+        return out
 
     @staticmethod
     def _page_url(request, page):

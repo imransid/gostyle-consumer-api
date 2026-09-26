@@ -279,6 +279,43 @@ def present_hub(answer, *, salon_id, tz, engine_tz):
     return out
 
 
+def _row_engine_day(row):
+    """
+    booking-api's day to convert a list row's HH:MM on. A row has no
+    sessions: its next visit's day, or, with none (an ended routine), the
+    day it was made.
+    """
+    nxt = row.get("next_session")
+    if isinstance(nxt, dict) and isinstance(nxt.get("date"), str):
+        return nxt["date"]
+    stamp = row.get("created_at")
+    return stamp[:10] if isinstance(stamp, str) and len(stamp) >= 10 else None
+
+
+def present_row(row, *, salon_id, tz, engine_tz):
+    """
+    One Recurring tab row (step 5) on the salon's clock, converted as
+    present_hub converts the hub it opens. A row carries no sessions, so
+    none are added.
+    """
+    out = dict(row)
+    if salon_id is not None:
+        out["salon_id"] = str(salon_id)
+    if tz is None:
+        return out
+    hhmm, day = row.get("time"), _row_engine_day(row)
+    if isinstance(hhmm, str) and day is not None and engine_tz is not None:
+        try:
+            out["time"] = from_engine_time(day, hhmm, tz, engine_tz)[1]
+        except ValueError:
+            pass
+    if isinstance(row.get("next_session"), dict):
+        out["next_session"] = _session(row["next_session"], tz)
+    if "created_at" in out:
+        out["created_at"] = on_clock(out["created_at"], tz)
+    return out
+
+
 
 # ------------------------------------------------------------ the salon's hours
 #

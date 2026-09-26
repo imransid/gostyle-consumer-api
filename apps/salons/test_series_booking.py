@@ -738,3 +738,102 @@ class TranslateTests(SimpleTestCase):
 
     def test_a_clock_is_the_engines_numbers(self):
         self.assertEqual(CLOCK, EngineClock(offset_min=360, from_min=600, to_min=1320))
+
+
+# ------------------------------------------------------------ step 5: the Recurring tab
+
+from datetime import timedelta as _td, timezone as _tz  # noqa: E402
+from zoneinfo import ZoneInfo  # noqa: E402
+
+from rest_framework.test import APIRequestFactory, force_authenticate  # noqa: E402
+
+from apps.salons import series_translate as _st  # noqa: E402
+from apps.salons.views import BookingListView  # noqa: E402
+
+ENGINE = _tz(_td(hours=6))
+
+ROUTINE_ROW = {
+    "id": "c07d1528-2d6c-4d45-9494-e2f13e3cc79f",
+    "booking_type": "ROUTINE",
+    "salon_id": "263e7e84-b93d-4cb3-bc38-20bb0e6c58a6",
+    "status": "ACTIVE",
+    "frequency": "WEEKLY",
+    "time": "13:00",
+    "stylist": {"id": "s", "name": "Ethan Walker"},
+    "services": [{"id": "f", "name": "Hair Cut"}],
+    "payment_plan": "PAY_AT_SALON",
+    "counts": {"total": 2, "done": 0, "remaining": 2, "skipped": 0, "cancelled": 0},
+    "next_session": {
+        "id": "o1",
+        "index": 0,
+        "date": "2026-10-20",
+        "start_time": "2026-10-20T13:00:00+06:00",
+        "end_time": "2026-10-20T13:45:00+06:00",
+        "state": "SCHEDULED",
+    },
+    "created_at": "2026-09-26T19:05:19+06:00",
+}
+
+
+class RoutineRowTests(SimpleTestCase):
+    """A Recurring tab row on the salon's clock, like its hub (step 5)."""
+
+    def test_every_time_moves_to_the_salons_clock(self):
+        # booking-api's 13:00 (+06:00) is 11:00 in Dubai (+04:00).
+        out = _st.present_row(
+            dict(ROUTINE_ROW), salon_id="salon-1", tz=ZoneInfo("Asia/Dubai"), engine_tz=ENGINE
+        )
+        self.assertEqual(out["time"], "11:00")
+        self.assertEqual(out["next_session"]["start_time"], "2026-10-20T11:00:00+04:00")
+        self.assertEqual(out["created_at"], "2026-09-26T17:05:19+04:00")
+        self.assertEqual(out["salon_id"], "salon-1")
+
+    def test_a_row_gets_no_sessions_list(self):
+        out = _st.present_row(
+            dict(ROUTINE_ROW), salon_id=None, tz=ZoneInfo("Asia/Dubai"), engine_tz=ENGINE
+        )
+        self.assertNotIn("sessions", out)
+
+    def test_an_ended_routine_converts_its_time_on_the_day_it_was_made(self):
+        row = {**ROUTINE_ROW, "status": "ENDED", "next_session": None}
+        out = _st.present_row(row, salon_id=None, tz=ZoneInfo("Asia/Dubai"), engine_tz=ENGINE)
+        self.assertEqual(out["time"], "11:00")
+        self.assertIsNone(out["next_session"])
+
+    def test_without_the_salons_zone_the_row_is_left_as_it_is(self):
+        out = _st.present_row(dict(ROUTINE_ROW), salon_id=None, tz=None, engine_tz=ENGINE)
+        self.assertEqual(out, ROUTINE_ROW)
+
+
+class RecurringTabTests(SimpleTestCase):
+    """GET /api/v1/bookings?filter=recurring: whole routines, not visits."""
+
+    def get(self, page):
+        card = {**CARD, "timezone": "Asia/Dubai"}
+        request = APIRequestFactory().get("/api/v1/bookings", {"filter": "recurring"})
+        force_authenticate(request, user=mock.Mock(is_authenticated=True))
+        with mock.patch("apps.salons.views.list_bookings", return_value=(200, page)), \
+                mock.patch("apps.salons.views.salon_cards_for_refs", return_value={BRANCH: card}):
+            return BookingListView.as_view()(request), card
+
+    def page(self):
+        return {
+            "count": 1, "page": 1, "page_size": 20,
+            "counts": {"upcoming": 0, "recurring": 1, "archive": 0},
+            "results": [{**ROUTINE_ROW, "salon_id": BRANCH}],
+        }
+
+    def test_a_routine_row_is_on_the_salons_clock_with_its_salon(self):
+        response, card = self.get(self.page())
+        self.assertEqual(response.status_code, 200, response.data)
+        row = response.data["results"][0]
+        self.assertEqual(row["time"], "11:00")
+        self.assertEqual(row["salon_id"], str(card["id"]))
+        self.assertEqual(row["salon"]["name"], card["name"])
+        self.assertEqual(response.data["counts"]["recurring"], 1)
+
+    def test_a_routine_row_has_no_per_visit_buttons(self):
+        response, _ = self.get(self.page())
+        row = response.data["results"][0]
+        self.assertNotIn("can_cancel", row)
+        self.assertNotIn("can_reschedule", row)
