@@ -278,3 +278,106 @@ def present_hub(answer, *, salon_id, tz, engine_tz):
         out["created_at"] = on_clock(out["created_at"], tz)
     return out
 
+
+
+# ------------------------------------------------------------ the salon's hours
+#
+# booking-api knows its own diary and trading day, not the salon's published
+# hours or the services' notice. customer-api holds every session to the rule
+# a group start is held to (group_translate.start_refusal): `salon_closed`,
+# `too_soon`, `outside_hours`. The rule itself arrives as `refusal`: a
+# function from an aware instant to (code, message) or None, so this stays
+# pure and series_views owns the database reads behind it.
+
+
+def _instant(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo is not None else None
+
+
+def _at(day_iso, hhmm, tz):
+    minutes = hhmm_minutes(hhmm)
+    return datetime.combine(
+        date.fromisoformat(day_iso), time(minutes // 60, minutes % 60), tzinfo=tz
+    )
+
+
+def within_hours(preview, refusal, tz):
+    """
+    A preview (on the salon's clock already) with the salon's hours applied.
+
+      - a session outside the hours on its own day is not free, and says why
+        in `refusal` ({code, message});
+      - an alternative outside the hours is not offered;
+      - a free time is kept only if it is inside the hours on EVERY day of
+        the routine (they can differ by weekday);
+      - all_free is worked out again.
+
+    A session booking-api already found busy stays busy; this only ever
+    takes a session away, never gives one back.
+    """
+    out = dict(preview)
+    sessions = []
+    for s in preview.get("sessions") or []:
+        s = dict(s)
+        start = _instant(s.get("start_time"))
+        why = refusal(start) if start is not None else None
+        if why is not None:
+            s["free"] = False
+            s["refusal"] = {"code": why[0], "message": why[1]}
+        if isinstance(s.get("alternatives"), list):
+            s["alternatives"] = [
+                a for a in s["alternatives"]
+                if _instant(a.get("start_time")) is not None
+                and refusal(_instant(a.get("start_time"))) is None
+            ]
+        sessions.append(s)
+    out["sessions"] = sessions
+
+    if preview.get("all_free") is not None:
+        out["all_free"] = all(s.get("free") is not False for s in sessions)
+
+    times = preview.get("available_times")
+    if isinstance(times, list):
+        days = [s["date"] for s in sessions if isinstance(s.get("date"), str)]
+        kept = []
+        for hhmm in times:
+            try:
+                if all(refusal(_at(day, hhmm, tz)) is None for day in days):
+                    kept.append(hhmm)
+            except (TypeError, ValueError):
+                continue
+        out["available_times"] = kept
+    return out
+
+
+def first_outside_hours(preview, refusal, picks):
+    """
+    The first session (by its number) a create must refuse, as
+    (field, code, message), or None when every one is inside the hours.
+
+    The field names the pick when the customer chose that session's time
+    (`picks[j]`), else the session (`sessions[i]`), so the app knows which
+    choice to change.
+    """
+    picked = {p["index"]: j for j, p in enumerate(picks or [])}
+    ordered = sorted(
+        (s for s in preview.get("sessions") or [] if isinstance(s, dict)),
+        key=lambda s: s.get("index", 0),
+    )
+    for s in ordered:
+        start = _instant(s.get("start_time"))
+        if start is None:
+            continue
+        why = refusal(start)
+        if why is None:
+            continue
+        index = s.get("index", 0)
+        field = f"picks[{picked[index]}]" if index in picked else f"sessions[{index}]"
+        return field, why[0], why[1]
+    return None
