@@ -473,6 +473,22 @@ def read_series_booking(series_id, *, authorization, tenant_id=None):
     )
 
 
+def manage_series_booking(series_id, body, *, authorization, idempotency_key=None):
+    """
+    PATCH /v1/mobile-booking/series/<id> (step 6): a change to a routine,
+    SKIP for now. Returns (status, parsed body) as given: 200 with the hub,
+    or booking-api's refusal (404 for a routine the caller may not see).
+    The key goes only with a real change (the view decides), as for create.
+    """
+    headers = _group_headers(authorization, None)
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    return _send(
+        "PATCH", f"/v1/mobile-booking/series/{urllib.parse.quote(str(series_id), safe='')}",
+        headers=headers, body=_encode(body),
+    )
+
+
 def _group_headers(authorization, tenant_id):
     headers = {"Content-Type": "application/json", "Authorization": authorization}
     if tenant_id:
