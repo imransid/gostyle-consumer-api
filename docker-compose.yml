@@ -76,6 +76,16 @@ services:
       WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID}
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN}
       WHATSAPP_TEMPLATE_NAME: ${WHATSAPP_TEMPLATE_NAME}
+
+      # Feature switches. Off unless stack.env turns them on.
+      GROUP_BOOKING_V2: ${GROUP_BOOKING_V2:-False}
+      SERIES_BOOKING_V1: ${SERIES_BOOKING_V1:-False}
+
+      # File uploads to S3. The keys live in stack.env, never in git.
+      AWS_BUCKET_NAME: ${AWS_BUCKET_NAME:-}
+      AWS_REGION: ${AWS_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
     ports:
       # Platform API is on 3849. Sit next to it.
       - "3850:8000"
