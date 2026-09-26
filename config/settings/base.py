@@ -182,6 +182,18 @@ BOOKING_API_TIMEOUT = env.int("BOOKING_API_TIMEOUT", default=10)
 # confirm path exactly as it was. Turn it on only where booking-api runs with
 # MOBILE_GROUP_BOOKING=true, or every group booking answers 404.
 GROUP_BOOKING_V2 = env.bool("GROUP_BOOKING_V2", default=False)
+
+# Routine (series) bookings through booking-api's mobile routes, POST and GET
+# /v1/mobile-booking/series (docs/SERIES_BOOKING_AUDIT.md, E.3). OFF answers
+# 404 on /api/v1/booking/series and changes nothing else. Turn it on only
+# where booking-api runs with MOBILE_SERIES_BOOKING=true.
+SERIES_BOOKING_V1 = env.bool("SERIES_BOOKING_V1", default=False)
+
+# A routine create books up to 6 visits one by one, so it waits longer than
+# one booking does: measured 2.4 to 8.7 seconds for 6 visits on a laptop
+# (2026-09-26). Kept under gunicorn's --timeout 60, which would kill the
+# worker first and answer the app with nothing at all.
+SERIES_BOOKING_CREATE_TIMEOUT = env.int("SERIES_BOOKING_CREATE_TIMEOUT", default=45)
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",

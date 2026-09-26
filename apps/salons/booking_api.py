@@ -221,8 +221,13 @@ def get_branch_services(tenant_id, branch_id):
     return body if status == 200 else None
 
 
-def _send(method, path, *, headers=None, body=None):
-    """One request to booking-api. Returns (status, parsed body or None)."""
+def _send(method, path, *, headers=None, body=None, timeout=None):
+    """
+    One request to booking-api. Returns (status, parsed body or None).
+
+    `timeout` is for the one call that is slow by nature (a routine books up
+    to 6 visits one by one); every other call keeps BOOKING_API_TIMEOUT.
+    """
     url = settings.BOOKING_API_URL.rstrip("/") + path
     request = urllib.request.Request(
         url, data=body, headers=headers or {}, method=method
@@ -230,7 +235,7 @@ def _send(method, path, *, headers=None, body=None):
 
     try:
         with urllib.request.urlopen(
-            request, timeout=settings.BOOKING_API_TIMEOUT
+            request, timeout=timeout or settings.BOOKING_API_TIMEOUT
         ) as response:
             return response.status, _parse(response.read(), response.status, url)
     except urllib.error.HTTPError as exc:
@@ -423,6 +428,47 @@ def cancel_group_booking(group_id, *, authorization, tenant_id=None):
         headers["X-Tenant-Id"] = str(tenant_id)
     return _send(
         "POST", f"/v1/mobile-booking/group/{urllib.parse.quote(str(group_id), safe='')}/cancel",
+        headers=headers,
+    )
+
+
+# ------------------------------------------------------------ routines
+#
+# booking-api's mobile routine routes (docs/SERIES_BOOKING_AUDIT.md, E.3).
+# Behind SERIES_BOOKING_V1 here and MOBILE_SERIES_BOOKING there. The body is
+# one this service built (series_translate.py), with every time on
+# booking-api's clock.
+
+
+def create_series_booking(body, *, authorization, idempotency_key=None, tenant_id=None,
+                          timeout=None):
+    """
+    POST /v1/mobile-booking/series: a preview (`dry_run`) or the routine.
+
+    Returns (status, parsed body) as given: 200 for a preview, 201 for a
+    booked routine, or booking-api's refusal. The key goes only with a real
+    create (the view decides): a stored preview would be replayed as stale
+    availability, and would then refuse the create that followed it.
+    """
+    headers = _group_headers(authorization, tenant_id)
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    return _send(
+        "POST", "/v1/mobile-booking/series",
+        headers=headers, body=_encode(body), timeout=timeout,
+    )
+
+
+def read_series_booking(series_id, *, authorization, tenant_id=None):
+    """
+    GET /v1/mobile-booking/series/<id>: the routine hub. 404 for a routine
+    the caller may not see, never 403. Returns (status, parsed body) as given.
+    """
+    headers = {"Authorization": authorization}
+    if tenant_id:
+        headers["X-Tenant-Id"] = str(tenant_id)
+    return _send(
+        "GET", f"/v1/mobile-booking/series/{urllib.parse.quote(str(series_id), safe='')}",
         headers=headers,
     )
 
