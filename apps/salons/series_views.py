@@ -39,6 +39,7 @@ from . import series_translate as st
 from . import timezones
 from .booking_api import (
     BookingApiUnavailable,
+    cancel_series_booking,
     create_series_booking,
     manage_series_booking,
     read_series_booking,
@@ -516,3 +517,82 @@ class SeriesBookingDetailView(APIView):
         h, m = (int(x) for x in salon_time.split(":"))
         on_engine = datetime.combine(the_day, time(h, m), tzinfo=tz).astimezone(engine_tz)
         return on_engine.date().isoformat()
+
+
+class SeriesBookingCancelView(APIView):
+    """
+    POST /api/v1/booking/series/<id>/cancel (step 7): the customer ends their
+    routine. booking-api does the cancelling (each visit through its own
+    lifecycle, then the routine ends); this forwards the body as the app sent
+    it, and answers on the salon's clock.
+
+    The dry run's summary lists each visit by its id. Its date and time come
+    from the routine in the same answer, once _present_hub has put it on the
+    salon's clock, so times are converted in one place only.
+
+    A cancel is final, so a `dry_run` that is not exactly true or false is
+    refused before booking-api is asked anything: "true" as text must never
+    cancel a routine for real. The app's Idempotency-Key goes with a real
+    cancel only, and none is made up: a second cancel is simply refused
+    (cannot_cancel).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        summary="Cancel a routine",
+        description=(
+            "Behind SERIES_BOOKING_V1. Every visit still to come is cancelled "
+            "as the customer's own cancel, under the single booking's refund "
+            "rules (a visit less than 24 hours away is a late cancel), and the "
+            "routine ends. Optional `reason`: NOT_SATISFIED, TOO_EXPENSIVE, "
+            "MOVING or OTHER, else `invalid_cancel_reason`. `dry_run: true` "
+            "changes nothing and answers the refund summary (`visits_cancelled`, "
+            "`late_visits`, `paid`, `refund`, `kept`, and a line per visit with "
+            "its `date` and `start_time` on the salon's clock) plus the "
+            "`routine` as it is. Allowed while the hub shows `can.cancel`, else "
+            "`cannot_cancel`. Send an `Idempotency-Key` with a real cancel only. "
+            + _ENVELOPE_NOTE
+        ),
+        responses={
+            200: OpenApiResponse(
+                description="The routine, ended. With dry_run: the refund summary and the routine."
+            ),
+            404: OpenApiResponse(description="No such routine, not yours, or the flag is off."),
+            422: OpenApiResponse(
+                description="booking-api's envelope: cannot_cancel, invalid_cancel_reason; "
+                            "or invalid_dry_run."
+            ),
+            503: OpenApiResponse(response=_OUR_ENVELOPE, description="booking-api unreachable."),
+        },
+    )
+    def post(self, request, series_id):
+        if not settings.SERIES_BOOKING_V1:
+            raise Http404("Not found")
+        _json_only(request)
+        body = request.data if isinstance(request.data, dict) else {}
+        if "dry_run" in body and not isinstance(body["dry_run"], bool):
+            raise _refuse("dry_run", "dry_run is true or false.", "invalid_dry_run")
+        dry_run = body.get("dry_run") is True
+        try:
+            code, answer = cancel_series_booking(
+                series_id,
+                body,
+                authorization=request.META.get("HTTP_AUTHORIZATION", ""),
+                idempotency_key=None if dry_run else request.META.get("HTTP_IDEMPOTENCY_KEY"),
+            )
+        except BookingApiUnavailable as exc:
+            raise BookingApiDown() from exc
+        if code != status.HTTP_200_OK or not isinstance(answer, dict):
+            return Response(answer, status=code)
+        if not dry_run:
+            return Response(_present_hub(answer, st.engine_zone_of(answer)))
+        hub, summary = answer.get("routine"), answer.get("summary")
+        if not isinstance(hub, dict) or not isinstance(summary, dict):
+            return Response(answer, status=code)
+        routine = _present_hub(hub, st.engine_zone_of(hub))
+        return Response({
+            "dry_run": True,
+            "summary": st.present_cancel(summary, routine),
+            "routine": routine,
+        })
