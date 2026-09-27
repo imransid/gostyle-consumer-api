@@ -24,7 +24,7 @@ its own routes, so a single booking and a party answer exactly as before.
 """
 
 import logging
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 
 from django.conf import settings
 from django.http import Http404
@@ -56,7 +56,7 @@ from .group_views import (
     _validated,
 )
 from .selectors import salon_cards_for_refs
-from .series_serializers import SeriesBookingRequestSerializer
+from .series_serializers import _HHMM, SeriesBookingRequestSerializer
 from .views import _OUR_ENVELOPE, BookingApiDown, _idempotency_key, _open_span, _salon_card
 
 logger = logging.getLogger(__name__)
@@ -294,13 +294,14 @@ class SeriesBookingDetailView(APIView):
         return Response(_present_hub(body, st.engine_zone_of(body)))
 
     @extend_schema(
-        summary="Change a routine (SKIP for now)",
+        summary="Change a routine (SKIP and RESCHEDULE for now)",
         description=(
             "Behind SERIES_BOOKING_V1. `action: SKIP` with `session_ids`: each "
             "session is cancelled as the customer's own choice and shown as "
             "SKIPPED; the routine goes on. Only sessions still to come and "
             "outside the 24 hour lock. `dry_run: true` checks and changes "
-            "nothing. RESCHEDULE, EXTEND, PAUSE and RESUME answer "
+            "nothing. `action: RESCHEDULE` with `session_id`, `date` and `time` (the "
+            "salon's clock) moves one visit. EXTEND, PAUSE and RESUME answer "
             "`invalid_action` for now. Answers the whole routine, every time "
             "on the salon's own clock. Send an `Idempotency-Key` with a real "
             "change only. " + _ENVELOPE_NOTE
@@ -329,13 +330,18 @@ class SeriesBookingDetailView(APIView):
         if not settings.SERIES_BOOKING_V1:
             raise Http404("Not found")
         _json_only(request)
-        body = request.data if isinstance(request.data, dict) else {}
+        body = dict(request.data) if isinstance(request.data, dict) else {}
+        authorization = request.META.get("HTTP_AUTHORIZATION", "")
+        if body.get("action") == "RESCHEDULE":
+            early = self._reschedule_on_engine_clock(series_id, body, authorization)
+            if early is not None:
+                return early
         key = None if body.get("dry_run") is True else request.META.get("HTTP_IDEMPOTENCY_KEY")
         try:
             code, answer = manage_series_booking(
                 series_id,
                 body,
-                authorization=request.META.get("HTTP_AUTHORIZATION", ""),
+                authorization=authorization,
                 idempotency_key=key,
             )
         except BookingApiUnavailable as exc:
@@ -343,3 +349,58 @@ class SeriesBookingDetailView(APIView):
         if code != status.HTTP_200_OK or not isinstance(answer, dict):
             return Response(answer, status=code)
         return Response(_present_hub(answer, st.engine_zone_of(answer)))
+
+    @staticmethod
+    def _reschedule_on_engine_clock(series_id, body, authorization):
+        """
+        RESCHEDULE carries a day and a time on the SALON's clock. It is held
+        to the salon's own hours on that day and the services' notice, as a
+        create's sessions are (_Hours), then put on booking-api's clock in
+        `body`. A move outside the hours is refused here, before booking-api
+        is asked. A shape booking-api refuses anyway (not YYYY-MM-DD, not
+        HH:MM) is left for it to answer in its own words.
+
+        Returns a Response to send as it is (the routine could not be read),
+        or None to go on.
+        """
+        day, hhmm = body.get("date"), body.get("time")
+        if not isinstance(day, str) or not isinstance(hhmm, str) or not _HHMM.match(hhmm):
+            return None
+        try:
+            the_day = date.fromisoformat(day)
+        except ValueError:
+            return None
+
+        try:
+            code, hub = read_series_booking(series_id, authorization=authorization)
+        except BookingApiUnavailable as exc:
+            raise BookingApiDown() from exc
+        if code != status.HTTP_200_OK or not isinstance(hub, dict):
+            return Response(hub, status=code)
+
+        ref = hub.get("salon_id")
+        card = salon_cards_for_refs([ref]).get(ref) if isinstance(ref, str) else None
+        if card is None:
+            return None
+        salon, route = _salon_and_route(card["id"])
+        tz = timezones.resolve(salon.branch_timezone, salon.id)
+        clock = _clock(authorization, route)
+
+        service_ids = [
+            str(s["id"]) for s in hub.get("services") or [] if isinstance(s, dict) and s.get("id")
+        ]
+        visit = [{"service_ids": service_ids}]
+        rows = _service_rows(salon, visit, "services") if service_ids else {}
+        longest, lead = _party_timing(rows, visit) if rows else (0, 0)
+        hours = _Hours(salon, tz, clock, longest=longest, lead=lead, now=_now(tz))
+
+        h, m = (int(x) for x in hhmm.split(":"))
+        start = datetime.combine(the_day, time(h, m), tzinfo=tz)
+        why = hours.refusal(start)
+        if why is not None:
+            raise _refuse("time", why[1], why[0])
+
+        on_engine = start.astimezone(gt.engine_zone(clock))
+        body["date"] = on_engine.date().isoformat()
+        body["time"] = on_engine.strftime("%H:%M")
+        return None
