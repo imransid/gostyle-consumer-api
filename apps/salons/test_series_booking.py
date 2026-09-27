@@ -894,3 +894,62 @@ class SkipTests(SimpleTestCase):
         response, fake = self.patch({"action": "SKIP", "session_ids": ["o1"]})
         self.assertEqual(response.status_code, 404)
         fake.assert_not_called()
+
+
+# ------------------------------------------------------------ step 6: RESCHEDULE
+
+
+@override_settings(SERIES_BOOKING_V1=True)
+class RescheduleTests(Seams, SimpleTestCase):
+    """
+    PATCH /api/v1/booking/series/<id> with RESCHEDULE: held to the salon's
+    hours, then sent on booking-api's clock.
+    """
+
+    def patch_routine(self, body):
+        request = APIRequestFactory().patch(
+            f"/api/v1/booking/series/{SERIES_ID}", body, format="json"
+        )
+        force_authenticate(request, user=mock.Mock(is_authenticated=True))
+        return SeriesBookingDetailView.as_view()(request, series_id=SERIES_ID)
+
+    def move(self, time_="16:30"):
+        return {"action": "RESCHEDULE", "session_id": "o1", "date": "2026-10-13", "time": time_}
+
+    def test_a_move_is_sent_on_booking_apis_clock(self):
+        manage = mock.Mock(return_value=(200, json.loads(json.dumps(HUB))))
+        with self.seams(series={"manage_series_booking": manage}):
+            response = self.patch_routine(self.move())
+        self.assertEqual(response.status_code, 200, response.data)
+        (_, sent), _ = manage.call_args
+        # The salon's 16:30 is booking-api's 18:30.
+        self.assertEqual((sent["date"], sent["time"]), ("2026-10-13", "18:30"))
+
+    def test_a_move_outside_the_salons_hours_is_refused_before_booking_api(self):
+        # Tuesdays close at 17:00; 16:30 plus 45 minutes is 17:15.
+        manage = mock.Mock(return_value=(200, {}))
+        with self.seams(series={"manage_series_booking": manage, "_open_span": opens({1: (9, 17)})}):
+            response = self.patch_routine(self.move())
+        self.assert_refused(response, "outside_hours", "time")
+        manage.assert_not_called()
+
+    def test_a_routine_it_cannot_read_answers_as_booking_api_did(self):
+        manage = mock.Mock()
+        not_found = {"detail": "Not found.", "code": "not_found"}
+        with self.seams(series={
+            "manage_series_booking": manage,
+            "read_series_booking": mock.Mock(return_value=(404, not_found)),
+        }):
+            response = self.patch_routine(self.move())
+        self.assertEqual(response.status_code, 404)
+        manage.assert_not_called()
+
+    def test_a_time_that_is_not_hhmm_is_left_for_booking_api(self):
+        refusal = {"detail": "Please correct the highlighted fields.", "code": "validation_error",
+                   "errors": [{"field": "time", "code": "invalid_time", "message": "Use HH:MM."}]}
+        manage = mock.Mock(return_value=(422, refusal))
+        with self.seams(series={"manage_series_booking": manage}):
+            response = self.patch_routine(self.move("4pm"))
+        self.assertEqual(response.status_code, 422)
+        (_, sent), _ = manage.call_args
+        self.assertEqual(sent["time"], "4pm")
