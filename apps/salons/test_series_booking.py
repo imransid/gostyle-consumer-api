@@ -837,3 +837,60 @@ class RecurringTabTests(SimpleTestCase):
         row = response.data["results"][0]
         self.assertNotIn("can_cancel", row)
         self.assertNotIn("can_reschedule", row)
+
+
+# ------------------------------------------------------------ step 6: SKIP
+
+
+@override_settings(SERIES_BOOKING_V1=True)
+class SkipTests(SimpleTestCase):
+    """PATCH /api/v1/booking/series/<id>: SKIP, forwarded, answered as the hub."""
+
+    def patch(self, body, answer=None, **headers):
+        request = APIRequestFactory().patch(
+            f"/api/v1/booking/series/{SERIES_ID}", body, format="json", **headers
+        )
+        force_authenticate(request, user=mock.Mock(is_authenticated=True))
+        fake = mock.Mock(return_value=answer or (200, json.loads(json.dumps(HUB))))
+        with mock.patch("apps.salons.series_views.manage_series_booking", fake), \
+                mock.patch("apps.salons.series_views.salon_cards_for_refs", return_value={BRANCH: CARD}):
+            response = SeriesBookingDetailView.as_view()(request, series_id=SERIES_ID)
+        return response, fake
+
+    def test_a_skip_is_forwarded_as_sent_and_answers_the_hub(self):
+        body = {"action": "SKIP", "session_ids": ["o1"]}
+        response, fake = self.patch(body, HTTP_IDEMPOTENCY_KEY="the-apps-key")
+        self.assertEqual(response.status_code, 200, response.data)
+        (series_id, sent), kw = fake.call_args
+        self.assertEqual(series_id, SERIES_ID)
+        self.assertEqual(sent, body)
+        self.assertEqual(kw["idempotency_key"], "the-apps-key")
+        self.assertIn("salon", response.data)
+
+    def test_a_dry_run_sends_no_key(self):
+        response, fake = self.patch(
+            {"action": "SKIP", "session_ids": ["o1"], "dry_run": True},
+            HTTP_IDEMPOTENCY_KEY="the-apps-key",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIsNone(fake.call_args.kwargs["idempotency_key"])
+
+    def test_no_key_is_made_up(self):
+        _, fake = self.patch({"action": "SKIP", "session_ids": ["o1"]})
+        self.assertIsNone(fake.call_args.kwargs["idempotency_key"])
+
+    def test_a_refusal_comes_back_as_it_is(self):
+        refusal = {
+            "detail": "Please correct the highlighted fields.", "code": "validation_error",
+            "errors": [{"field": "session_ids", "code": "session_locked",
+                        "message": "A session cannot be skipped or moved in the 24 hours before it starts."}],
+        }
+        response, _ = self.patch({"action": "SKIP", "session_ids": ["o1"]}, answer=(422, refusal))
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.data, refusal)
+
+    @override_settings(SERIES_BOOKING_V1=False)
+    def test_the_switch_off_is_404(self):
+        response, fake = self.patch({"action": "SKIP", "session_ids": ["o1"]})
+        self.assertEqual(response.status_code, 404)
+        fake.assert_not_called()

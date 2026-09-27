@@ -40,6 +40,7 @@ from . import timezones
 from .booking_api import (
     BookingApiUnavailable,
     create_series_booking,
+    manage_series_booking,
     read_series_booking,
 )
 from .group_views import (
@@ -291,3 +292,54 @@ class SeriesBookingDetailView(APIView):
         if code != status.HTTP_200_OK or not isinstance(body, dict):
             return Response(body, status=code)
         return Response(_present_hub(body, st.engine_zone_of(body)))
+
+    @extend_schema(
+        summary="Change a routine (SKIP for now)",
+        description=(
+            "Behind SERIES_BOOKING_V1. `action: SKIP` with `session_ids`: each "
+            "session is cancelled as the customer's own choice and shown as "
+            "SKIPPED; the routine goes on. Only sessions still to come and "
+            "outside the 24 hour lock. `dry_run: true` checks and changes "
+            "nothing. RESCHEDULE, EXTEND, PAUSE and RESUME answer "
+            "`invalid_action` for now. Answers the whole routine, every time "
+            "on the salon's own clock. Send an `Idempotency-Key` with a real "
+            "change only. " + _ENVELOPE_NOTE
+        ),
+        responses={
+            200: OpenApiResponse(description="The routine, after the change."),
+            404: OpenApiResponse(description="No such routine, not yours, or the flag is off."),
+            422: OpenApiResponse(
+                description="booking-api's envelope: session_locked, session_not_changeable, "
+                            "routine_not_active, invalid_sessions, invalid_action."
+            ),
+            503: OpenApiResponse(response=_OUR_ENVELOPE, description="booking-api unreachable."),
+        },
+    )
+    def patch(self, request, series_id):
+        """
+        PATCH /api/v1/booking/series/<id> (step 6): SKIP for now. The body
+        goes to booking-api as the app sent it (SKIP carries no time to
+        convert); the answer is the hub on the salon's clock, as for GET.
+        RESCHEDULE and EXTEND will carry a time, and convert it, when built.
+
+        The app's own Idempotency-Key goes with a real change only, never a
+        dry run, and none is made up: the same SKIP sent twice without one
+        is simply refused the second time (already skipped).
+        """
+        if not settings.SERIES_BOOKING_V1:
+            raise Http404("Not found")
+        _json_only(request)
+        body = request.data if isinstance(request.data, dict) else {}
+        key = None if body.get("dry_run") is True else request.META.get("HTTP_IDEMPOTENCY_KEY")
+        try:
+            code, answer = manage_series_booking(
+                series_id,
+                body,
+                authorization=request.META.get("HTTP_AUTHORIZATION", ""),
+                idempotency_key=key,
+            )
+        except BookingApiUnavailable as exc:
+            raise BookingApiDown() from exc
+        if code != status.HTTP_200_OK or not isinstance(answer, dict):
+            return Response(answer, status=code)
+        return Response(_present_hub(answer, st.engine_zone_of(answer)))
