@@ -473,14 +473,16 @@ def read_series_booking(series_id, *, authorization, tenant_id=None):
     )
 
 
-def manage_series_booking(series_id, body, *, authorization, idempotency_key=None):
+def manage_series_booking(series_id, body, *, authorization, idempotency_key=None, tenant_id=None):
     """
     PATCH /v1/mobile-booking/series/<id> (step 6): a change to a routine,
     SKIP for now. Returns (status, parsed body) as given: 200 with the hub,
     or booking-api's refusal (404 for a routine the caller may not see).
     The key goes only with a real change (the view decides), as for create.
+    `tenant_id` (the salon's) lets booking-api find the salon's services and
+    staff when a change places a hold (RESCHEDULE), exactly as a create does.
     """
-    headers = _group_headers(authorization, None)
+    headers = _group_headers(authorization, tenant_id)
     if idempotency_key:
         headers["Idempotency-Key"] = idempotency_key
     return _send(
