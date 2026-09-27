@@ -294,14 +294,16 @@ class SeriesBookingDetailView(APIView):
         return Response(_present_hub(body, st.engine_zone_of(body)))
 
     @extend_schema(
-        summary="Change a routine (SKIP and RESCHEDULE for now)",
+        summary="Change a routine (SKIP, RESCHEDULE and EXTEND for now)",
         description=(
             "Behind SERIES_BOOKING_V1. `action: SKIP` with `session_ids`: each "
             "session is cancelled as the customer's own choice and shown as "
             "SKIPPED; the routine goes on. Only sessions still to come and "
             "outside the 24 hour lock. `dry_run: true` checks and changes "
             "nothing. `action: RESCHEDULE` with `session_id`, `date` and `time` (the "
-            "salon's clock) moves one visit. EXTEND, PAUSE and RESUME answer "
+            "salon's clock) moves one visit. `action: EXTEND` with `sessions` (or `dates` for a "
+            "CUSTOM routine) adds visits; its dry run answers the new visits. "
+            "PAUSE and RESUME answer "
             "`invalid_action` for now. Answers the whole routine, every time "
             "on the salon's own clock. Send an `Idempotency-Key` with a real "
             "change only. " + _ENVELOPE_NOTE
@@ -332,6 +334,8 @@ class SeriesBookingDetailView(APIView):
         _json_only(request)
         body = dict(request.data) if isinstance(request.data, dict) else {}
         authorization = request.META.get("HTTP_AUTHORIZATION", "")
+        if body.get("action") == "EXTEND":
+            return self._extend(request, series_id, body, authorization)
         tenant_id = None
         if body.get("action") == "RESCHEDULE":
             early, tenant_id = self._reschedule_on_engine_clock(series_id, body, authorization)
@@ -408,3 +412,107 @@ class SeriesBookingDetailView(APIView):
         body["date"] = on_engine.date().isoformat()
         body["time"] = on_engine.strftime("%H:%M")
         return None, route.get("tenant_id")
+
+    def _extend(self, request, series_id, body, authorization):
+        """
+        EXTEND (step 6), done as the create is: the picks and CUSTOM days go
+        onto booking-api's clock, every new session is held to the salon's
+        own hours and the services' notice, and the answer comes back on the
+        salon's clock. The salon's tenant goes with every call, as for the
+        create: booking-api needs it to find the salon's services.
+
+        A dry run answers the new sessions (a preview). A real extend first
+        asks booking-api for that same plan (a dry run, which saves nothing),
+        refuses a session outside the hours before anything is booked, then
+        books with the app's own Idempotency-Key.
+        """
+        try:
+            code, hub = read_series_booking(series_id, authorization=authorization)
+        except BookingApiUnavailable as exc:
+            raise BookingApiDown() from exc
+        if code != status.HTTP_200_OK or not isinstance(hub, dict):
+            return Response(hub, status=code)
+
+        ref = hub.get("salon_id")
+        card = salon_cards_for_refs([ref]).get(ref) if isinstance(ref, str) else None
+        if card is None:
+            raise Http404("Not found")
+        salon, route = _salon_and_route(card["id"])
+        tz = timezones.resolve(salon.branch_timezone, salon.id)
+        clock = _clock(authorization, route)
+        engine_tz = gt.engine_zone(clock)
+        tenant_id = route.get("tenant_id")
+
+        service_ids = [
+            str(s["id"]) for s in hub.get("services") or [] if isinstance(s, dict) and s.get("id")
+        ]
+        visit = [{"service_ids": service_ids}]
+        rows = _service_rows(salon, visit, "services") if service_ids else {}
+        longest, lead = _party_timing(rows, visit) if rows else (0, 0)
+        hours = _Hours(salon, tz, clock, longest=longest, lead=lead, now=_now(tz))
+
+        picks = [p for p in body.get("picks") or [] if isinstance(p, dict)]
+        sent = dict(body)
+        sent["picks"] = [self._pick_on_engine_clock(p, tz, engine_tz) for p in picks]
+        if isinstance(body.get("dates"), list):
+            salon_time = st.present_hub(hub, salon_id=None, tz=tz, engine_tz=engine_tz).get("time")
+            sent["dates"] = [
+                self._day_on_engine_clock(d, salon_time, tz, engine_tz) for d in body["dates"]
+            ]
+
+        def ask(payload, key=None):
+            try:
+                return manage_series_booking(
+                    series_id, payload, authorization=authorization,
+                    idempotency_key=key, tenant_id=tenant_id,
+                )
+            except BookingApiUnavailable as exc:
+                raise BookingApiDown() from exc
+
+        code, plan = ask({**sent, "dry_run": True})
+        if code != status.HTTP_200_OK or not isinstance(plan, dict):
+            return Response(plan, status=code)
+        preview = st.present_preview(plan, tz=tz, engine_tz=engine_tz)
+        if body.get("dry_run") is True:
+            return Response(st.within_hours(preview, hours.refusal, tz), status=code)
+
+        indexed = [p for p in picks if isinstance(p.get("index"), int)]
+        outside = st.first_outside_hours(preview, hours.refusal, indexed)
+        if outside is not None:
+            field, why, message = outside
+            raise _refuse(field, message, why)
+
+        code, answer = ask({**sent, "dry_run": False}, key=request.META.get("HTTP_IDEMPOTENCY_KEY"))
+        if code != status.HTTP_200_OK or not isinstance(answer, dict):
+            return Response(answer, status=code)
+        return Response(_present_hub(answer, st.engine_zone_of(answer)))
+
+    @staticmethod
+    def _pick_on_engine_clock(pick, tz, engine_tz):
+        """
+        One pick (the salon's day and HH:MM) onto booking-api's clock. A shape
+        booking-api refuses anyway is passed as it is, for it to answer.
+        """
+        day, hhmm = pick.get("date"), pick.get("time")
+        if not isinstance(day, str) or not isinstance(hhmm, str) or not _HHMM.match(hhmm):
+            return pick
+        try:
+            the_day = date.fromisoformat(day)
+        except ValueError:
+            return pick
+        h, m = (int(x) for x in hhmm.split(":"))
+        on_engine = datetime.combine(the_day, time(h, m), tzinfo=tz).astimezone(engine_tz)
+        return {**pick, "date": on_engine.date().isoformat(), "time": on_engine.strftime("%H:%M")}
+
+    @staticmethod
+    def _day_on_engine_clock(day, salon_time, tz, engine_tz):
+        """A CUSTOM day (the salon's) onto booking-api's clock, at the routine's own time."""
+        if not isinstance(day, str) or not isinstance(salon_time, str) or not _HHMM.match(salon_time):
+            return day
+        try:
+            the_day = date.fromisoformat(day)
+        except ValueError:
+            return day
+        h, m = (int(x) for x in salon_time.split(":"))
+        on_engine = datetime.combine(the_day, time(h, m), tzinfo=tz).astimezone(engine_tz)
+        return on_engine.date().isoformat()

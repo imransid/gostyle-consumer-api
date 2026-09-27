@@ -956,3 +956,92 @@ class RescheduleTests(Seams, SimpleTestCase):
         self.assertEqual(response.status_code, 422)
         (_, sent), _ = manage.call_args
         self.assertEqual(sent["time"], "4pm")
+
+
+# ------------------------------------------------------------ step 6: EXTEND
+
+
+def extend_fake(plan, hub=None):
+    """booking-api's PATCH: the plan for a dry run, the hub for a real extend."""
+    def answer(series_id, body, **kw):
+        if body.get("dry_run"):
+            return 200, json.loads(json.dumps(plan))
+        return 200, json.loads(json.dumps(hub if hub is not None else HUB))
+    return mock.Mock(side_effect=answer)
+
+
+@override_settings(SERIES_BOOKING_V1=True)
+class ExtendTests(Seams, SimpleTestCase):
+    """
+    PATCH /api/v1/booking/series/<id> with EXTEND: done as the create is,
+    on the salon's clock, held to its hours, with its tenant.
+    """
+
+    def patch_routine(self, body, **headers):
+        request = APIRequestFactory().patch(
+            f"/api/v1/booking/series/{SERIES_ID}", body, format="json", **headers
+        )
+        force_authenticate(request, user=mock.Mock(is_authenticated=True))
+        return SeriesBookingDetailView.as_view()(request, series_id=SERIES_ID)
+
+    def plan(self):
+        return preview_for(["2026-10-13", "2026-10-20"])
+
+    def test_a_dry_run_answers_the_new_sessions_on_the_salons_clock(self):
+        manage = extend_fake(self.plan())
+        with self.seams(series={"manage_series_booking": manage}):
+            response = self.patch_routine({"action": "EXTEND", "sessions": 2, "dry_run": True})
+        self.assertEqual(response.status_code, 200, response.data)
+        # booking-api's 18:30 is the salon's 16:30.
+        self.assertEqual(response.data["sessions"][0]["start_time"][11:16], "16:30")
+        manage.assert_called_once()
+        (_, sent), kw = manage.call_args
+        self.assertTrue(sent["dry_run"])
+        self.assertIsNone(kw["idempotency_key"])
+        self.assertIsNotNone(kw["tenant_id"])
+
+    def test_a_real_extend_asks_for_the_plan_first_then_books_with_the_apps_key(self):
+        manage = extend_fake(self.plan())
+        with self.seams(series={"manage_series_booking": manage}):
+            response = self.patch_routine(
+                {"action": "EXTEND", "sessions": 2}, HTTP_IDEMPOTENCY_KEY="the-apps-key"
+            )
+        self.assertEqual(response.status_code, 200, response.data)
+        first, second = manage.call_args_list
+        self.assertTrue(first.args[1]["dry_run"])
+        self.assertIsNone(first.kwargs["idempotency_key"])
+        self.assertFalse(second.args[1]["dry_run"])
+        self.assertEqual(second.kwargs["idempotency_key"], "the-apps-key")
+        self.assertIsNotNone(second.kwargs["tenant_id"])
+        self.assertIn("salon", response.data)
+
+    def test_a_session_outside_the_salons_hours_is_refused_before_booking(self):
+        # Tuesdays close at 17:00; 16:30 plus 45 minutes is 17:15.
+        manage = extend_fake(self.plan())
+        with self.seams(series={"manage_series_booking": manage, "_open_span": opens({1: (9, 17)})}):
+            response = self.patch_routine({"action": "EXTEND", "sessions": 2})
+        self.assert_refused(response, "outside_hours", "sessions[0]")
+        # The plan only: nothing was booked.
+        manage.assert_called_once()
+
+    def test_picks_go_on_booking_apis_clock(self):
+        manage = extend_fake(self.plan())
+        with self.seams(series={"manage_series_booking": manage}):
+            self.patch_routine({
+                "action": "EXTEND", "sessions": 2, "dry_run": True,
+                "picks": [{"index": 5, "date": "2026-10-20", "time": "15:00"}],
+            })
+        (_, sent), _ = manage.call_args
+        # The salon's 15:00 is booking-api's 17:00.
+        self.assertEqual(sent["picks"], [{"index": 5, "date": "2026-10-20", "time": "17:00"}])
+
+    def test_a_routine_it_cannot_read_answers_as_booking_api_did(self):
+        manage = mock.Mock()
+        not_found = {"detail": "Not found.", "code": "not_found"}
+        with self.seams(series={
+            "manage_series_booking": manage,
+            "read_series_booking": mock.Mock(return_value=(404, not_found)),
+        }):
+            response = self.patch_routine({"action": "EXTEND", "sessions": 2})
+        self.assertEqual(response.status_code, 404)
+        manage.assert_not_called()
