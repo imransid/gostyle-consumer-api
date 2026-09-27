@@ -295,7 +295,7 @@ class SeriesBookingDetailView(APIView):
         return Response(_present_hub(body, st.engine_zone_of(body)))
 
     @extend_schema(
-        summary="Change a routine (SKIP, RESCHEDULE and EXTEND for now)",
+        summary="Change a routine",
         description=(
             "Behind SERIES_BOOKING_V1. `action: SKIP` with `session_ids`: each "
             "session is cancelled as the customer's own choice and shown as "
@@ -304,8 +304,10 @@ class SeriesBookingDetailView(APIView):
             "nothing. `action: RESCHEDULE` with `session_id`, `date` and `time` (the "
             "salon's clock) moves one visit. `action: EXTEND` with `sessions` (or `dates` for a "
             "CUSTOM routine) adds visits; its dry run answers the new visits. "
-            "PAUSE and RESUME answer "
-            "`invalid_action` for now. Answers the whole routine, every time "
+            "`action: PAUSE` with `until` (optional `reason`, `note`) moves the "
+            "visits to the resume date onwards; `action: RESUME` (optional "
+            "`frequency`, `time`, `stylist_id`) moves them back from tomorrow. "
+            "Their dry runs answer the moved visits. Answers the whole routine, every time "
             "on the salon's own clock. Send an `Idempotency-Key` with a real "
             "change only. " + _ENVELOPE_NOTE
         ),
@@ -335,7 +337,7 @@ class SeriesBookingDetailView(APIView):
         _json_only(request)
         body = dict(request.data) if isinstance(request.data, dict) else {}
         authorization = request.META.get("HTTP_AUTHORIZATION", "")
-        if body.get("action") == "EXTEND":
+        if body.get("action") in ("EXTEND", "PAUSE", "RESUME"):
             return self._extend(request, series_id, body, authorization)
         tenant_id = None
         if body.get("action") == "RESCHEDULE":
@@ -416,7 +418,7 @@ class SeriesBookingDetailView(APIView):
 
     def _extend(self, request, series_id, body, authorization):
         """
-        EXTEND (step 6), done as the create is: the picks and CUSTOM days go
+        EXTEND (step 6), PAUSE and RESUME (step 7), done as the create is: the picks and CUSTOM days go
         onto booking-api's clock, every new session is held to the salon's
         own hours and the services' notice, and the answer comes back on the
         salon's clock. The salon's tenant goes with every call, as for the
@@ -460,6 +462,9 @@ class SeriesBookingDetailView(APIView):
             sent["dates"] = [
                 self._day_on_engine_clock(d, salon_time, tz, engine_tz) for d in body["dates"]
             ]
+        if isinstance(body.get("time"), str):
+            # RESUME's "Customize first" time, from the salon's clock.
+            sent["time"] = self._time_on_engine_clock(body["time"], tz, engine_tz)
 
         def ask(payload, key=None):
             try:
@@ -517,6 +522,19 @@ class SeriesBookingDetailView(APIView):
         h, m = (int(x) for x in salon_time.split(":"))
         on_engine = datetime.combine(the_day, time(h, m), tzinfo=tz).astimezone(engine_tz)
         return on_engine.date().isoformat()
+
+    @staticmethod
+    def _time_on_engine_clock(hhmm, tz, engine_tz):
+        """
+        RESUME's new time (the salon's HH:MM) onto booking-api's clock, at
+        today's offset between the two clocks. A shape booking-api refuses
+        anyway is passed as it is, for it to answer.
+        """
+        if not isinstance(hhmm, str) or not _HHMM.match(hhmm):
+            return hhmm
+        h, m = (int(x) for x in hhmm.split(":"))
+        on_engine = datetime.combine(_now(tz).date(), time(h, m), tzinfo=tz).astimezone(engine_tz)
+        return on_engine.strftime("%H:%M")
 
 
 class SeriesBookingCancelView(APIView):

@@ -1159,3 +1159,70 @@ class PresentCancelTests(SimpleTestCase):
 
         out = series_translate.present_cancel({"sessions": [{"id": "x"}]}, {"sessions": []})
         self.assertEqual(out["sessions"], [{"id": "x", "date": None, "start_time": None}])
+
+
+# ------------------------------------------------------------ step 7: PAUSE and RESUME
+
+
+@override_settings(SERIES_BOOKING_V1=True)
+class PauseResumeTests(Seams, SimpleTestCase):
+    """
+    PATCH /api/v1/booking/series/<id> with PAUSE or RESUME: done as EXTEND
+    is, on the salon's clock, held to its hours, with its tenant.
+    """
+
+    def patch_routine(self, body, **headers):
+        request = APIRequestFactory().patch(
+            f"/api/v1/booking/series/{SERIES_ID}", body, format="json", **headers
+        )
+        force_authenticate(request, user=mock.Mock(is_authenticated=True))
+        return SeriesBookingDetailView.as_view()(request, series_id=SERIES_ID)
+
+    def plan(self):
+        return preview_for(["2026-11-10", "2026-11-17"])
+
+    def test_a_pause_preview_answers_the_moved_sessions_on_the_salons_clock(self):
+        manage = extend_fake(self.plan())
+        with self.seams(series={"manage_series_booking": manage}):
+            response = self.patch_routine({"action": "PAUSE", "until": "2026-11-10", "dry_run": True})
+        self.assertEqual(response.status_code, 200, response.data)
+        # booking-api's 18:30 is the salon's 16:30.
+        self.assertEqual(response.data["sessions"][0]["start_time"][11:16], "16:30")
+        manage.assert_called_once()
+        (_, sent), kw = manage.call_args
+        self.assertEqual(sent["until"], "2026-11-10")
+        self.assertIsNone(kw["idempotency_key"])
+        self.assertIsNotNone(kw["tenant_id"])
+
+    def test_a_real_pause_asks_for_the_plan_first_then_moves_with_the_apps_key(self):
+        manage = extend_fake(self.plan())
+        with self.seams(series={"manage_series_booking": manage}):
+            response = self.patch_routine(
+                {"action": "PAUSE", "until": "2026-11-10", "reason": "TRAVEL"},
+                HTTP_IDEMPOTENCY_KEY="the-apps-key",
+            )
+        self.assertEqual(response.status_code, 200, response.data)
+        first, second = manage.call_args_list
+        self.assertTrue(first.args[1]["dry_run"])
+        self.assertIsNone(first.kwargs["idempotency_key"])
+        self.assertFalse(second.args[1]["dry_run"])
+        self.assertEqual(second.args[1]["reason"], "TRAVEL")
+        self.assertEqual(second.kwargs["idempotency_key"], "the-apps-key")
+        self.assertIn("salon", response.data)
+
+    def test_resume_sends_its_new_time_on_booking_apis_clock(self):
+        manage = extend_fake(self.plan())
+        with self.seams(series={"manage_series_booking": manage}):
+            self.patch_routine({"action": "RESUME", "time": "15:00", "dry_run": True})
+        (_, sent), _ = manage.call_args
+        # The salon's 15:00 is booking-api's 17:00.
+        self.assertEqual(sent["time"], "17:00")
+
+    def test_a_moved_session_outside_the_salons_hours_is_refused_before_anything_moves(self):
+        # Tuesdays close at 17:00; 16:30 plus 45 minutes is 17:15.
+        manage = extend_fake(self.plan())
+        with self.seams(series={"manage_series_booking": manage, "_open_span": opens({1: (9, 17)})}):
+            response = self.patch_routine({"action": "RESUME"})
+        self.assert_refused(response, "outside_hours", "sessions[0]")
+        # The plan only: nothing was moved.
+        manage.assert_called_once()
