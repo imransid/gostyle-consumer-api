@@ -53,4 +53,5 @@ urlpatterns = [
     # Routines (SERIES_BOOKING_V1). `series` is not a uuid, so booking/<uuid> cannot take it.
     path("booking/series", series_views.SeriesBookingCreateView.as_view(), name="booking-series"),
     path("booking/series/<uuid:series_id>", series_views.SeriesBookingDetailView.as_view(), name="booking-series-detail"),
+    path("booking/series/<uuid:series_id>/cancel", series_views.SeriesBookingCancelView.as_view(), name="booking-series-cancel"),
 ]

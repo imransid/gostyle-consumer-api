@@ -1045,3 +1045,117 @@ class ExtendTests(Seams, SimpleTestCase):
             response = self.patch_routine({"action": "EXTEND", "sessions": 2})
         self.assertEqual(response.status_code, 404)
         manage.assert_not_called()
+
+
+# ------------------------------------------------------------ step 7: CANCEL
+
+
+def cancel_answer():
+    """booking-api's dry run for a cancel: the summary by visit id, and the hub."""
+    line = {"paid": 0, "refund": 0, "kept": 0, "refund_band": "NOTHING_CAPTURED", "late": False}
+    return {
+        "dry_run": True,
+        "summary": {
+            "visits_cancelled": 2, "late_visits": 0, "paid": 0, "refund": 0, "kept": 0,
+            "sessions": [{"id": "occ-0", "index": 0, **line}, {"id": "occ-1", "index": 1, **line}],
+        },
+        "routine": json.loads(json.dumps(HUB)),
+    }
+
+
+@override_settings(SERIES_BOOKING_V1=True)
+class CancelTests(Seams, SimpleTestCase):
+    """POST /api/v1/booking/series/<id>/cancel: forwarded, answered on the salon's clock."""
+
+    def cancel(self, body, answer=None, **headers):
+        from apps.salons.series_views import SeriesBookingCancelView
+
+        request = APIRequestFactory().post(
+            f"/api/v1/booking/series/{SERIES_ID}/cancel", body, format="json", **headers
+        )
+        force_authenticate(request, user=mock.Mock(is_authenticated=True))
+        fake = mock.Mock(return_value=answer or (200, json.loads(json.dumps(HUB))))
+        with self.seams(series={"cancel_series_booking": fake}):
+            response = SeriesBookingCancelView.as_view()(request, series_id=SERIES_ID)
+        return response, fake
+
+    def test_a_dry_run_gives_each_visit_its_date_and_time_on_the_salons_clock(self):
+        response, fake = self.cancel(
+            {"dry_run": True}, answer=(200, cancel_answer()), HTTP_IDEMPOTENCY_KEY="the-apps-key"
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertTrue(response.data["dry_run"])
+        self.assertEqual(response.data["summary"]["visits_cancelled"], 2)
+        first = response.data["summary"]["sessions"][0]
+        self.assertEqual((first["id"], first["date"]), ("occ-0", "2026-10-06"))
+        # booking-api's 18:30 is the salon's 16:30.
+        self.assertEqual(first["start_time"][11:16], "16:30")
+        self.assertIn("salon", response.data["routine"])
+        self.assertIsNone(fake.call_args.kwargs["idempotency_key"])
+
+    def test_a_real_cancel_is_forwarded_with_the_apps_key_and_answers_the_hub(self):
+        body = {"reason": "TOO_EXPENSIVE"}
+        response, fake = self.cancel(body, HTTP_IDEMPOTENCY_KEY="the-apps-key")
+        self.assertEqual(response.status_code, 200, response.data)
+        (series_id, sent), kw = fake.call_args
+        self.assertEqual(str(series_id), SERIES_ID)
+        self.assertEqual(sent, body)
+        self.assertEqual(kw["idempotency_key"], "the-apps-key")
+        self.assertIn("salon", response.data)
+
+    def test_no_key_is_made_up(self):
+        _, fake = self.cancel({})
+        self.assertIsNone(fake.call_args.kwargs["idempotency_key"])
+
+    def test_a_dry_run_that_is_not_true_or_false_is_refused_before_anything(self):
+        response, fake = self.cancel({"dry_run": "true"})
+        self.assert_refused(response, "invalid_dry_run", "dry_run")
+        fake.assert_not_called()
+
+    def test_a_refusal_comes_back_as_it_is(self):
+        refusal = {
+            "detail": "Please correct the highlighted fields.", "code": "validation_error",
+            "errors": [{"field": "id", "code": "cannot_cancel",
+                        "message": "This routine has already ended."}],
+        }
+        response, _ = self.cancel({}, answer=(422, refusal))
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.data, refusal)
+
+    @override_settings(SERIES_BOOKING_V1=False)
+    def test_the_switch_off_is_404(self):
+        response, fake = self.cancel({})
+        self.assertEqual(response.status_code, 404)
+        fake.assert_not_called()
+
+    def test_the_route_sits_with_the_other_routine_routes(self):
+        from django.urls import resolve
+        from apps.salons.series_views import SeriesBookingCancelView
+
+        match = resolve(f"/api/v1/booking/series/{SERIES_ID}/cancel")
+        self.assertIs(match.func.view_class, SeriesBookingCancelView)
+        self.assertEqual(str(match.kwargs["series_id"]), SERIES_ID)
+
+
+class PresentCancelTests(SimpleTestCase):
+    """series_translate.present_cancel: each line's time comes from the routine, by id."""
+
+    def test_each_line_gets_its_visits_date_and_time(self):
+        from apps.salons import series_translate
+
+        routine = {"sessions": [
+            {"id": "occ-1", "date": "2026-10-13", "start_time": "2026-10-13T16:30:00+04:00"},
+        ]}
+        summary = {"visits_cancelled": 1, "sessions": [{"id": "occ-1", "refund": 0}]}
+        out = series_translate.present_cancel(summary, routine)
+        self.assertEqual(out["visits_cancelled"], 1)
+        self.assertEqual(out["sessions"], [{
+            "id": "occ-1", "refund": 0,
+            "date": "2026-10-13", "start_time": "2026-10-13T16:30:00+04:00",
+        }])
+
+    def test_a_visit_the_routine_does_not_show_gets_no_time(self):
+        from apps.salons import series_translate
+
+        out = series_translate.present_cancel({"sessions": [{"id": "x"}]}, {"sessions": []})
+        self.assertEqual(out["sessions"], [{"id": "x", "date": None, "start_time": None}])

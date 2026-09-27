@@ -491,6 +491,25 @@ def manage_series_booking(series_id, body, *, authorization, idempotency_key=Non
     )
 
 
+def cancel_series_booking(series_id, body, *, authorization, idempotency_key=None):
+    """
+    POST /v1/mobile-booking/series/<id>/cancel (step 7): the customer ends a
+    routine. Returns (status, parsed body) as given: 200 with the hub, or for
+    a dry run the refund summary and the routine; or booking-api's refusal
+    (404 for a routine the caller may not see). No tenant: a cancel places
+    no hold and books nothing, as SKIP. The key goes only with a real cancel
+    (the view decides).
+    """
+    headers = _group_headers(authorization, None)
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    return _send(
+        "POST",
+        f"/v1/mobile-booking/series/{urllib.parse.quote(str(series_id), safe='')}/cancel",
+        headers=headers, body=_encode(body),
+    )
+
+
 def _group_headers(authorization, tenant_id):
     headers = {"Content-Type": "application/json", "Authorization": authorization}
     if tenant_id:

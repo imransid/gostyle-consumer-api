@@ -418,3 +418,23 @@ def first_outside_hours(preview, refusal, picks):
         field = f"picks[{picked[index]}]" if index in picked else f"sessions[{index}]"
         return field, why[0], why[1]
     return None
+
+
+def present_cancel(summary, routine):
+    """
+    The cancel's refund summary (step 7) as the app reads it. booking-api
+    lists each visit by its id; its `date` and `start_time` come from the
+    routine in the same answer, already on the salon's clock (present_hub),
+    so nothing is converted a second time. A visit the routine does not show
+    gets no time (None), never a guessed one.
+    """
+    by_id = {
+        s.get("id"): s for s in routine.get("sessions") or [] if isinstance(s, dict)
+    }
+    lines = []
+    for line in summary.get("sessions") or []:
+        if not isinstance(line, dict):
+            continue
+        visit = by_id.get(line.get("id")) or {}
+        lines.append({**line, "date": visit.get("date"), "start_time": visit.get("start_time")})
+    return {**summary, "sessions": lines}
