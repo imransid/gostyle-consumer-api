@@ -332,8 +332,9 @@ class SeriesBookingDetailView(APIView):
         _json_only(request)
         body = dict(request.data) if isinstance(request.data, dict) else {}
         authorization = request.META.get("HTTP_AUTHORIZATION", "")
+        tenant_id = None
         if body.get("action") == "RESCHEDULE":
-            early = self._reschedule_on_engine_clock(series_id, body, authorization)
+            early, tenant_id = self._reschedule_on_engine_clock(series_id, body, authorization)
             if early is not None:
                 return early
         key = None if body.get("dry_run") is True else request.META.get("HTTP_IDEMPOTENCY_KEY")
@@ -343,6 +344,7 @@ class SeriesBookingDetailView(APIView):
                 body,
                 authorization=authorization,
                 idempotency_key=key,
+                tenant_id=tenant_id,
             )
         except BookingApiUnavailable as exc:
             raise BookingApiDown() from exc
@@ -360,28 +362,30 @@ class SeriesBookingDetailView(APIView):
         is asked. A shape booking-api refuses anyway (not YYYY-MM-DD, not
         HH:MM) is left for it to answer in its own words.
 
-        Returns a Response to send as it is (the routine could not be read),
-        or None to go on.
+        Returns (response, tenant_id): a Response to send as it is (the
+        routine could not be read) or None to go on, and the salon's tenant.
+        booking-api needs the tenant to find the salon's services and staff
+        for the hold on the new time, exactly as the create sends it.
         """
         day, hhmm = body.get("date"), body.get("time")
         if not isinstance(day, str) or not isinstance(hhmm, str) or not _HHMM.match(hhmm):
-            return None
+            return None, None
         try:
             the_day = date.fromisoformat(day)
         except ValueError:
-            return None
+            return None, None
 
         try:
             code, hub = read_series_booking(series_id, authorization=authorization)
         except BookingApiUnavailable as exc:
             raise BookingApiDown() from exc
         if code != status.HTTP_200_OK or not isinstance(hub, dict):
-            return Response(hub, status=code)
+            return Response(hub, status=code), None
 
         ref = hub.get("salon_id")
         card = salon_cards_for_refs([ref]).get(ref) if isinstance(ref, str) else None
         if card is None:
-            return None
+            return None, None
         salon, route = _salon_and_route(card["id"])
         tz = timezones.resolve(salon.branch_timezone, salon.id)
         clock = _clock(authorization, route)
@@ -403,4 +407,4 @@ class SeriesBookingDetailView(APIView):
         on_engine = start.astimezone(gt.engine_zone(clock))
         body["date"] = on_engine.date().isoformat()
         body["time"] = on_engine.strftime("%H:%M")
-        return None
+        return None, route.get("tenant_id")

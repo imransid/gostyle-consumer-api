@@ -921,9 +921,12 @@ class RescheduleTests(Seams, SimpleTestCase):
         with self.seams(series={"manage_series_booking": manage}):
             response = self.patch_routine(self.move())
         self.assertEqual(response.status_code, 200, response.data)
-        (_, sent), _ = manage.call_args
+        (_, sent), kw = manage.call_args
         # The salon's 16:30 is booking-api's 18:30.
         self.assertEqual((sent["date"], sent["time"]), ("2026-10-13", "18:30"))
+        # The salon's tenant goes too: booking-api needs it to find the
+        # salon's services for the hold (without it: "services do not exist").
+        self.assertIsNotNone(kw["tenant_id"])
 
     def test_a_move_outside_the_salons_hours_is_refused_before_booking_api(self):
         # Tuesdays close at 17:00; 16:30 plus 45 minutes is 17:15.
