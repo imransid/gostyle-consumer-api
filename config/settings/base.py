@@ -150,9 +150,20 @@ DATABASES = {
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "GoStyle Customer API",
+    "DESCRIPTION": (
+        "The sections are numbered in the order a customer uses the app, and so "
+        "are the steps inside each one. Start with section 1: log in, then press "
+        "Authorize and paste the access token."
+    ),
     "VERSION": "0.1.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "SWAGGER_UI_SETTINGS": {"persistAuthorization": True},
+    # Swagger in the order the app uses it (config/openapi_flow.py). The first
+    # hook is drf-spectacular's own default, kept as it is.
+    "POSTPROCESSING_HOOKS": [
+        "drf_spectacular.hooks.postprocess_schema_enums",
+        "config.openapi_flow.order_by_flow",
+    ],
 }
 
 # Cache / rate-limit store. The OTP flow enforces its limits here before it
