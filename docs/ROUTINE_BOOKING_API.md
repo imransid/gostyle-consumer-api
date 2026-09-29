@@ -23,7 +23,9 @@ Everything else the flow uses already exists (see §1).
 
 - **UAE salons: 08:00 to 20:00 salon time.** For now a routine can only use
   times between 08:00 and 20:00 salon time: every session must start and finish
-  inside that window. A start outside it is refused with `invalid_time`.
+  inside that window. A session outside it is `outside_hours` (in the preview:
+  `available: false`); a first start the server cannot book at all is
+  `invalid_time`.
   `nearest-available` never offers one, so this only bites a hand-made time.
   The limit goes when each salon gets its own time zone on the server.
 - **No products and no promo codes yet.** `products` must be `[]` and
@@ -130,19 +132,19 @@ booking. Every time the server answers is in the salon's offset.
       "alternatives": ["2026-10-13T17:00:00+04:00", "2026-10-14T16:30:00+04:00"]
     }
   ],
-  "per_session_total": 105.0,
-  "plan_total": 210.0
+  "per_session_total": 105,
+  "plan_total": 210
 }
 ```
 
 | Field               | Type    | Notes                                                                       |
 | ------------------- | ------- | --------------------------------------------------------------------------- |
 | `sessions`          | array   | One entry per session, in order, `index` starting at `0`.                   |
-| `↳ start`/`end`     | string  | ISO 8601 with the salon's offset, from the services' duration.              |
+| `↳ start_time`/`end_time` | string | ISO 8601 with the salon's offset, from the services' duration.        |
 | `↳ available`       | boolean | `false` is drawn struck through with its `alternatives` offered underneath. |
 | `↳ reason`          | enum    | Only when `available` is `false` (see §7's reasons).                        |
 | `↳ stylist`         | object  | Who would take it, even when the request sent `null`. `null` when unfit.    |
-| `↳ alternatives`    | array   | Up to 3 starts with the session's own stylist (rule 4).                     |
+| `↳ alternatives`    | array   | Up to 3 starts with the session's own stylist (rule 4). Can be empty.       |
 | `per_session_total` | number  | One session, tax included.                                                  |
 | `plan_total`        | number  | Every session added up, tax included.                                       |
 
@@ -154,13 +156,19 @@ Rules:
 2. **Nothing is held.** A preview is a look; a start that goes in between fails
    at create with `slot_taken` (§7).
 3. **Closed days move, they do not vanish.** A session landing on a salon
-   holiday comes back `available: false` with `reason: "salon_closed"` and the
-   next open days in `alternatives`.
+   holiday comes back `available: false` with `reason: "salon_closed"`.
+   Alternatives are worked out from the stylist's diary, so a day closed only
+   in the salon's own calendar (or a time refused only by its opening hours or
+   notice) can come back with `alternatives: []`. The app then lets the
+   customer pick any time the alternatives rule allows (rule 4, and §3 rule 2):
+   `nearest-available` with the plan's stylist, on the session's day or up to
+   7 days after.
 4. **Alternatives keep the plan's stylist.** Always the session's own stylist.
    The session's own day first, the nearest time first; then the next days (up
-   to 7 after), the same time first. At most 2 on one day, so there is always
-   a choice of another day. A day another session already has is never
-   offered, and neither is a time outside the salon's hours.
+   to 7 after), the same time first. At most 2 on one day (at least 25 minutes
+   apart), so there is always a choice of another day. A day another session
+   already has is never offered, and neither is a time outside the salon's
+   hours.
 5. **Any Available Expert picks one stylist.** With `stylist_id` `null`, the
    server picks **one** stylist for the whole plan: one who does all the
    services and is free on the most sessions. A tie is broken the same way
@@ -226,7 +234,8 @@ Here session 2 takes the preview's alternative on 14 October.
    alternatives rule allows: the same stylist, the session's own day or up
    to 7 days after it, not another session's day. It need not be one of the
    alternatives the preview listed (the list changes as the diary does), but
-   it must still be free. Anything else is `422` / `session_not_offered`.
+   it must still be free. Anything else, two sessions on one day included, is
+   `422` / `session_not_offered`.
 3. **`date`** is the salon's date of that `start_time` (`date_mismatch`), and
    **`end_time`** is `start_time` plus the services' duration (`invalid_window`),
    exactly as for a single booking.
@@ -241,12 +250,17 @@ Here session 2 takes the preview's alternative on 14 October.
    server's figure in `expected`.
 7. **All or nothing.** Every session within 90 days is booked in this one call.
    If one cannot be, none are, and the answer names it (`409` / `slot_taken`,
-   field `sessions[i]`). Run the preview again and let the customer pick.
+   field `sessions[i]`). A session more than 90 days away that today's
+   calendar shows busy is refused the same way. Run the preview again and let
+   the customer pick.
 8. **Double submits.** Send an `Idempotency-Key` header, one value per attempt,
    as for a single booking. The same key returns the same routine. Never send a
-   key with the preview.
+   key with the preview. Without one, the server derives a key from the
+   customer and the exact body, so a retry must send the same bytes.
 9. **It can take a while.** Up to six visits are booked one by one. Wait up to
-   60 seconds before giving up; a retry with the same key is safe.
+   60 seconds before giving up. This service stops waiting for booking-api
+   after 45 seconds and answers `503`, and the booking may still finish: retry
+   a `503` or a timeout with the same key and body.
 10. **Payment fields:** pay at the salon only, for now (§4).
 
 ### Response: `201 Created`
@@ -341,6 +355,11 @@ The routine, in the shape of §5, so the confirmation screen needs no second cal
 Every session is an ordinary booking of its own (`booking_id`), confirmed at
 once and paid at the salon. The routine ties them together.
 
+**Booked, but not read back.** If the routine is booked and reading it back
+fails, the answer is still `201`, with only `{"id": "...", "booking_type":
+"ROUTINE"}`. It is a success: the app must not book again, and reads the
+routine with `GET /booking/:id`. A move (§6) answers `200` the same way.
+
 ---
 
 ## 4. Payment: pay at the salon, for now
@@ -434,19 +453,19 @@ the salon's own rules ask for a deposit, the desk asks for it then.
 | `services`              | array   | `id`, `name`, `amount`: one session's price of that service, before tax.                                                                       |
 | `products`              | array   | Always `[]` for now.                                                                                                                           |
 | `stylists`              | array   | The regular stylist, `{ id, name, avatar_url }`, as on a single booking.                                                                       |
-| `amount_without_tax` ... `total` | number | The whole plan: the sum of its visits, each exactly as that visit's own booking reads (`GET /booking/:id`), so the routine and its visits never disagree. Skipped, cancelled and missed visits add nothing. A session not booked yet counts at today's price, fully due. |
+| `amount_without_tax` ... `total` | number | The whole plan: the sum of its visits, each exactly as that visit's own booking reads (`GET /booking/:id`), so the routine and its visits never disagree. Skipped, cancelled and missed visits add nothing. A session not booked yet counts at today's price, fully due. `amount_without_tax`, `total` and `due_amount` are `null` when that price cannot be worked out right now (unknown, never 0). |
 | `advance_paid_amount`   | number  | The sum of what was taken on its visits (at the desk, for now).                                                                                |
 | `due_amount`            | number  | The sum of what is still due on its visits. Skipped, cancelled and missed visits add nothing.                                                  |
 | `payment_status`        | enum    | `PAY_AFTER_CHECK_IN` for now (§4).                                                                                                             |
 | `payment_method`        | enum    | `null` for now.                                                                                                                                |
-| `pass_qr_code`          | string  | The next session's pass. `null` when none is left.                                                                                              |
-| `counts`                | object  | `total`, `done`, `remaining`, `skipped`, `cancelled`: "1 of 6 done, 5 remaining". `total` is `done` plus `remaining`.                          |
+| `pass_qr_code`          | string  | The next session's pass. When none is left, the last session's pass (`null` if that visit adds nothing).                                      |
+| `counts`                | object  | `total`, `done`, `remaining`, `skipped`, `cancelled`: "1 of 6 done, 5 remaining". `total` is `done` plus `remaining`. A missed visit counts in `done`. |
 | `pause`                 | object  | `until`, `reason`, `note` while `PAUSED`. `null` otherwise.                                                                                    |
 | `can`                   | object  | `skip`, `reschedule`, `extend`, `pause`, `resume`, `cancel`: the routine's buttons. A button is shown only when the server would accept it.   |
 | `sessions`              | array   | Every session, in order.                                                                                                                       |
 | `↳ id`                  | string  | The session's id. What §6 and §8 take.                                                                                                         |
 | `↳ index`               | number  | From `0`.                                                                                                                                      |
-| `↳ start`/`end`         | string  | ISO 8601 with the salon's offset. `date` is the salon's date.                                                                                  |
+| `↳ start_time`/`end_time` | string | ISO 8601 with the salon's offset. `date` is the salon's date. `end_time` is `null` when the visit's length cannot be worked out right now. |
 | `↳ state`               | enum    | See the table below.                                                                                                                           |
 | `↳ stylist`             | object  | `{ id, name }`. A single session can have another stylist after a move (§6).                                                                   |
 | `↳ booking_id`          | string  | The session's own booking. `null` while `PLANNED` or `NEEDS_ACTION`.                                                                           |
@@ -461,12 +480,12 @@ the salon's own rules ask for a deposit, the desk asks for it then.
 | -------------- | --------------------------------------------------------------------------------------------------- |
 | `SCHEDULED`    | Booked, more than 24 hours away. It can still be skipped or moved.                                  |
 | `CONFIRMED`    | Booked, inside the last 24 hours. Only the normal cancel applies.                                   |
-| `PLANNED`      | More than 90 days away. Booked automatically when it comes within 90 days. It keeps the routine's stylist until then. |
+| `PLANNED`      | Not booked yet: more than 90 days away, or freed when two missed visits paused the routine. Booked automatically when it comes within 90 days. It keeps the routine's stylist until then. |
 | `NEEDS_ACTION` | Its time was gone when it came within 90 days. The customer picks a new time with §6.               |
 | `CHECKED_IN`   | The visit is happening.                                                                             |
 | `COMPLETED`    | The visit happened.                                                                                 |
 | `MISSED`       | A no-show. Two in a row pause the routine.                                                          |
-| `SKIPPED`      | Skipped by the customer (§8).                                                                       |
+| `SKIPPED`      | Skipped by the customer (§8), or never booked when the routine was cancelled.                        |
 | `CANCELLED`    | Cancelled any other way (by the salon, for example).                                                |
 
 Rules:
@@ -547,7 +566,8 @@ Rules:
 3. **One session per day.** A day another session of the routine already has is
    `session_day_taken`.
 4. **The same booking moves.** It keeps its id, code and pass. The new time is
-   held the moment it is checked; if it is gone, `409` / `slot_taken`.
+   held the moment it is checked; if it is gone, `409` / `slot_taken`. If the
+   move itself fails after the hold, `422` / `session_not_changeable`.
 5. **A session with no booking yet** (`PLANNED` or `NEEDS_ACTION`) is booked at
    the new time.
 6. **Only an `ACTIVE` routine** (`routine_not_active`). A paused routine is
@@ -607,19 +627,19 @@ true, the first in this table wins.
 
 | Code                     | Status | When                                                                                          | §          |
 | ------------------------ | ------ | --------------------------------------------------------------------------------------------- | ---------- |
-| `required`, `invalid`    | 422    | A field is missing, or not the right type (an id that is not a UUID, for example).             | 2, 3, 6    |
+| `required`, `invalid`, `null`, `blank`, `not_a_list`, `not_a_dict` | 422 | A field is missing, empty, or not the right type (an id that is not a UUID, for example). For an item inside a list, `field` is the item's position or inner key, not the full path. | 2, 3, 6 |
 | `no_services`            | 422    | `service_ids` / `services` is empty.                                                           | 2, 3       |
-| `unknown_service`        | 422    | A service is not sold at this salon.                                                           | 2, 3       |
-| `foreign_id`             | 422    | The stylist does not work at this salon.                                                       | 2, 3, 6    |
+| `unknown_service`        | 422    | Rare, from booking-api: it did not find a service.                                             | 2, 3       |
+| `foreign_id`             | 422    | A service (field `service_ids` / `services`) or the stylist is not at this salon.              | 2, 3, 6    |
 | `stylist_mismatch`       | 422    | The stylist cannot do all of the services.                                                     | 2, 3, 6    |
 | `no_stylist_available`   | 422    | Any Available Expert, but nobody at this salon does all of these services.                      | 2, 3       |
 | `invalid_cadence`        | 422    | `cadence` is not `week`, `fortnight` or `month`.                                                | 2, 3       |
 | `invalid_session_count`  | 422    | Fewer than 2 or more than 6 sessions.                                                           | 2, 3       |
-| `invalid_time`           | 422    | `start_time` is not ISO 8601 with an offset, or not on a 5 minute step, or outside the hours the salon can be booked (see Known limits). | 2, 3, 6 |
+| `invalid_time`           | 422    | `start_time` is not ISO 8601 with an offset, has seconds, is not on a 5 minute step, or is a first start booking-api cannot book at all (see Known limits). | 2, 3, 6 |
 | `date_out_of_range`      | 422    | The first session is not between today and 90 days ahead.                                       | 2, 3       |
 | `invalid_sessions`       | 422    | `sessions[].index` is not 0, 1, 2, ... in order.                                                | 3          |
-| `session_not_offered`    | 422    | A session is neither on its cadence nor at a time the alternatives rule allows (same stylist, same day or up to 7 days after, not another session's day). | 3 |
-| `session_day_taken`      | 422    | Two sessions on the same day.                                                                   | 3, 6       |
+| `session_not_offered`    | 422    | A session is neither on its cadence nor at a time the alternatives rule allows (same stylist, same day or up to 7 days after, not another session's day). Two sessions on one day are this code on create. | 3 |
+| `session_day_taken`      | 422    | The move's new day is another session's day.                                                    | 6          |
 | `date_mismatch`          | 422    | `date` is not the salon's date of `start_time`.                                                 | 3          |
 | `invalid_window`         | 422    | `end_time` disagrees with the services' duration.                                               | 3          |
 | `amount_mismatch`        | 422    | A money figure disagrees with the server's. `expected` has the right one.                       | 3, 4       |
@@ -629,7 +649,7 @@ true, the first in this table wins.
 | `invalid_status`         | 422    | `status` is not `BOOKED`.                                                                       | 4          |
 | `invalid_booking_type`   | 422    | `booking_type` is not `ROUTINE`.                                                                | 4          |
 | `salon_closed`           | 422    | A session (or the new time) is on a day the salon is closed.                                    | 3, 6       |
-| `outside_hours`          | 422    | A session would not start and finish within the salon's hours.                                  | 3, 6       |
+| `outside_hours`          | 422    | A session would not start and finish within the salon's hours (or 08:00 to 20:00, see Known limits). | 3, 6   |
 | `too_soon`               | 422    | A session has passed, or is inside the services' notice.                                        | 3, 6       |
 | `session_locked`         | 422    | The session starts in less than 24 hours.                                                       | 6          |
 | `session_not_changeable` | 422    | The session is done, skipped or cancelled.                                                      | 6          |
@@ -640,7 +660,7 @@ true, the first in this table wins.
 | `already_paid`           | 409    | `PATCH /booking/:id` on a routine: it is paid at the salon.                                     | 4          |
 | `idempotency_key_reused` | 409    | The same `Idempotency-Key` was used for a different request.                                    | 3, 6       |
 | `not_authenticated`      | 401    | No bearer token, or it is not valid.                                                            | all        |
-| `not_found`              | 404    | No such routine, booking or session, or it is not yours.                                        | all        |
+| `not_found`              | 404    | No such routine, booking or session, or it is not yours. An id in the path that is not a UUID gets a plain HTML 404. | all |
 | `unsupported_media_type` | 415    | The body is not `application/json`.                                                             | all        |
 | `service_unavailable`    | 503    | Booking is down for a moment (`errors[0].code`: `booking_api_unavailable`). Safe to retry with the same `Idempotency-Key`. | all |
 
