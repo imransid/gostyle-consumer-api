@@ -121,6 +121,13 @@ FLOW = (
             ("GET", "/api/v1/booking/series/{series_id}", "The routine hub"),
             ("PATCH", "/api/v1/booking/series/{series_id}", "Change it: skip, move, add, pause, resume"),
             ("POST", "/api/v1/booking/series/{series_id}/cancel", "Cancel it (preview the refund first)"),
+            ("POST", "/api/v1/booking/routine-preview", "App contract: preview a routine (ROUTINE_CONTRACT_V1)"),
+            ("POST", "/api/v1/booking/routine", "App contract: book a routine (ROUTINE_CONTRACT_V1)"),
+            (
+                "PATCH",
+                "/api/v1/booking/{booking_id}/sessions/{session_id}",
+                "App contract: move one session (ROUTINE_CONTRACT_V1)",
+            ),
         ),
     ),
     (

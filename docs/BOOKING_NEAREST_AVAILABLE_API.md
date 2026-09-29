@@ -105,11 +105,11 @@ Then: every grid point where the whole appointment fits, in the window.
 - **Qualified** is stricter than on the Expert step: one stylist for the whole
   visit, so covering part of the basket is covering none of it. The skill
   match itself is identical — see `BOOKING_EXPERT_API.md` §3.
-- **Busy** means a `booking` row that is `PENDING`, `CONFIRMED`, `CHECKED_IN`
-  or `COMPLETED`, not soft-deleted. The first three are the platform's own
-  `ACTIVE_STATUSES`; `COMPLETED` is added here, because the safe direction for
-  a customer-facing answer is to offer fewer starts than the platform would
-  accept, never one it will reject.
+- **Busy** comes from gostyle-booking-api, which owns the bookings: its
+  `GET /v1/mobile-booking/busy`, asked with the caller's own token. A booking
+  there is busy while it still takes the chair (its `BLOCKING_STATES`: waiting
+  for payment or confirmation, confirmed, checked in, in service, completed,
+  settled), so a checkout still being paid already blocks its time.
 - **Order:** `start`, then `bookings_today` (spreading work rather than
   filling one diary), then name.
 
@@ -117,7 +117,7 @@ Then: every grid point where the whole appointment fits, in the window.
 
 ## 4. Errors
 
-Only a malformed request fails.
+Only a malformed request fails, or booking-api being out of reach (503).
 
 | Case                                               | Status | `code`             |
 | -------------------------------------------------- | ------ | ------------------ |
@@ -129,6 +129,7 @@ Only a malformed request fails.
 | No bearer token                                    | 401    | `not_authenticated`|
 | Salon id does not exist                            | 404    | `not_found`        |
 | Unknown service or stylist, closed day, full diary | 200    | — (`"offers": []`) |
+| booking-api cannot be reached (busy time unknown)  | 503    | `service_unavailable` (`errors[0].code`: `booking_api_unavailable`) |
 
 ```json
 {
@@ -150,15 +151,11 @@ Only a malformed request fails.
 
 Read this section before trusting an offer.
 
-- **Two booking stores exist.** This endpoint reads the platform's `booking`
-  table. `gostyle-booking-api` keeps its own bookings *and its holds* in a
-  separate database (`gostyle_booking`), and nothing here can see them, so a
-  slot someone is holding mid-checkout still reads as free. Which store is
-  authoritative for customer bookings is a question for the team, not
-  something this service can decide; until it is settled, treat an offer as a
-  strong hint and let booking creation be the arbiter.
-  (Its `GET /v1/availability` could not be proxied for this: that engine runs
-  on a fixture menu with ids of its own, not the platform's services.)
+- **An offer is a strong hint, not a hold.** Busy time is read from
+  booking-api at the moment of the request and nothing is held, so a start
+  taken a moment later is refused at booking creation, which is the arbiter.
+  When booking-api cannot be reached this endpoint answers 503, never a grid
+  computed against no bookings (that would offer sold slots).
 - **The slot grid and the browsing default are constants, not settings.**
   15 minutes and 30 minutes, in `apps/salons/slots.py`. Nothing in the
   platform schema stores either; the 15 mirrors gostyle-booking-api's ONLINE

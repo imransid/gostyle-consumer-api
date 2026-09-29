@@ -205,6 +205,14 @@ SERIES_BOOKING_V1 = env.bool("SERIES_BOOKING_V1", default=False)
 # (2026-09-26). Kept under gunicorn's --timeout 60, which would kill the
 # worker first and answer the app with nothing at all.
 SERIES_BOOKING_CREATE_TIMEOUT = env.int("SERIES_BOOKING_CREATE_TIMEOUT", default=45)
+
+# The app team's routine contract (docs/routine-booking-fe-contract.md and
+# docs/ROUTINE_FE_CONTRACT_AUDIT.md): POST /api/v1/booking/routine-preview,
+# POST /api/v1/booking/routine and PATCH /api/v1/booking/{id}/sessions/{id},
+# next to the /booking/series routes, which do not change. OFF answers 404 on
+# the three and changes nothing else. Turn it on only where booking-api runs
+# with MOBILE_ROUTINE_CONTRACT=true (and MOBILE_SERIES_BOOKING=true).
+ROUTINE_CONTRACT_V1 = env.bool("ROUTINE_CONTRACT_V1", default=False)
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",

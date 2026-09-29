@@ -218,6 +218,35 @@ reverse migrations — an already-applied schema change stays applied, so keep
 migrations backward-compatible with the previous release (add columns, don't drop
 them in the same deploy).
 
+## Switches: the routine contract
+
+The app team's routine contract (`docs/ROUTINE_BOOKING_API.md`) is behind two
+switches, one in each service. Both are **off by default**, and both are read
+from the environment.
+
+| Switch                    | Service             | Off                                                                 |
+| ------------------------- | ------------------- | ------------------------------------------------------------------- |
+| `MOBILE_ROUTINE_CONTRACT` | gostyle-booking-api | A create carrying the new options is refused; `view=booking` is ignored |
+| `ROUTINE_CONTRACT_V1`     | this service        | The 3 new routes are 404; `GET`/`PATCH /booking/<id>` and the Recurring rows answer as before |
+
+Both need routines themselves on already (booking-api's `MOBILE_SERIES_BOOKING`):
+the new routes call booking-api's routine routes.
+
+**Turn on in this order:**
+
+1. booking-api's `MOBILE_ROUTINE_CONTRACT=true`. On its own it only adds two
+   fields to a booking's read (`booking_type`, `series_id`); nothing sends the
+   new options yet.
+2. Then this service's `ROUTINE_CONTRACT_V1=true`.
+
+Why this order: with only this service's switch on, booking-api ignores
+`view=booking`, so the Recurring rows and the routine reads come back in the
+old shape, and it refuses the new create options, so the new preview and
+create fail.
+
+**To undo, the other way round:** this service's `ROUTINE_CONTRACT_V1` off
+first, then booking-api's `MOBILE_ROUTINE_CONTRACT`.
+
 ## Recommended follow-up: a health endpoint
 
 Swarm currently treats a task as healthy as soon as the process starts, so
