@@ -100,10 +100,12 @@ class SwitchTests(Routes, SimpleTestCase):
         urlopen.assert_not_called()
 
     @override_settings(ROUTINE_CONTRACT_V1=True)
-    def test_on_every_route_says_it_is_not_built_yet_and_calls_nothing(self):
+    def test_on_the_routes_not_built_yet_say_so_and_call_nothing(self):
+        # The preview is built (C3, test_routine_preview.py); the create and
+        # the move answer 501 until theirs.
         with mock.patch("apps.salons.booking_api.urllib.request.urlopen") as urlopen:
-            answers = self.every_route()
-        self.assertEqual([a.status_code for a in answers], [501, 501, 501])
+            answers = self.every_route()[1:]
+        self.assertEqual([a.status_code for a in answers], [501, 501])
         self.assertEqual(answers[0].data["errors"][0]["code"], "not_built")
         urlopen.assert_not_called()
 
@@ -870,9 +872,9 @@ class RefusalTests(SimpleTestCase):
         self.assertEqual(body["errors"][0]["code"], "invalid_frequency")
 
 
-class NothingCallsItYetTests(SimpleTestCase):
-    def test_no_view_imports_the_translator_in_c2(self):
-        for name in ("views.py", "series_views.py", "group_views.py", "routine_views.py"):
+class OnlyTheNewRoutesUseItTests(SimpleTestCase):
+    def test_no_old_view_imports_the_translator(self):
+        for name in ("views.py", "series_views.py", "group_views.py"):
             with self.subTest(name=name):
                 imports = [
                     line for line in (Path("apps/salons") / name).read_text().splitlines()
