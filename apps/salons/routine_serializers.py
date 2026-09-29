@@ -66,3 +66,16 @@ class RoutineCreateRequestSerializer(serializers.Serializer):
         if not value:
             raise serializers.ValidationError("Pick at least one service.", code="no_services")
         return value
+
+
+class RoutineMoveRequestSerializer(serializers.Serializer):
+    """
+    PATCH /booking/<id>/sessions/<session_id> (draft section 6). dry_run is
+    checked by the view as the old cancel checks it: true or false only.
+    """
+
+    start_time = serializers.CharField(help_text="ISO 8601 with an offset: the new start.")
+    stylist_id = serializers.UUIDField(
+        required=False, allow_null=True,
+        help_text="Left out: the session keeps its stylist.",
+    )

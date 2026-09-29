@@ -12,8 +12,7 @@ same booking-api routes, and this one speaks the contract's words
 
 Behind ROUTINE_CONTRACT_V1: off, every route here is 404 and booking-api is
 never called. Built step by step (docs/ROUTINE_FE_CONTRACT_AUDIT.md, 4.2): the
-preview in C3, the create in C4; the move (C5) answers 501 until its step,
-so a switch turned on too early is not mistaken for a missing route.
+preview in C3, the create in C4, the move in C5.
 
 THE OLD ROUTE'S CHECKS, NOT NEW ONES. Each route here does what the old
 routine create does, in the same order and with the same helpers
@@ -30,7 +29,6 @@ from django.conf import settings
 from django.http import Http404
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import status
-from rest_framework.exceptions import APIException
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -40,7 +38,12 @@ from . import group_views as gv
 from . import routine_contract as rc
 from . import series_translate as st
 from . import timezones
-from .booking_api import BookingApiUnavailable, create_series_booking, read_routine_booking
+from .booking_api import (
+    BookingApiUnavailable,
+    create_series_booking,
+    manage_series_booking,
+    read_routine_booking,
+)
 from .group_views import (
     _check_stylists,
     _clock,
@@ -53,7 +56,11 @@ from .group_views import (
     _service_rows,
     _validated,
 )
-from .routine_serializers import RoutineCreateRequestSerializer, RoutinePreviewRequestSerializer
+from .routine_serializers import (
+    RoutineCreateRequestSerializer,
+    RoutineMoveRequestSerializer,
+    RoutinePreviewRequestSerializer,
+)
 from .selectors import salon_cards_for_refs
 from .series_views import _HOURS_MESSAGES, _Hours
 from .views import _OUR_ENVELOPE, BookingApiDown, _idempotency_key, _salon_card
@@ -61,29 +68,10 @@ from .views import _OUR_ENVELOPE, BookingApiDown, _idempotency_key, _salon_card
 logger = logging.getLogger(__name__)
 
 
-class RouteNotBuilt(APIException):
-    """C1 only: the flag is on, and the route is built in a later step."""
-
-    status_code = status.HTTP_501_NOT_IMPLEMENTED
-    default_detail = "This route is not built yet."
-    default_code = "not_built"
-
-
 def _gate():
     """404 with the flag off, before anything else is looked at."""
     if not settings.ROUTINE_CONTRACT_V1:
         raise Http404("Not found")
-
-
-_FLAG = (
-    "Behind ROUTINE_CONTRACT_V1 (off: 404, booking-api is not called). "
-    "Not built yet: with the flag on it answers 501 until its step lands "
-    "(docs/ROUTINE_FE_CONTRACT_AUDIT.md, 4.2)."
-)
-_RESPONSES = {
-    404: OpenApiResponse(response=_OUR_ENVELOPE, description="The flag is off."),
-    501: OpenApiResponse(response=_OUR_ENVELOPE, description="Not built yet."),
-}
 
 
 def _salon_hours(salon, tz, clock, *, longest, lead):
@@ -225,6 +213,68 @@ class RoutinePreviewView(APIView):
         )
 
 
+def _present(routine, *, salon, tz, card=None):
+    """
+    A routine read with view=booking, as the app reads it (draft section 5):
+    on the salon's clock, the avatars from our stylist list, and the full
+    salon card, found as GET /booking/{id} finds it.
+    """
+    ref = routine.get("salon_id")
+    if card is None and isinstance(ref, str):
+        card = salon_cards_for_refs([ref]).get(ref)
+    avatars = {str(s.id): s.avatar_url for s in gv.salon_stylists(salon)}
+    out = rc.present_routine(
+        routine, salon_id=card["id"] if card else str(salon.id), tz=tz, avatars=avatars,
+    )
+    out["salon"] = _salon_card(card, full=True)
+    return out
+
+
+def _after_the_change(routine_id, *, done, salon, tz, authorization, tenant_id):
+    """
+    The routine booking-api has just changed (`done`: "booked", "moved"),
+    read back with view=booking and presented.
+
+    DONE IS DONE. From here on nothing may answer an error: an app told
+    "failed" would do it again. Whatever goes wrong in the read-back, the
+    answer is still the success, with at least the routine's id and
+    booking_type, and a warning in the log.
+    """
+    minimal = {"id": routine_id, "booking_type": "ROUTINE"}
+    try:
+        code, routine = read_routine_booking(
+            routine_id, authorization=authorization, tenant_id=tenant_id,
+        )
+        if code != status.HTTP_200_OK or not isinstance(routine, dict):
+            logger.warning(
+                "routine %s is %s, but reading it back answered %s", routine_id, done, code,
+            )
+            return minimal
+        return _present(routine, salon=salon, tz=tz)
+    except Exception:
+        # Deliberately broad: the change is made either way.
+        logger.warning(
+            "routine %s is %s, but reading it back failed", routine_id, done, exc_info=True,
+        )
+        return minimal
+
+
+def _hours_refusal(hours, start, tz, field):
+    """
+    A start the salon's own hours refuse, as our 422 on `field`: the reason
+    final_reason picks, in the old route's words. None when the hours allow it.
+    """
+    reason = rc.final_reason(hours(start), None)
+    if reason is None:
+        return None
+    local = start.astimezone(tz)
+    return _refuse(
+        field,
+        _HOURS_MESSAGES[reason].format(day=local.date().isoformat(), time=local.strftime("%H:%M")),
+        reason,
+    )
+
+
 def _stylist_and_candidates(salon, service_ids, stylist_id):
     """
     The old route's stylist check, or (no stylist_id) Any Available Expert's
@@ -345,16 +395,9 @@ class RoutineCreateView(APIView):
         hours = _salon_hours(salon, tz, clock, longest=longest, lead=lead)
         for i, session in enumerate(contract["sessions"]):
             start = rc.parse_instant(session["start_time"], f"sessions[{i}].start_time")
-            reason = rc.final_reason(hours(start), None)
-            if reason is not None:
-                local = start.astimezone(tz)
-                raise _refuse(
-                    f"sessions[{i}]",
-                    _HOURS_MESSAGES[reason].format(
-                        day=local.date().isoformat(), time=local.strftime("%H:%M"),
-                    ),
-                    reason,
-                )
+            refusal = _hours_refusal(hours, start, tz, f"sessions[{i}]")
+            if refusal is not None:
+                raise refusal
 
         # ---- the routine ------------------------------------------------------
         try:
@@ -382,59 +425,137 @@ class RoutineCreateView(APIView):
             return Response(refusal, status=answer_status)
 
         return Response(
-            self._booked(answer, salon=salon, tz=tz, authorization=authorization,
-                         tenant_id=route["tenant_id"]),
+            _after_the_change(
+                answer.get("id"), done="booked", salon=salon, tz=tz,
+                authorization=authorization, tenant_id=route["tenant_id"],
+            ),
             status=status.HTTP_201_CREATED,
         )
 
-    @staticmethod
-    def _booked(answer, *, salon, tz, authorization, tenant_id):
-        """
-        The routine booking-api just booked, as GET /booking/{id} will read it:
-        the booking shape (view=booking) on the salon's clock, the avatars from
-        our stylist list and the full salon card.
-
-        BOOKED IS BOOKED. From here on nothing may answer an error: an app
-        told "failed" would book the routine again. Whatever goes wrong in
-        the read-back, the answer is still 201, with at least the routine's
-        id and booking_type, and a warning in the log.
-        """
-        routine_id = answer.get("id")
-        minimal = {"id": routine_id, "booking_type": "ROUTINE"}
-        try:
-            code, routine = read_routine_booking(
-                routine_id, authorization=authorization, tenant_id=tenant_id,
-            )
-            if code != status.HTTP_200_OK or not isinstance(routine, dict):
-                logger.warning(
-                    "routine %s is booked, but reading it back answered %s", routine_id, code,
-                )
-                return minimal
-            ref = routine.get("salon_id")
-            card = salon_cards_for_refs([ref]).get(ref) if isinstance(ref, str) else None
-            avatars = {str(s.id): s.avatar_url for s in gv.salon_stylists(salon)}
-            out = rc.present_routine(
-                routine, salon_id=card["id"] if card else str(salon.id), tz=tz, avatars=avatars,
-            )
-            out["salon"] = _salon_card(card, full=True)
-            return out
-        except Exception:
-            # Deliberately broad: the routine is booked either way.
-            logger.warning("routine %s is booked, but reading it back failed", routine_id, exc_info=True)
-            return minimal
-
 
 class RoutineSessionMoveView(APIView):
-    """PATCH /api/v1/booking/<id>/sessions/<session_id> (built in C5)."""
+    """PATCH /api/v1/booking/<id>/sessions/<session_id>: <id> is the routine."""
 
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
         summary="Move one session of a routine (app contract)",
-        description="One session to a new start; the rest of the routine stays. " + _FLAG,
-        request=None,
-        responses=_RESPONSES,
+        description=(
+            "Behind ROUTINE_CONTRACT_V1 (off: 404, booking-api is not called). "
+            "`start_time` (any offset) is the session's new start; the routine "
+            "keeps its cadence and no other session changes. `stylist_id` "
+            "moves the session to that stylist; left out, it keeps its own. "
+            "`dry_run: true` checks everything and moves nothing: a 200 means "
+            "the move is allowed and the time is free right now. Send an "
+            "Idempotency-Key with a real move only. 200: the whole routine, "
+            "every time on the salon's own clock."
+        ),
+        request=RoutineMoveRequestSerializer,
+        responses={
+            200: OpenApiResponse(description="The routine (contract section 5)."),
+            404: OpenApiResponse(
+                response=_OUR_ENVELOPE,
+                description="No such routine, not yours, no such session in it, or the flag is off.",
+            ),
+            409: OpenApiResponse(response=_OUR_ENVELOPE, description="slot_taken on start_time."),
+            415: OpenApiResponse(response=_OUR_ENVELOPE, description="Not application/json."),
+            422: OpenApiResponse(
+                response=_OUR_ENVELOPE,
+                description="invalid_time, invalid_dry_run, foreign_id, stylist_mismatch, "
+                            "salon_closed / outside_hours / too_soon on start_time; or "
+                            "booking-api's session_locked, session_not_changeable, "
+                            "reschedule_out_of_range, session_day_taken, routine_not_active.",
+            ),
+            503: OpenApiResponse(response=_OUR_ENVELOPE, description="booking-api unreachable."),
+        },
     )
     def patch(self, request, booking_id, session_id):
         _gate()
-        raise RouteNotBuilt()
+        _json_only(request)
+        sent = request.data if isinstance(request.data, dict) else {}
+        # A dry run must never become a real move: "true" as text is refused,
+        # as the old cancel refuses it.
+        if "dry_run" in sent and not isinstance(sent["dry_run"], bool):
+            raise _refuse("dry_run", "dry_run is true or false.", "invalid_dry_run")
+        data = _validated(RoutineMoveRequestSerializer, request)
+        try:
+            rc.parse_instant(data["start_time"], "start_time")
+        except rc.Refusal as exc:
+            return _refused(exc)
+
+        # ---- the routine first, as the old RESCHEDULE reads it -----------
+        authorization = request.META.get("HTTP_AUTHORIZATION", "")
+        routine_id = str(booking_id)
+        try:
+            code, routine = read_routine_booking(routine_id, authorization=authorization)
+        except BookingApiUnavailable as exc:
+            raise BookingApiDown() from exc
+        if code != status.HTTP_200_OK or not isinstance(routine, dict):
+            # Not the caller's, or not there: booking-api's 404, as today.
+            answer_status, answer = rc.translate_refusal(code, routine, route="move")
+            return Response(answer, status=answer_status)
+
+        ref = routine.get("salon_id")
+        card = salon_cards_for_refs([ref]).get(ref) if isinstance(ref, str) else None
+        if card is None:
+            raise Http404("Not found")
+        salon, route = _salon_and_route(card["id"])
+        tz = timezones.resolve(salon.branch_timezone, salon.id)
+        clock = _clock(authorization, route)
+
+        service_ids = [
+            str(s["id"]) for s in routine.get("services") or [] if isinstance(s, dict) and s.get("id")
+        ]
+        stylist = str(data["stylist_id"]) if data.get("stylist_id") else None
+        if stylist is not None:
+            _check_stylists(
+                salon, [{"stylist_id": stylist, "service_ids": service_ids}], _roster(salon),
+            )
+
+        payload = {
+            "start_time": data["start_time"],
+            "stylist_id": stylist,
+            "dry_run": sent.get("dry_run") is True,
+        }
+        move = rc.move_request(payload, session_id, tz)
+
+        # ---- the new time inside the salon's hours, before booking-api -----
+        visit = [{"service_ids": service_ids}]
+        rows = _service_rows(salon, visit, "services") if service_ids else {}
+        longest, lead = _party_timing(rows, visit) if rows else (0, 0)
+        hours = _salon_hours(salon, tz, clock, longest=longest, lead=lead)
+        _, _, start = rc.salon_day_and_time(data["start_time"], tz, "start_time")
+        refusal = _hours_refusal(hours, start, tz, "start_time")
+        if refusal is not None:
+            raise refusal
+
+        # ---- on booking-api's clock, as the old RESCHEDULE sends it --------
+        on_engine = start.astimezone(gt.engine_zone(clock))
+        move["date"] = on_engine.date().isoformat()
+        move["time"] = on_engine.strftime("%H:%M")
+        dry_run = move["dry_run"]
+        try:
+            code, answer = manage_series_booking(
+                routine_id,
+                move,
+                authorization=authorization,
+                # As the old PATCH: the app's own key, with a real move only,
+                # never with a dry run, and never made up.
+                idempotency_key=None if dry_run else request.META.get("HTTP_IDEMPOTENCY_KEY"),
+                tenant_id=route["tenant_id"],
+            )
+        except BookingApiUnavailable as exc:
+            raise BookingApiDown() from exc
+        if code != status.HTTP_200_OK or not isinstance(answer, dict):
+            answer_status, refusal_body = rc.translate_refusal(code, answer, route="move")
+            return Response(refusal_body, status=answer_status)
+
+        if dry_run:
+            # Nothing moved: the routine as it is now.
+            return Response(_present(routine, salon=salon, tz=tz, card=card))
+        return Response(
+            _after_the_change(
+                routine_id, done="moved", salon=salon, tz=tz,
+                authorization=authorization, tenant_id=route["tenant_id"],
+            )
+        )

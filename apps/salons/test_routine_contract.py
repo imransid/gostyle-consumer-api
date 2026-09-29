@@ -100,13 +100,13 @@ class SwitchTests(Routes, SimpleTestCase):
         urlopen.assert_not_called()
 
     @override_settings(ROUTINE_CONTRACT_V1=True)
-    def test_on_the_routes_not_built_yet_say_so_and_call_nothing(self):
-        # The preview (C3) and the create (C4) are built, in their own test
-        # files; the move answers 501 until its step.
+    def test_on_every_route_is_built_and_an_empty_body_calls_nothing(self):
+        # The preview (C3), the create (C4) and the move (C5) are built and
+        # tested in their own files; none answers 501 any more. An empty body
+        # is refused before booking-api is asked anything.
         with mock.patch("apps.salons.booking_api.urllib.request.urlopen") as urlopen:
-            answers = self.every_route()[2:]
-        self.assertEqual([a.status_code for a in answers], [501])
-        self.assertEqual(answers[0].data["errors"][0]["code"], "not_built")
+            answers = self.every_route()
+        self.assertEqual([a.status_code for a in answers], [422, 422, 422])
         urlopen.assert_not_called()
 
     @override_settings(ROUTINE_CONTRACT_V1=False)
