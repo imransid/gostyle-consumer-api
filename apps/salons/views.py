@@ -2062,7 +2062,21 @@ class BookingDetailView(APIView):
             # module.
             from .group_views import read_group_response
 
-            return read_group_response(request, booking_id)
+            response = read_group_response(request, booking_id)
+            if response.status_code == 404 and settings.ROUTINE_CONTRACT_V1:
+                # Not a party either: a routine's id (ROUTINE_CONTRACT_V1).
+                from .routine_views import read_as_routine
+
+                return read_as_routine(request, booking_id, not_found=response)
+            return response
+        if upstream_status == 404 and settings.ROUTINE_CONTRACT_V1:
+            # Not a single booking: perhaps a routine's id. Off, and for any
+            # id that answered, nothing here runs.
+            from .routine_views import read_as_routine
+
+            return read_as_routine(
+                request, booking_id, not_found=Response(body, status=upstream_status),
+            )
 
         # THE SALON, FILLED IN HERE. booking-api stores a branch id and
         # cannot name a salon (its booking-list.md §9); this service reads
@@ -2112,6 +2126,13 @@ class BookingDetailView(APIView):
             )
         except BookingApiUnavailable as exc:
             raise BookingApiDown() from exc
+        if upstream_status == 404 and settings.ROUTINE_CONTRACT_V1:
+            # A routine's id: paid at the salon, nothing to record (409).
+            from .routine_views import patch_as_routine
+
+            return patch_as_routine(
+                request, booking_id, not_found=Response(body, status=upstream_status),
+            )
         return Response(body, status=upstream_status)
 
 # ---------------------------------------------------------------------------
@@ -2392,6 +2413,9 @@ class BookingListView(APIView):
         upstream = {"page": page, "pageSize": page_size}
         if params.get("filter"):
             upstream["filter"] = params["filter"]
+        if settings.ROUTINE_CONTRACT_V1 and params.get("filter") == "recurring":
+            # Each routine as one booking (the app team's contract).
+            upstream["view"] = "booking"
 
         try:
             upstream_status, body = list_bookings(
@@ -2425,10 +2449,11 @@ class BookingListView(APIView):
         # row goes on the salon's clock like its hub, and gets no
         # can_cancel or can_reschedule, which are per visit (in the hub).
         routines = request.query_params.get("filter") == "recurring"
+        salons = {}
         for i, row in enumerate(results):
             card = cards.get(row.get("salon_id"))
             if routines:
-                results[i] = self._routine_row(row, card)
+                results[i] = self._routine_row(row, card, salons)
                 continue
             row["salon"] = _salon_card(card, full=False)
             # One window answers both today. They are separate fields because
@@ -2452,12 +2477,20 @@ class BookingListView(APIView):
         }
 
     @staticmethod
-    def _routine_row(row, card):
+    def _routine_row(row, card, salons):
         """
         One routine of the Recurring tab, as its hub shows it: every time on
         the salon's own clock, and the salon's card. Imported here, not at
         the top: the routine views import this module.
+
+        With ROUTINE_CONTRACT_V1 the row is the routine as one booking
+        (view=booking), presented as GET /booking/<id> presents it, with the
+        short card.
         """
+        if settings.ROUTINE_CONTRACT_V1:
+            from .routine_views import recurring_row
+
+            return recurring_row(row, card, salons)
         from . import series_translate as st
 
         tz = timezones.resolve(card.get("timezone"), card["id"]) if card else None

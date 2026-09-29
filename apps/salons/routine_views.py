@@ -213,21 +213,99 @@ class RoutinePreviewView(APIView):
         )
 
 
-def _present(routine, *, salon, tz, card=None):
+def _present(routine, *, salon, tz, card=None, full=True):
     """
     A routine read with view=booking, as the app reads it (draft section 5):
-    on the salon's clock, the avatars from our stylist list, and the full
-    salon card, found as GET /booking/{id} finds it.
+    on the salon's clock, the avatars from our stylist list, and the salon
+    card, found as GET /booking/{id} finds it: full, or (`full=False`) the
+    short one every list row carries. With no salon found, no avatars and a
+    null card, never a failure.
     """
     ref = routine.get("salon_id")
     if card is None and isinstance(ref, str):
         card = salon_cards_for_refs([ref]).get(ref)
-    avatars = {str(s.id): s.avatar_url for s in gv.salon_stylists(salon)}
-    out = rc.present_routine(
-        routine, salon_id=card["id"] if card else str(salon.id), tz=tz, avatars=avatars,
+    avatars = (
+        {str(s.id): s.avatar_url for s in gv.salon_stylists(salon)} if salon is not None else {}
     )
-    out["salon"] = _salon_card(card, full=True)
+    salon_id = card["id"] if card else (str(salon.id) if salon is not None else None)
+    out = rc.present_routine(routine, salon_id=salon_id, tz=tz, avatars=avatars)
+    out["salon"] = _salon_card(card, full=full)
     return out
+
+
+def _card_salon_and_zone(card):
+    """The storefront behind a salon card (for its stylists) and its clock."""
+    salon = gv.salon_profile(card["id"]) if card else None
+    tz = timezones.resolve(card.get("timezone") if card else None, card["id"] if card else None)
+    return salon, tz
+
+
+# ------------------------------------------------------------ C6: the old routes
+
+
+def read_as_routine(request, routine_id, *, not_found):
+    """
+    GET /api/v1/booking/<id> (C6), for an id no booking and no party answered:
+    read as a routine (view=booking). A 200 is the routine as the create
+    presents it; anything else is `not_found`, the 404 the app would have had
+    anyway, unchanged. booking-api down: our 503.
+    """
+    try:
+        code, routine = read_routine_booking(
+            str(routine_id), authorization=request.META.get("HTTP_AUTHORIZATION", ""),
+        )
+    except BookingApiUnavailable as exc:
+        raise BookingApiDown() from exc
+    if code != status.HTTP_200_OK or not isinstance(routine, dict):
+        return not_found
+    ref = routine.get("salon_id")
+    card = salon_cards_for_refs([ref]).get(ref) if isinstance(ref, str) else None
+    salon, tz = _card_salon_and_zone(card)
+    return Response(_present(routine, salon=salon, tz=tz, card=card))
+
+
+ROUTINE_PAID_AT_SALON = (
+    "This routine is paid at the salon, visit by visit. There is nothing to record here."
+)
+
+
+def patch_as_routine(request, routine_id, *, not_found):
+    """
+    PATCH /api/v1/booking/<id> (C6), for an id booking-api's payment route
+    answered 404: a routine is paid at the salon (draft section 4), so there
+    is nothing to record, 409 already_paid, as for a single PAY_AFTER_CHECK_IN
+    booking. Anything else is `not_found`, unchanged. booking-api down: 503.
+    """
+    try:
+        code, routine = read_routine_booking(
+            str(routine_id), authorization=request.META.get("HTTP_AUTHORIZATION", ""),
+        )
+    except BookingApiUnavailable as exc:
+        raise BookingApiDown() from exc
+    if code != status.HTTP_200_OK or not isinstance(routine, dict):
+        return not_found
+    return Response(
+        {
+            "detail": ROUTINE_PAID_AT_SALON,
+            "code": "already_paid",
+            "errors": [{"field": None, "code": "already_paid", "message": ROUTINE_PAID_AT_SALON}],
+        },
+        status=status.HTTP_409_CONFLICT,
+    )
+
+
+def recurring_row(row, card, salons):
+    """
+    GET /api/v1/bookings?filter=recurring (C6): one row, booking-api's routine
+    with view=booking, presented as GET /booking/<id> presents it, with the
+    SHORT salon card every tab's rows carry. `salons` caches each salon's
+    storefront for the page, so a salon's stylists are read once.
+    """
+    key = card["id"] if card else None
+    if key not in salons:
+        salons[key] = _card_salon_and_zone(card)
+    salon, tz = salons[key]
+    return _present(row, salon=salon, tz=tz, card=card, full=False)
 
 
 def _after_the_change(routine_id, *, done, salon, tz, authorization, tenant_id):
