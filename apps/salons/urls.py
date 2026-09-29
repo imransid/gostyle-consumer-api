@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import group_views, series_views
+from . import group_views, routine_views, series_views
 from .views import (
     BookingCreateView,
     BookingListView,
@@ -54,4 +54,13 @@ urlpatterns = [
     path("booking/series", series_views.SeriesBookingCreateView.as_view(), name="booking-series"),
     path("booking/series/<uuid:series_id>", series_views.SeriesBookingDetailView.as_view(), name="booking-series-detail"),
     path("booking/series/<uuid:series_id>/cancel", series_views.SeriesBookingCancelView.as_view(), name="booking-series-cancel"),
+    # The app team's routine contract (ROUTINE_CONTRACT_V1). Neither `routine` nor
+    # `routine-preview` is a uuid, so booking/<uuid> cannot take them.
+    path("booking/routine-preview", routine_views.RoutinePreviewView.as_view(), name="booking-routine-preview"),
+    path("booking/routine", routine_views.RoutineCreateView.as_view(), name="booking-routine"),
+    path(
+        "booking/<uuid:booking_id>/sessions/<uuid:session_id>",
+        routine_views.RoutineSessionMoveView.as_view(),
+        name="booking-routine-session",
+    ),
 ]
