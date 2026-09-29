@@ -101,11 +101,11 @@ class SwitchTests(Routes, SimpleTestCase):
 
     @override_settings(ROUTINE_CONTRACT_V1=True)
     def test_on_the_routes_not_built_yet_say_so_and_call_nothing(self):
-        # The preview is built (C3, test_routine_preview.py); the create and
-        # the move answer 501 until theirs.
+        # The preview (C3) and the create (C4) are built, in their own test
+        # files; the move answers 501 until its step.
         with mock.patch("apps.salons.booking_api.urllib.request.urlopen") as urlopen:
-            answers = self.every_route()[1:]
-        self.assertEqual([a.status_code for a in answers], [501, 501])
+            answers = self.every_route()[2:]
+        self.assertEqual([a.status_code for a in answers], [501])
         self.assertEqual(answers[0].data["errors"][0]["code"], "not_built")
         urlopen.assert_not_called()
 

@@ -32,3 +32,37 @@ class RoutinePreviewRequestSerializer(serializers.Serializer):
         if not value:
             raise serializers.ValidationError("Pick at least one service.", code="no_services")
         return value
+
+
+class RoutineServiceSerializer(serializers.Serializer):
+    """One service of the create. Its `amount` is echoed, never checked (Q5)."""
+
+    id = serializers.UUIDField()
+
+
+class RoutineCreateRequestSerializer(serializers.Serializer):
+    """
+    POST /booking/routine. The payment fields (section 4) and the four totals
+    are not declared: routine_contract.check_payment reads them as the app
+    sent them, and booking-api checks the totals (amount_mismatch).
+    """
+
+    salon_id = serializers.UUIDField()
+    cadence = serializers.CharField(help_text="week, fortnight or month.")
+    services = RoutineServiceSerializer(many=True)
+    stylist_id = serializers.UUIDField(
+        required=False, allow_null=True,
+        help_text="The stylist the preview showed. Null: the server picks again, the same way.",
+    )
+    start_time = serializers.CharField(
+        help_text="The preview's own start_time: the anchor of the cadence (Q1).",
+    )
+    sessions = serializers.ListField(
+        child=serializers.DictField(),
+        help_text="index, date, start_time, end_time: each its cadence slot or an alternative.",
+    )
+
+    def validate_services(self, value):
+        if not value:
+            raise serializers.ValidationError("Pick at least one service.", code="no_services")
+        return value

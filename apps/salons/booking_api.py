@@ -473,6 +473,24 @@ def read_series_booking(series_id, *, authorization, tenant_id=None):
     )
 
 
+def read_routine_booking(series_id, *, authorization, tenant_id=None):
+    """
+    GET /v1/mobile-booking/series/<id>?view=booking: the routine as ONE
+    booking, the app team's contract (booking-api step B7, behind its
+    MOBILE_ROUTINE_CONTRACT). With that switch off booking-api ignores the
+    view and answers the hub. 404 for a routine the caller may not see.
+    Returns (status, parsed body) as given.
+    """
+    headers = {"Authorization": authorization}
+    if tenant_id:
+        headers["X-Tenant-Id"] = str(tenant_id)
+    return _send(
+        "GET",
+        f"/v1/mobile-booking/series/{urllib.parse.quote(str(series_id), safe='')}?view=booking",
+        headers=headers,
+    )
+
+
 def manage_series_booking(series_id, body, *, authorization, idempotency_key=None, tenant_id=None):
     """
     PATCH /v1/mobile-booking/series/<id> (step 6): a change to a routine,
