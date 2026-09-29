@@ -2270,9 +2270,11 @@ LIVE_BOOKING_STATUSES = frozenset({"BOOKED", "CONFIRMED_BY_SALON", "CHECKED_IN"}
         "resolved gets `\"salon\": null` rather than an object with holes in "
         "it.\n\n"
         "`counts` carries all three tab badges, so the app does not make "
-        "three requests for numbers it draws at once. `recurring` is always "
-        "empty today — series are not wired yet, and an empty page is a "
-        "truer answer than a 422. See docs/BOOKING_LIST_API.md."
+        "three requests for numbers it draws at once. `recurring` lists "
+        "routines, one row per routine, not visits: live ones first by "
+        "their next session, then ended ones, the newest first. With "
+        "ROUTINE_CONTRACT_V1 on, each row is the routine as one booking "
+        "(docs/ROUTINE_BOOKING_API.md §5). See docs/BOOKING_LIST_API.md."
     ),
     parameters=[
         OpenApiParameter(

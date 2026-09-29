@@ -72,7 +72,7 @@ and the cap is not decoration — each row upstream costs a price quote.
 | `filter`    | Contains                                                                                           | Order                  |
 | ----------- | -------------------------------------------------------------------------------------------------- | ---------------------- |
 | `upcoming`  | Still ahead of the customer and still live.                                                        | `start_time` ascending |
-| `recurring` | Routines with a session still to come. **Always empty today** — series are not wired yet.          | Next session first     |
+| `recurring` | The customer's routines, one row per routine, any status. See "The Recurring rows" below.          | Live first (§3 rule 5) |
 | `archive`   | Finished or dead: past, `COMPLETED`, `CANCELLED`, `NO_SHOW`.                                       | `start_time` descending |
 
 Decided in booking-api by `domain/booking/booking-shelf.ts`, which is worth
@@ -87,9 +87,26 @@ reading — the rules that matter are there and are tested there:
 4. **A live `DRAFT` checkout IS listed**, so an interrupted payment can be
    found and resumed. An abandoned one — window run out — stays hidden: that
    is litter, not history.
-5. **`recurring` answers an empty page, not a 422.** "You have no routines"
-   and "there is no such tab" are different sentences, and only the first one
-   is true.
+5. **`recurring` lists routines, not visits.** One row per routine, read from
+   booking-api's routine list: `ACTIVE` and `PAUSED` first, the soonest next
+   session first; then `ENDED` and `COMPLETED`, the newest first. Each booked
+   visit of a routine is also a booking of its own, on `upcoming` or
+   `archive` like any other. A customer with no routines gets an empty page,
+   not a 422.
+
+### The Recurring rows
+
+Every row carries the short salon card (`id`, `name`, `logo_url`, `city`),
+like the other tabs, but no `can_cancel` or `can_reschedule`: those are per
+visit, and a routine answers them per session.
+
+- **`ROUTINE_CONTRACT_V1` off (today):** each row is the routine hub, the
+  shape of the old `/booking/series` routes, with every time on the salon's
+  clock.
+- **`ROUTINE_CONTRACT_V1` on:** each row is the routine as one booking, the
+  same object `GET /booking/<id>` answers for a routine id
+  (`docs/ROUTINE_BOOKING_API.md` §5), with the short card in place of the
+  full one.
 
 ---
 

@@ -34,7 +34,7 @@ class RoutinePreviewRequestSerializer(serializers.Serializer):
         return value
 
 
-class RoutineServiceSerializer(serializers.Serializer):
+class RoutineContractServiceSerializer(serializers.Serializer):
     """One service of the create. Its `amount` is echoed, never checked (Q5)."""
 
     id = serializers.UUIDField()
@@ -49,7 +49,7 @@ class RoutineCreateRequestSerializer(serializers.Serializer):
 
     salon_id = serializers.UUIDField()
     cadence = serializers.CharField(help_text="week, fortnight or month.")
-    services = RoutineServiceSerializer(many=True)
+    services = RoutineContractServiceSerializer(many=True)
     stylist_id = serializers.UUIDField(
         required=False, allow_null=True,
         help_text="The stylist the preview showed. Null: the server picks again, the same way.",
