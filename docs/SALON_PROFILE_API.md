@@ -198,9 +198,10 @@ tenant fills in parent categories, the chip becomes the parent and the
 group stays the child, with **no change to this response shape**. Filter
 groups by `category_id` and it works in both worlds.
 
-A service with no category appears under a group named `"Other"` with
-`id` and `category_id` both set to the string `"other"`. Do not drop it;
-it is a bookable service.
+A service with no category, or whose category was deleted, appears under
+a group named `"Other"` with `id` and `category_id` both set to the string
+`"other"`. There is at most one such group, and one `"other"` chip. Do not
+drop it; it is a bookable service.
 
 ### `duration_min` equals `duration_max` today
 

@@ -356,6 +356,10 @@ class ServicesTabTests(SimpleTestCase):
         ])
 
     def test_groups_are_the_own_categories_filed_under_their_chip(self):
+        # S7b, on purpose: "C Loose" (no category) and "F Deleted" (its
+        # category was deleted) share ONE "Other" group, where the first of
+        # them comes in the tab's order. Before S7b they were two groups with
+        # the same id "other".
         rows = self.ROWS
         data = self.get(rows).data
         self.assertEqual(data["service_groups"], [
@@ -364,12 +368,24 @@ class ServicesTabTests(SimpleTestCase):
             {"id": str(BEARD), "category_id": str(BEARD), "name": "Beard",
              "services": [self.line(rows[1])]},
             {"id": "other", "category_id": "other", "name": "Other",
-             "services": [self.line(rows[2])]},
+             "services": [self.line(rows[2]), self.line(rows[5])]},
             {"id": str(ORPHAN), "category_id": str(ORPHAN), "name": "Orphan",
              "services": [self.line(rows[3])]},
-            {"id": "other", "category_id": "other", "name": "Other",
-             "services": [self.line(rows[5])]},
         ])
+
+    def test_one_other_group_and_one_other_chip(self):
+        data = self.get(self.ROWS).data
+        self.assertEqual([g["id"] for g in data["service_groups"]].count("other"), 1)
+        self.assertEqual([c["id"] for c in data["service_categories"]].count("other"), 1)
+
+    def test_a_deleted_category_first_still_makes_one_other_group(self):
+        rows = [service_row(uuid.UUID(int=7), name="A Deleted", category_0_id=GONE),
+                service_row(uuid.UUID(int=8), name="B Loose", category_0_id=None)]
+        groups = self.get(rows).data["service_groups"]
+        self.assertEqual(groups, [{
+            "id": "other", "category_id": "other", "name": "Other",
+            "services": [self.line(rows[0]), self.line(rows[1])],
+        }])
 
     def test_a_branch_price_wins_when_the_selector_read_one(self):
         row = service_row(branch_price_minor=9900)
@@ -469,6 +485,17 @@ class CoreFieldsTests(Seams, SimpleTestCase):
         for category_id, chip in cases:
             with self.subTest(category_id=category_id):
                 self.assertEqual(self.get(service_row(category_0_id=category_id))["category"], chip)
+
+    def test_no_category_and_a_deleted_one_are_both_other_here_and_on_the_tab(self):
+        loose = service_row(uuid.UUID(int=21), name="A Loose", category_0_id=None)
+        deleted = service_row(uuid.UUID(int=22), name="B Deleted", category_0_id=GONE)
+        [group] = ServicesTabTests().get([loose, deleted]).data["service_groups"]
+        self.assertEqual((group["id"], group["category_id"]), ("other", "other"))
+        self.assertEqual([line["id"] for line in group["services"]],
+                         [str(loose.id), str(deleted.id)])
+        for row in (loose, deleted):
+            with self.subTest(name=row.name):
+                self.assertEqual(self.get(row)["category"], {"id": "other", "label": "Other"})
 
     def test_the_category_matches_the_tab_s_group_chip(self):
         # The id the tab files this service under is the id the screen gets.

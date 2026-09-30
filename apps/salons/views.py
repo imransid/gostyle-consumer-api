@@ -349,9 +349,14 @@ class SalonServicesView(APIView):
         # category_0_id, not category_id: the service table has a legacy text
         # column already named `category`, so inspectdb renamed the real
         # foreign key rather than colliding with it.
+        #
+        # A category that is not in `categories` (deleted) files the service
+        # under None, with the services that have no category: both are
+        # "Other", and two groups with the same id "other" would draw twice.
         grouped = {}
         for svc in services:
-            grouped.setdefault(svc.category_0_id, []).append(svc)
+            cat_id = svc.category_0_id if svc.category_0_id in categories else None
+            grouped.setdefault(cat_id, []).append(svc)
 
         chips = {}
         groups = []
