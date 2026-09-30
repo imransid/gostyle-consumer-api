@@ -11,11 +11,14 @@ code moved to menu.py, shared with this screen.
 
 S3: hero_url, gallery (at most 5) and gallery_count.
 
+S4: included, details and preparation, with the stages read once.
+
 The selectors are mocked; no database.
 """
 
 import types
 import uuid
+from contextlib import ExitStack
 from decimal import Decimal
 from unittest import mock
 
@@ -24,8 +27,17 @@ from django.test import SimpleTestCase
 from django.urls import resolve, reverse
 from rest_framework.test import APIRequestFactory
 
-from apps.salons import menu, selectors
-from apps.salons.service_detail import GALLERY_MAX, core_fields, photos
+from apps.salons import menu, selectors, skills
+from apps.salons.service_detail import (
+    GALLERY_MAX,
+    content,
+    core_fields,
+    details,
+    duration_text,
+    included,
+    photos,
+    preparation,
+)
 from apps.salons.service_detail_views import (
     NO_SALON,
     NO_SERVICE,
@@ -43,27 +55,46 @@ def url(salon=SALON, service=SERVICE):
     return f"/api/v1/salon/{salon}/service/{service}"
 
 
-class RouteTests(SimpleTestCase):
-    """What the endpoint answers, through the URL layer."""
+class Seams:
+    """
+    The view with every selector it reads mocked. A test passes only what it
+    cares about; the rest are harmless defaults. Each mock is kept on self
+    (salon_lookup, service_lookup, categories_lookup, photos_lookup,
+    stages_lookup) for call checks.
+    """
 
-    def get(self, path, *, salon=True, service=True, **headers):
+    def call(self, path=None, *, salon=True, service=True, photos=([], []),
+             stages=(), **headers):
         found_salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT) if salon else None
         if service is True:
             service = service_row()
-        with mock.patch(
-            "apps.salons.service_detail_views.salon_profile", return_value=found_salon
-        ) as salon_lookup, mock.patch(
-            "apps.salons.service_detail_views.service_for_salon",
-            return_value=service or None,
-        ) as service_lookup, mock.patch(
-            "apps.salons.service_detail_views.salon_categories", return_value=CATEGORIES
-        ) as categories_lookup, mock.patch(
-            "apps.salons.service_detail_views.service_photo_urls", return_value=([], [])
-        ):
-            self.salon_lookup = salon_lookup
-            self.service_lookup = service_lookup
-            self.categories_lookup = categories_lookup
-            return self.client.get(path, **headers)
+        answers = {
+            "salon_profile": found_salon,
+            "service_for_salon": service or None,
+            "salon_categories": CATEGORIES,
+            "service_photo_urls": photos,
+            "service_stages": list(stages),
+        }
+        with ExitStack() as stack:
+            mocks = {
+                name: stack.enter_context(mock.patch(
+                    f"apps.salons.service_detail_views.{name}", return_value=answer,
+                ))
+                for name, answer in answers.items()
+            }
+            self.salon_lookup = mocks["salon_profile"]
+            self.service_lookup = mocks["service_for_salon"]
+            self.categories_lookup = mocks["salon_categories"]
+            self.photos_lookup = mocks["service_photo_urls"]
+            self.stages_lookup = mocks["service_stages"]
+            return self.client.get(path or url(), **headers)
+
+
+class RouteTests(Seams, SimpleTestCase):
+    """What the endpoint answers, through the URL layer."""
+
+    def get(self, path, *, salon=True, service=True, **headers):
+        return self.call(path, salon=salon, service=service, **headers)
 
     def assert_our_404(self, response, detail):
         self.assertEqual(response.status_code, 404)
@@ -245,6 +276,13 @@ def service_row(service_id=SERVICE, **overrides):
         "deleted_at": None,
         "online_booking_enabled": True,
         "published_version": 1,
+        "audience": "UNISEX",
+        "requires_consultation": False,
+        "requires_patch_test": False,
+        "patch_test_hours": None,
+        "min_age": None,
+        "pre_care_instructions": None,
+        "post_care_instructions": None,
         **overrides,
     })
 
@@ -319,19 +357,11 @@ class ServicesTabTests(SimpleTestCase):
         self.assertEqual(line["price"], Decimal("120.00"))
 
 
-class CoreFieldsTests(SimpleTestCase):
+class CoreFieldsTests(Seams, SimpleTestCase):
     """S2: name, description, price, durations, category and is_active."""
 
     def get(self, row):
-        salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT)
-        with mock.patch("apps.salons.service_detail_views.salon_profile", return_value=salon), \
-                mock.patch("apps.salons.service_detail_views.service_for_salon", return_value=row), \
-                mock.patch("apps.salons.service_detail_views.salon_categories",
-                           return_value=CATEGORIES) as categories, \
-                mock.patch("apps.salons.service_detail_views.service_photo_urls",
-                           return_value=([], [])):
-            self.categories_lookup = categories
-            response = self.client.get(url(service=row.id))
+        response = self.call(url(service=row.id), service=row)
         self.assertEqual(response.status_code, 200)
         return response.json()
 
@@ -349,6 +379,12 @@ class CoreFieldsTests(SimpleTestCase):
             "hero_url": None,
             "gallery": [],
             "gallery_count": 0,
+            "included": [],
+            "details": [
+                {"label": "Time Duration", "value": "45 min", "icon": "clock"},
+                {"label": "Suitable for", "value": "Everyone", "icon": "scissors"},
+            ],
+            "preparation": [],
         })
 
     def test_categories_are_read_for_the_salon_s_tenant(self):
@@ -553,24 +589,15 @@ class ServicePhotoUrlsTests(SimpleTestCase):
         )
 
 
-class PhotoFieldsTests(SimpleTestCase):
+class PhotoFieldsTests(Seams, SimpleTestCase):
     """The three photo fields in the answer, through the URL."""
 
     def get(self, own, linked):
-        salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT)
-        with mock.patch("apps.salons.service_detail_views.salon_profile", return_value=salon), \
-                mock.patch("apps.salons.service_detail_views.service_for_salon",
-                           return_value=service_row()), \
-                mock.patch("apps.salons.service_detail_views.salon_categories",
-                           return_value=CATEGORIES), \
-                mock.patch("apps.salons.service_detail_views.service_photo_urls",
-                           return_value=(own, linked)) as reader:
-            self.reader = reader
-            return self.client.get(url()).json()
+        return self.call(photos=(own, linked)).json()
 
     def test_the_photos_are_read_for_this_salon_and_service(self):
         self.get([], [])
-        (salon, service_id), _ = self.reader.call_args
+        (salon, service_id), _ = self.photos_lookup.call_args
         self.assertEqual((salon.id, service_id), (SALON, SERVICE))
 
     def test_seven_photos(self):
@@ -585,3 +612,187 @@ class PhotoFieldsTests(SimpleTestCase):
         body = self.get([], [])
         self.assertEqual((body["hero_url"], body["gallery"], body["gallery_count"]),
                          (None, [], 0))
+
+
+# ---------------------------------------------------------------------------
+# S4: included, details, preparation
+# ---------------------------------------------------------------------------
+
+def stage(name, skill=None, level=1):
+    return {"service_id": SERVICE, "skill_id": skill or uuid.uuid4(),
+            "min_level": level, "name_en": name}
+
+
+class IncludedTests(SimpleTestCase):
+    """The "What's Included" chips, from the stage names."""
+
+    def test_the_stage_names_in_stage_order(self):
+        names = ["Consultation", "Wash", "Hair cut", "Styling"]
+        self.assertEqual(included([stage(n) for n in names]), names)
+
+    def test_blank_names_are_left_out(self):
+        self.assertEqual(
+            included([stage(""), stage("   "), stage(None), stage("Wash")]), ["Wash"]
+        )
+
+    def test_a_repeated_name_is_shown_once_as_first_written(self):
+        self.assertEqual(
+            included([stage("Wash"), stage("Cut"), stage(" wash "), stage("WASH")]),
+            ["Wash", "Cut"],
+        )
+
+    def test_spaces_are_tidied(self):
+        self.assertEqual(included([stage("  Scalp   massage ")]), ["Scalp massage"])
+
+    def test_no_stages(self):
+        self.assertEqual(included([]), [])
+
+    def test_a_stage_named_like_the_service_is_left_out(self):
+        stages = [stage("  the gentleman's   CUT "), stage("Wash")]
+        self.assertEqual(included(stages, "The Gentleman's Cut"), ["Wash"])
+
+    def test_a_one_stage_service_named_like_its_stage_has_no_chips(self):
+        self.assertEqual(included([stage("Signature Fade")], "Signature Fade"), [])
+
+    def test_the_service_name_is_passed_in(self):
+        body = content(service_row(name="Wash"), [stage("wash"), stage("Cut")])
+        self.assertEqual(body["included"], ["Cut"])
+
+
+class PreparationTests(SimpleTestCase):
+    """The "Preparation & Aftercare" bullets, from the two care texts."""
+
+    def test_pre_care_lines_first_then_post_care(self):
+        self.assertEqual(
+            preparation("Arrive with clean hair.\nNo gel.", "Wait 48 hours before washing."),
+            ["Arrive with clean hair.", "No gel.", "Wait 48 hours before washing."],
+        )
+
+    def test_one_bullet_per_non_empty_line_any_line_ending(self):
+        self.assertEqual(
+            preparation("One.\r\n\r\n  Two.  \r\n", "\n\nThree.\n"),
+            ["One.", "Two.", "Three."],
+        )
+
+    def test_typed_bullet_marks_and_numbers_are_removed(self):
+        typed = "- Dash\n* Star\n• Dot\n1. One\n12) Twelve\n  -   Spaced"
+        self.assertEqual(
+            preparation(typed, None),
+            ["Dash", "Star", "Dot", "One", "Twelve", "Spaced"],
+        )
+
+    def test_text_that_only_looks_like_a_mark_is_kept(self):
+        # No space after the mark: it is part of the sentence.
+        self.assertEqual(
+            preparation("1.5 hours before, no coffee.\n-10% with a friend", None),
+            ["1.5 hours before, no coffee.", "-10% with a friend"],
+        )
+
+    def test_a_line_that_is_only_a_mark_is_left_out(self):
+        self.assertEqual(preparation("-\n• \n2.\nReal line", None), ["Real line"])
+
+    def test_no_text(self):
+        self.assertEqual(preparation(None, None), [])
+        self.assertEqual(preparation("", "  \n "), [])
+
+
+class DetailsTests(SimpleTestCase):
+    """The "Key Details" rows."""
+
+    def rows(self, **change):
+        return details(service_row(**change))
+
+    def test_duration_and_suitable_for_always(self):
+        self.assertEqual(self.rows(), [
+            {"label": "Time Duration", "value": "45 min", "icon": "clock"},
+            {"label": "Suitable for", "value": "Everyone", "icon": "scissors"},
+        ])
+
+    def test_every_row_in_order(self):
+        rows = self.rows(audience="FEMALE", requires_consultation=True,
+                         requires_patch_test=True, patch_test_hours=48, min_age=16)
+        self.assertEqual(rows, [
+            {"label": "Time Duration", "value": "45 min", "icon": "clock"},
+            {"label": "Suitable for", "value": "Women", "icon": "scissors"},
+            {"label": "Consultation", "value": "Needed before this service.", "icon": "sparkles"},
+            {"label": "Patch test",
+             "value": "An allergy test, at least 48 hours before your visit.", "icon": "drop"},
+            {"label": "Minimum age", "value": "16 years", "icon": "scissors"},
+        ])
+
+    def test_suitable_for_each_audience(self):
+        for audience, value in (("MALE", "Men"), ("FEMALE", "Women"),
+                                ("UNISEX", "Everyone"), ("KIDS", "Kids")):
+            with self.subTest(audience=audience):
+                self.assertEqual(self.rows(audience=audience)[1]["value"], value)
+
+    def test_an_unknown_audience_gets_no_row(self):
+        labels = [r["label"] for r in self.rows(audience="PETS")]
+        self.assertEqual(labels, ["Time Duration"])
+
+    def test_patch_test_hours(self):
+        def value(hours):
+            rows = self.rows(requires_patch_test=True, patch_test_hours=hours)
+            return next(r["value"] for r in rows if r["label"] == "Patch test")
+        self.assertEqual(value(1), "An allergy test, at least 1 hour before your visit.")
+        self.assertEqual(value(None), "An allergy test, before your visit.")
+        self.assertEqual(value(0), "An allergy test, before your visit.")
+
+    def test_rows_that_are_not_set_are_left_out(self):
+        rows = self.rows(requires_consultation=False, requires_patch_test=False,
+                         patch_test_hours=48, min_age=0)
+        self.assertEqual([r["label"] for r in rows], ["Time Duration", "Suitable for"])
+
+    def test_duration_text(self):
+        for minutes, text in ((5, "5 min"), (45, "45 min"), (60, "1 hr"),
+                              (90, "1 hr 30 min"), (125, "2 hr 5 min"), (180, "3 hr")):
+            with self.subTest(minutes=minutes):
+                self.assertEqual(duration_text(minutes), text)
+
+    def test_the_duration_row_uses_the_same_minutes_as_the_pair(self):
+        rows = self.rows(duration_minutes=90)
+        self.assertEqual(rows[0]["value"], "1 hr 30 min")
+
+
+class ServiceStagesTests(SimpleTestCase):
+    """selectors.service_stages: one read, for S4 and S5 both."""
+
+    def test_one_service_in_stage_order_with_names_skills_and_levels(self):
+        with mock.patch.object(selectors, "ServiceStage") as stage_model:
+            stage_model.objects.filter.return_value.order_by.return_value.values.return_value = []
+            self.assertEqual(selectors.service_stages(SERVICE), [])
+        stage_model.objects.filter.assert_called_once_with(service_id=SERVICE)
+        stage_model.objects.filter.return_value.order_by.assert_called_once_with(
+            "sort_order", "created_at", "id",
+        )
+        stage_model.objects.filter.return_value.order_by.return_value.values.assert_called_once_with(
+            "service_id", "skill_id", "min_level", "name_en",
+        )
+
+    def test_the_rows_fit_the_expert_filter_as_they_are(self):
+        # S5 hands these rows to stylist_rows(stages=...); the skill rules
+        # read service_id, skill_id and min_level and ignore name_en.
+        own = uuid.uuid4()
+        rows = [stage("Cut", skill=own, level=3)]
+        resolved = skills.resolve([own], [{"id": own, "code": None, "deleted_at": None}], [])
+        self.assertEqual(skills.requirements(rows, resolved), {SERVICE: {own: "SENIOR"}})
+
+
+class ContentFieldsTests(Seams, SimpleTestCase):
+    """included, details and preparation in the answer, through the URL."""
+
+    def test_the_stages_are_read_once_for_this_service(self):
+        self.call()
+        self.stages_lookup.assert_called_once_with(SERVICE)
+
+    def test_the_three_fields(self):
+        row = service_row(pre_care_instructions="- Clean hair, please.",
+                          post_care_instructions="1. No washing for a day.")
+        body = self.call(service=row, stages=[stage("Wash"), stage("Cut")]).json()
+        self.assertEqual(body["included"], ["Wash", "Cut"])
+        self.assertEqual(body["preparation"], ["Clean hair, please.", "No washing for a day."])
+        self.assertEqual([r["label"] for r in body["details"]], ["Time Duration", "Suitable for"])
+
+    def test_nothing_to_say_hides_the_blocks(self):
+        body = self.call(stages=[]).json()
+        self.assertEqual((body["included"], body["preparation"]), ([], []))

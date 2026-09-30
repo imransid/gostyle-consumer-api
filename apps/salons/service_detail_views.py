@@ -33,8 +33,9 @@ from .selectors import (
     salon_profile,
     service_for_salon,
     service_photo_urls,
+    service_stages,
 )
-from .service_detail import core_fields, photos
+from .service_detail import content, core_fields, photos
 from .views import _OUR_ENVELOPE
 
 # Written for the customer: the app shows `detail` on its empty state.
@@ -81,8 +82,9 @@ def path_uuid(value):
                 "The service: id, salon_id, name, description, price (before "
                 "VAT, the Services tab's number), duration_min, duration_max, "
                 "category ({id, label}, the tab's chip), is_active, hero_url, "
-                "gallery (at most 5) and gallery_count. More fields are added "
-                "in S4 to S6."
+                "gallery (at most 5), gallery_count, included (the stage "
+                "names), details (the Key Details rows) and preparation (the "
+                "care bullets). More fields are added in S5 and S6."
             ),
         ),
         401: OpenApiResponse(response=_OUR_ENVELOPE, description="A bad or expired token."),
@@ -115,4 +117,8 @@ class SalonServiceDetailView(APIView):
         categories = salon_categories(salon.tenant_id)
         body = core_fields(salon, service, categories)
         body.update(photos(*service_photo_urls(salon, service.id)))
+
+        # Read once: the names here, the skills and levels for the experts.
+        stages = service_stages(service.id)
+        body.update(content(service, stages))
         return Response(body)
