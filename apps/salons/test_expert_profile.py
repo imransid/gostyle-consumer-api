@@ -24,6 +24,9 @@ tab. The tab is pinned first, before its grouping moved to menu.py.
 E5: the salon block, from GET /salon/<id>'s own answer. That route is pinned
 first, before its body moved to a function both screens call.
 
+E6: media, media_count and has_story: this salon's photos tagged with the
+stylist.
+
 The querysets are built and inspected, never run: the platform's tables are
 unmanaged, so they do not exist in the test database. The views are called
 with their selectors mocked.
@@ -316,11 +319,12 @@ SALON_BLOCK = {
 
 
 def mock_platform_reads(stack, *, salon=True, found=True, person=None,
-                        services=(), covered=(), categories=None, salon_page=None):
+                        services=(), covered=(), categories=None, salon_page=None,
+                        media=()):
     """
     Every read the view makes of the PLATFORM's tables, mocked: the salon, its
-    own page's answer, the stylist, the menu, its stages, who covers what, the
-    categories. Returns the mocks by selector name.
+    own page's answer, the stylist, their photos, the menu, its stages, who
+    covers what, the categories. Returns the mocks by selector name.
 
     `covered` is the services this stylist can do. One place, because the
     test database has none of these tables: test_favourite.py uses it too,
@@ -335,6 +339,7 @@ def mock_platform_reads(stack, *, salon=True, found=True, person=None,
         "salon_profile": found_salon,
         "salon_profile_data": SALON_PAGE if salon_page is None else salon_page,
         "stylist_for_salon": person if found else None,
+        "stylist_media_rows": list(media),
         "salon_services": list(services),
         "service_stage_rows": [],
         "stylist_service_coverage": {person.id: [s.id for s in covered]} if covered else {},
@@ -352,8 +357,8 @@ class Seams:
     """
     The view with every selector it reads mocked. A test passes only what it
     cares about. Each mock is kept on self (salon_lookup, salon_page_lookup,
-    stylist_lookup, favourite_lookup, services_lookup, stages_lookup,
-    coverage_lookup, categories_lookup) for call checks.
+    stylist_lookup, media_lookup, favourite_lookup, services_lookup,
+    stages_lookup, coverage_lookup, categories_lookup) for call checks.
     """
 
     def seams(self, stack, *, favourite=False, **reads):
@@ -361,6 +366,7 @@ class Seams:
         self.salon_lookup = mocks["salon_profile"]
         self.salon_page_lookup = mocks["salon_profile_data"]
         self.stylist_lookup = mocks["stylist_for_salon"]
+        self.media_lookup = mocks["stylist_media_rows"]
         self.services_lookup = mocks["salon_services"]
         self.stages_lookup = mocks["service_stage_rows"]
         self.coverage_lookup = mocks["stylist_service_coverage"]
@@ -370,10 +376,11 @@ class Seams:
         ))
 
     def call(self, path=None, *, salon=True, found=True, favourite=False,
-             services=(), covered=(), salon_page=None, **headers):
+             services=(), covered=(), salon_page=None, media=(), **headers):
         with ExitStack() as stack:
             self.seams(stack, salon=salon, found=found, favourite=favourite,
-                       services=services, covered=covered, salon_page=salon_page)
+                       services=services, covered=covered, salon_page=salon_page,
+                       media=media)
             return self.client.get(path or url(), **headers)
 
 
@@ -720,6 +727,9 @@ class PersonFieldsTests(Seams, SimpleTestCase):
             "rating": None,
             "review_count": 0,
             "is_favorite": False,      # E3b
+            "has_story": False,        # E6
+            "media": [],               # E6
+            "media_count": 0,          # E6
             "salon": SALON_BLOCK,      # E5
             "service_groups": [],      # E4
         })
@@ -761,6 +771,7 @@ class PersonMatchesTheStylistsRouteTests(SimpleTestCase):
             # and the salon's own page (E5).
             patch("apps.salons.expert_profile_views.salon_services", return_value=[])
             patch("apps.salons.expert_profile_views.salon_profile_data", return_value=SALON_PAGE)
+            patch("apps.salons.expert_profile_views.stylist_media_rows", return_value=[])
 
             listed = self.client.get(f"/api/v1/salon/{SALON}/stylists")
             profile = self.client.get(url(stylist=staff_id))
@@ -1250,6 +1261,7 @@ class RealSkillRules:
         patch("apps.salons.expert_profile_views.service_stage_rows", side_effect=stages_of)
         patch("apps.salons.expert_profile_views.is_favourite_stylist", return_value=False)
         patch("apps.salons.expert_profile_views.salon_profile_data", return_value=SALON_PAGE)
+        patch("apps.salons.expert_profile_views.stylist_media_rows", return_value=[])
         patch("apps.salons.selectors.salon_stylists", return_value=Listed(TEAM))
         # Shared by both, under stylist_service_coverage.
         patch("apps.salons.selectors.skill_bridge",
@@ -1653,9 +1665,10 @@ class SalonBlockMatchesTheSalonPageTests(SimpleTestCase):
             patch("apps.salons.expert_profile_views.salon_profile", return_value=row)
             patch("apps.salons.views.read_snapshot", return_value=published)
             stack.enter_context(clock(moment))
-            # Not what this compares: the person, the heart, the menu.
+            # Not what this compares: the person, the heart, the photos, the menu.
             patch("apps.salons.expert_profile_views.stylist_for_salon", return_value=stylist())
             patch("apps.salons.expert_profile_views.is_favourite_stylist", return_value=False)
+            patch("apps.salons.expert_profile_views.stylist_media_rows", return_value=[])
             patch("apps.salons.expert_profile_views.salon_services", return_value=[])
 
             page = self.client.get(f"/api/v1/salon/{SALON}")
@@ -1725,3 +1738,246 @@ class SalonBlockOpenApiTests(Seams, SimpleTestCase):
         self.assertEqual(
             list(examples["AStylistOfThisSalon"]["value"]["salon"]), list(SALON_BLOCK),
         )
+
+
+# ---------------------------------------------------------------------------
+# E6: media, media_count, has_story
+# ---------------------------------------------------------------------------
+
+def shot(number, mime_type="image/jpeg", **extra):
+    """A photo row as `selectors.stylist_media_rows` gives one."""
+    return {
+        "id": uuid.UUID(int=0xF070 + number),
+        "url": f"https://bucket.s3.amazonaws.com/media/{number}.jpg",
+        "mime_type": mime_type,
+        **extra,
+    }
+
+
+def tile(number, kind="image", thumbnail_url=None):
+    """That row as one item of `media`, as JSON."""
+    return {
+        "id": str(uuid.UUID(int=0xF070 + number)),
+        "type": kind,
+        "url": f"https://bucket.s3.amazonaws.com/media/{number}.jpg",
+        "thumbnail_url": thumbnail_url,
+    }
+
+
+class MediaRuleTests(SimpleTestCase):
+    """`expert_profile.media`: pure, the tagged rows in, the three fields out."""
+
+    def test_no_photos(self):
+        self.assertEqual(
+            expert_profile.media([]), {"has_story": False, "media": [], "media_count": 0},
+        )
+
+    def test_one_photo(self):
+        self.assertEqual(
+            expert_profile.media([shot(1)]),
+            {"has_story": True, "media": [tile(1)], "media_count": 1},
+        )
+
+    def test_an_item_is_id_type_url_thumbnail_url(self):
+        (item,) = expert_profile.media([shot(1)])["media"]
+        self.assertEqual(list(item), ["id", "type", "url", "thumbnail_url"])
+        self.assertIsInstance(item["id"], str)
+
+    def test_an_image_has_no_thumbnail(self):
+        # The contract: thumbnail_url is null for an image.
+        (item,) = expert_profile.media([shot(1, thumbnail_url="https://x/t.jpg")])["media"]
+        self.assertEqual((item["type"], item["thumbnail_url"]), ("image", None))
+
+    def test_every_image_type_is_an_image(self):
+        rows = [shot(1, "image/jpeg"), shot(2, "image/png"), shot(3, "image/webp"),
+                shot(4, "IMAGE/JPEG")]
+        self.assertEqual(
+            [item["type"] for item in expert_profile.media(rows)["media"]], ["image"] * 4,
+        )
+
+    def test_the_rows_keep_their_order(self):
+        # Newest first is the selector's order; nothing here sorts again.
+        out = expert_profile.media([shot(3), shot(1), shot(2)])
+        self.assertEqual(out["media"], [tile(3), tile(1), tile(2)])
+
+    def test_at_most_five_and_the_count_is_all_of_them(self):
+        self.assertEqual(expert_profile.MEDIA_MAX, 5)
+        out = expert_profile.media([shot(n) for n in range(7)])
+        self.assertEqual(out["media"], [tile(n) for n in range(5)])
+        self.assertEqual(out["media_count"], 7)       # "+N" = 7 - 5 = 2
+        self.assertIs(out["has_story"], True)
+
+    def test_five_or_fewer_is_the_whole_list(self):
+        out = expert_profile.media([shot(n) for n in range(5)])
+        self.assertEqual((len(out["media"]), out["media_count"]), (5, 5))
+
+    def test_a_video_with_a_thumbnail_is_a_video(self):
+        row = shot(1, "video/mp4", thumbnail_url="https://bucket.s3.amazonaws.com/t/1.jpg")
+        self.assertEqual(
+            expert_profile.media([row]),
+            {"has_story": True, "media_count": 1,
+             "media": [tile(1, "video", "https://bucket.s3.amazonaws.com/t/1.jpg")]},
+        )
+
+    def test_a_video_with_no_thumbnail_is_left_out_and_not_counted(self):
+        # The contract needs a thumbnail to draw a video tile. The platform
+        # stores none (it takes no video at all today), so the row has no
+        # `thumbnail_url`, or an empty one.
+        for video in (shot(9, "video/mp4"), shot(9, "video/mp4", thumbnail_url=None),
+                      shot(9, "video/mp4", thumbnail_url="")):
+            with self.subTest(video=video):
+                out = expert_profile.media([shot(1), video, shot(2)])
+                self.assertEqual(out["media"], [tile(1), tile(2)])
+                self.assertEqual(out["media_count"], 2)
+
+    def test_a_file_that_is_neither_is_left_out_and_not_counted(self):
+        for mime_type in ("application/pdf", "text/html", "", None, "imagejpeg"):
+            with self.subTest(mime_type=mime_type):
+                out = expert_profile.media([shot(9, mime_type), shot(1)])
+                self.assertEqual(out["media"], [tile(1)])
+                self.assertEqual(out["media_count"], 1)
+
+    def test_a_row_with_no_url_is_left_out_and_not_counted(self):
+        for blank in ("", None):
+            with self.subTest(url=blank):
+                out = expert_profile.media([{**shot(9), "url": blank}, shot(1)])
+                self.assertEqual((out["media"], out["media_count"]), ([tile(1)], 1))
+
+    def test_a_left_out_row_does_not_take_one_of_the_five_places(self):
+        rows = [shot(9, "video/mp4")] + [shot(n) for n in range(6)]
+        out = expert_profile.media(rows)
+        self.assertEqual(out["media"], [tile(n) for n in range(5)])
+        self.assertEqual(out["media_count"], 6)
+
+    def test_only_left_out_rows_is_no_story(self):
+        out = expert_profile.media([shot(1, "video/mp4"), shot(2, "application/pdf")])
+        self.assertEqual(out, {"has_story": False, "media": [], "media_count": 0})
+
+    def test_has_story_is_media_count_above_0(self):
+        # Rafa, Q10, and their own open point: the avatar ring and the grid
+        # both read `media` today.
+        for count in (0, 1, 6):
+            with self.subTest(count=count):
+                out = expert_profile.media([shot(n) for n in range(count)])
+                self.assertIs(out["has_story"], count > 0)
+
+    def test_the_three_keys_in_the_contract_s_order(self):
+        self.assertEqual(list(expert_profile.media([])), ["has_story", "media", "media_count"])
+
+
+class StylistMediaRowsTests(SimpleTestCase):
+    """`selectors.stylist_media_rows`: which rows, in which order."""
+
+    def read(self, rows=()):
+        salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT, branch_id=BRANCH)
+        with mock.patch.object(selectors, "StorefrontMedia") as media:
+            chain = media.objects.filter.return_value.order_by.return_value
+            chain.values.return_value = list(rows)
+            answer = selectors.stylist_media_rows(salon, HERE)
+        return media, answer
+
+    def test_answers_the_rows_as_a_list(self):
+        _, answer = self.read([shot(1), shot(2)])
+        self.assertEqual(answer, [shot(1), shot(2)])
+
+    def test_this_salon_s_public_approved_gallery_photos_of_this_stylist(self):
+        # Not another salon's or another business's photo, not another
+        # stylist's (or a photo tagged with anything that is not this id),
+        # not private, not waiting for (or refused) approval, not deleted,
+        # not a cover, a logo, a story frame or a certificate.
+        media, _ = self.read()
+        media.objects.filter.assert_called_once_with(
+            storefront_id=SALON,
+            tenant_id=TENANT,
+            staff_id=HERE,
+            kind="GALLERY",
+            is_public=True,
+            moderation_status="APPROVED",
+            deleted_at__isnull=True,
+        )
+
+    def test_processing_state_is_not_checked(self):
+        # As the salon gallery and the service photos (Rafa, Q9; audit F10).
+        media, _ = self.read()
+        self.assertNotIn("processing_state", media.objects.filter.call_args.kwargs)
+
+    def test_newest_first_and_id_breaks_a_tie(self):
+        media, _ = self.read()
+        media.objects.filter.return_value.order_by.assert_called_once_with("-created_at", "id")
+
+    def test_only_the_three_columns_the_screen_needs(self):
+        media, _ = self.read()
+        media.objects.filter.return_value.order_by.return_value.values.assert_called_once_with(
+            "id", "url", "mime_type",
+        )
+
+
+class MediaFieldTests(Seams, SimpleTestCase):
+    """The three media fields in the answer, through the URL."""
+
+    def test_the_photos_are_read_for_this_salon_and_stylist(self):
+        self.call()
+        (salon, staff_id), _ = self.media_lookup.call_args
+        self.assertEqual((salon.id, staff_id), (SALON, HERE))
+        self.media_lookup.assert_called_once()
+
+    def test_seven_photos(self):
+        body = self.call(media=[shot(n) for n in range(7)]).json()
+        self.assertEqual(body["media"], [tile(n) for n in range(5)])
+        self.assertEqual(body["media_count"], 7)
+        self.assertIs(body["has_story"], True)
+
+    def test_no_photos(self):
+        body = self.call().json()
+        self.assertEqual(
+            (body["media"], body["media_count"], body["has_story"]), ([], 0, False),
+        )
+
+    def test_a_video_is_not_shown_today(self):
+        # The selector reads no thumbnail (the platform stores none), so a
+        # video row, if one ever appears, is left out.
+        body = self.call(media=[shot(1, "video/mp4"), shot(2)]).json()
+        self.assertEqual((body["media"], body["media_count"]), ([tile(2)], 1))
+
+    def test_the_answer_s_keys_so_far_in_the_contract_s_order(self):
+        self.assertEqual(list(self.call().json()), [
+            "id", "salon_id", "name", "title", "role", "avatar_url", "rating",
+            "review_count", "is_favorite", "has_story", "media", "media_count",
+            "salon", "service_groups",
+        ])
+
+    def test_a_404_never_reads_the_photos(self):
+        self.call(found=False)
+        self.media_lookup.assert_not_called()
+
+
+class MediaOpenApiTests(Seams, SimpleTestCase):
+    """The 200's shape names the media fields."""
+
+    def shape(self):
+        schema = SchemaGenerator().get_schema(request=None, public=True)
+        operation = schema["paths"]["/api/v1/salon/{salon_id}/stylist/{stylist_id}"]["get"]
+        content = operation["responses"]["200"]["content"]["application/json"]
+        return content["schema"]["properties"], content["examples"]["AStylistOfThisSalon"]["value"]
+
+    def test_an_item_has_exactly_the_answer_s_keys(self):
+        properties, _ = self.shape()
+        (item,) = self.call(media=[shot(1)]).json()["media"]
+        self.assertEqual(list(properties["media"]["items"]["properties"]), list(item))
+
+    def test_type_is_image_or_video(self):
+        properties, _ = self.shape()
+        self.assertEqual(
+            properties["media"]["items"]["properties"]["type"]["enum"], ["image", "video"],
+        )
+
+    def test_the_count_and_the_flag(self):
+        properties, _ = self.shape()
+        self.assertEqual(properties["media_count"]["type"], "integer")
+        self.assertEqual(properties["has_story"]["type"], "boolean")
+
+    def test_the_example_is_consistent(self):
+        _, example = self.shape()
+        self.assertEqual(list(example["media"][0]), ["id", "type", "url", "thumbnail_url"])
+        self.assertGreaterEqual(example["media_count"], len(example["media"]))
+        self.assertIs(example["has_story"], example["media_count"] > 0)

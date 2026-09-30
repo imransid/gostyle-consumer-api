@@ -35,7 +35,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import menu
-from .expert_profile import core_fields, salon_block, service_groups
+from .expert_profile import core_fields, media, salon_block, service_groups
 from .params import path_uuid
 from .selectors import (
     is_favourite_stylist,
@@ -44,6 +44,7 @@ from .selectors import (
     salon_services,
     service_stage_rows,
     stylist_for_salon,
+    stylist_media_rows,
     stylist_service_coverage,
 )
 from .views import _OUR_ENVELOPE, _stylist_row, salon_profile_data
@@ -67,8 +68,8 @@ _SERVICE_ROW = {
     },
 }
 
-# The 200 so far: the person (E2), the heart (E3b), the services (E4) and the
-# salon (E5). E8 replaces this with the full shape.
+# The 200 so far: the person (E2), the heart (E3b), the services (E4), the
+# salon (E5) and the media (E6). E8 replaces this with the full shape.
 _ANSWER_SO_FAR = {
     "type": "object",
     "properties": {
@@ -81,6 +82,21 @@ _ANSWER_SO_FAR = {
         "rating": {"type": "number", "nullable": True},
         "review_count": {"type": "integer"},
         "is_favorite": {"type": "boolean"},
+        "has_story": {"type": "boolean"},
+        "media": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "format": "uuid"},
+                    "type": {"type": "string", "enum": ["image", "video"]},
+                    "url": {"type": "string"},
+                    "thumbnail_url": {"type": "string", "nullable": True},
+                },
+            },
+        },
+        "media_count": {"type": "integer"},
         "salon": {
             "type": "object",
             "properties": {
@@ -106,7 +122,7 @@ _ANSWER_SO_FAR = {
     },
     "required": [
         "id", "salon_id", "name", "title", "role", "avatar_url", "rating", "review_count",
-        "is_favorite", "salon", "service_groups",
+        "is_favorite", "has_story", "media", "media_count", "salon", "service_groups",
     ],
 }
 
@@ -147,8 +163,12 @@ _ANSWER_SO_FAR = {
                 "says what GET /salon/{salon_id} says: the same name, "
                 "`is_open` (null when the salon published no hours) and pin "
                 "(null when it has none). `hours_today` is null on a day the "
-                "salon does not open. The rest of the screen's fields are "
-                "being added."
+                "salon does not open. `media` is this salon's photos tagged "
+                "with the stylist, newest first, at most 5; `media_count` "
+                "counts them all; `has_story` is true when there is at least "
+                "one. Every item is an `image` today (the salons cannot "
+                "upload video yet), so `thumbnail_url` is null. The rest of "
+                "the screen's fields are being added."
             ),
             examples=[
                 OpenApiExample(
@@ -163,6 +183,16 @@ _ANSWER_SO_FAR = {
                         "rating": None,
                         "review_count": 0,
                         "is_favorite": False,
+                        "has_story": True,
+                        "media": [
+                            {
+                                "id": "8e2b1f10-0000-4000-8000-000000000001",
+                                "type": "image",
+                                "url": "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/t/storefront/s/media/1.jpg",
+                                "thumbnail_url": None,
+                            },
+                        ],
+                        "media_count": 1,
                         "salon": {
                             "id": "c6c248ab-f2cd-4f12-a31e-243c6e64b3b5",
                             "name": "Green Wave Salon",
@@ -236,6 +266,9 @@ class SalonExpertProfileView(APIView):
         # The caller's own heart on this stylist: read with their token when
         # they sent one, false for a guest (the contract's section 3).
         body["is_favorite"] = is_favourite_stylist(request.user, stylist.id)
+
+        # Their posted work: this salon's photos tagged with them.
+        body.update(media(stylist_media_rows(salon, stylist.id)))
 
         # The salon, from its own page's answer (GET /salon/<id>): the same
         # name, open now and pin, by the same code.

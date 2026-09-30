@@ -366,6 +366,39 @@ def stylist_for_salon(storefront, stylist_id):
     return salon_stylists(storefront).filter(id=stylist_id).first()
 
 
+def stylist_media_rows(storefront, staff_id):
+    """
+    This salon's photos tagged with one stylist, newest first: `id`, `url`
+    and `mime_type` of each. For the Expert Profile's `media`.
+
+    The same rules as the gallery on the salon's page and the photos on the
+    service detail: kind GALLERY, public, approved, not deleted, and only THIS
+    storefront's. `processing_state` is not checked, as there.
+
+    `storefront_media.staff_id` is never checked when the salon sets it (the
+    platform says so), and nothing else reads it back. So it is matched to
+    this stylist's own id, inside this salon and tenant, and a photo tagged
+    with anything else is simply not found.
+
+    Every row, not five: the screen shows five and counts them all, and which
+    rows count is decided from `mime_type` (expert_profile.media). A few
+    small columns of one stylist's photos, in one query.
+    """
+    return list(
+        StorefrontMedia.objects.filter(
+            storefront_id=storefront.id,
+            tenant_id=storefront.tenant_id,
+            staff_id=staff_id,
+            kind="GALLERY",
+            is_public=True,
+            moderation_status="APPROVED",
+            deleted_at__isnull=True,
+        )
+        .order_by("-created_at", "id")
+        .values("id", "url", "mime_type")
+    )
+
+
 # Hides a service a branch switched off. Still off: as written it keeps only
 # services WITH an `available` row, and the platform's rule is different
 # (audit F2). Branch PRICES do not wait for it (branch_price_minor, S7), and

@@ -4,11 +4,14 @@ The Expert Profile screen's answer, built from rows the view has read.
 Pure: rows in, dicts out, no queryset. The view (expert_profile_views.py)
 reads; this writes the contract's fields (docs/expert-profile-fe-contract.md
 §2). Built step by step (docs/EXPERT_PROFILE_AUDIT.md, section 8): the person
-in E2; the services in E4; the salon in E5; the media and the rest in E6 to
-E8.
+in E2; the services in E4; the salon in E5; the media in E6; the rest in E7
+and E8.
 """
 
 from .hours import CLOSED_TODAY
+
+# The hero strip shows five and the grid draws a "+N" tile (contract §3).
+MEDIA_MAX = 5
 
 
 def core_fields(salon, row):
@@ -98,4 +101,56 @@ def salon_block(page):
         "hours_today": None if hours_today == CLOSED_TODAY else hours_today,
         "latitude": location["latitude"],
         "longitude": location["longitude"],
+    }
+
+
+def _media_item(row):
+    """
+    One photo row as an item of `media`, or None when it cannot be shown.
+
+    `type` is read from the file's mime type. An image has no thumbnail (the
+    contract: null). A video needs one to draw its tile, so a video with none
+    is left out; the platform stores none (it takes no video at all today),
+    so that is every video until the row carries a `thumbnail_url`. A file
+    that is neither, and a row with no URL, are left out too.
+    """
+    if not row.get("url"):
+        return None
+
+    mime_type = (row.get("mime_type") or "").lower()
+    if mime_type.startswith("image/"):
+        kind, thumbnail_url = "image", None
+    elif mime_type.startswith("video/") and row.get("thumbnail_url"):
+        kind, thumbnail_url = "video", row["thumbnail_url"]
+    else:
+        return None
+
+    return {
+        "id": str(row["id"]),
+        "type": kind,
+        "url": row["url"],
+        "thumbnail_url": thumbnail_url,
+    }
+
+
+def media(rows):
+    """
+    has_story, media and media_count, from the rows
+    `selectors.stylist_media_rows` reads (this salon's photos tagged with the
+    stylist, newest first).
+
+    media is the first MEDIA_MAX that can be shown, in the rows' order;
+    media_count counts every one that can be shown, so the app's "+N" is
+    media_count - len(media). A row that cannot be shown (`_media_item`) is
+    neither listed nor counted.
+
+    has_story is "the stylist has media" (Rafa, Q10). No stylist stories
+    exist, and the contract's own open point says the avatar ring and the
+    grid both read `media` today.
+    """
+    items = [item for item in map(_media_item, rows) if item is not None]
+    return {
+        "has_story": bool(items),
+        "media": items[:MEDIA_MAX],
+        "media_count": len(items),
     }
