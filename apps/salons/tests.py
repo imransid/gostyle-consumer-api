@@ -1045,7 +1045,7 @@ class ServiceRequirementTests(SimpleTestCase):
             [{"service_id": "svc", "skill_id": "cs_nails", "min_level": 1}],
             self.BRIDGE,
         )
-        self.assertEqual(required, {"svc": {("catalog", "cs_nails"): "TRAINEE"}})
+        self.assertEqual(required, {"svc": {("unsatisfiable", "cs_nails"): "TRAINEE"}})
         self.assertFalse(skills.can_perform(required["svc"], {"sk_cut": "MASTER"}))
 
 

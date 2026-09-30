@@ -56,7 +56,7 @@ from .group_serializers import (
     GroupAvailabilityRequestSerializer,
     GroupBookingRequestSerializer,
 )
-from .money import major
+from .menu import service_price
 from .selectors import (
     booking_route,
     salon_cards_for_refs,
@@ -266,11 +266,14 @@ def _party_timing(rows, members):
 
 
 def _catalogue(rows):
-    """Each chosen service's name and price, as the services tab shows them."""
+    """
+    Each chosen service's name and price, as the services tab shows them
+    (menu.service_price: the branch price when set, as booking-api charges).
+    """
     return {
         sid: {
             "name": row.get("name"),
-            "price": major(row.get("branch_price_minor") or row.get("price_minor")),
+            "price": service_price(row),
         }
         for sid, row in rows.items()
     }

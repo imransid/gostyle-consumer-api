@@ -5,6 +5,7 @@ from rest_framework import serializers
 
 from . import timezones, translate
 from .geo import format_distance
+from .menu import is_on_menu
 from .money import major
 from .hours import next_opening_at, resolve as resolve_hours
 from .snapshot import field as snap_field
@@ -490,10 +491,11 @@ class ServiceDetailSerializer(serializers.Serializer):
         # only authority on what is charged (BOOKING_CREATE_API.md), so a
         # customer holding a stale basket is corrected there, not here.
         #
-        # No branch price is read: a service id arrives without a branch, and
-        # service_branch_availability is not read anywhere yet
-        # (selectors.BRANCH_AVAILABILITY_ENABLED). When it is, this is one of
-        # the call sites that has to learn about it.
+        # The BASE price, on purpose (Rafa, S7): a service id arrives without
+        # a branch, so there is no branch price to read. The Services tab and
+        # the service detail DO read it (menu.service_price), so for a service
+        # with a branch price this can differ from them. Known gap,
+        # docs/SERVICES_DETAILS_API.md section 4.
         return major(obj.price_minor)
 
     @extend_schema_field(
@@ -526,12 +528,9 @@ class ServiceDetailSerializer(serializers.Serializer):
 
     def get_is_active(self, obj) -> bool:
         """True when the service is still on the salon's menu today."""
-        # Exactly the three conditions `salon_services` filters the menu on,
-        # so the two endpoints cannot disagree about what "active" means.
-        # False is why the row is here at all: an old booking or a stale
-        # basket has to be describable, not a gap.
-        return (
-            obj.status == "PUBLISHED"
-            and obj.deleted_at is None
-            and obj.online_booking_enabled
-        )
+        # Exactly the three conditions `salon_services` filters the menu on
+        # (menu.is_on_menu, shared with the Service Detail screen), so the
+        # endpoints cannot disagree about what "active" means. False is why
+        # the row is here at all: an old booking or a stale basket has to be
+        # describable, not a gap.
+        return is_on_menu(obj)

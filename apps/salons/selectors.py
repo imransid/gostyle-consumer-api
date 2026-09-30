@@ -57,10 +57,10 @@ from apps.platform_data.models import (
     StaffSkillAssignment,
 )
 from .skills import (
-    bridge as bridge_skills,
     coverage as skill_coverage,
     held_levels as held_skill_levels,
     requirements as skill_requirements,
+    resolve as resolve_skills,
 )
 
 from .geo import EARTH_RADIUS_KM, bounding_box, radius_box
@@ -226,11 +226,18 @@ def salon_packages(storefront):
                 .values("total")[:1],
                 output_field=IntegerField(),
             ),
+            # The member services at their prices HERE (menu.service_price's
+            # rule, in SQL: the branch price when set, 0 included, else the
+            # service's own), so "price before" and "save" match the tab.
             sum_minor=Subquery(
                 items.values("package_id")
                 .annotate(
                     total=Sum(
-                        F("service__price_minor") * F("quantity"),
+                        Coalesce(
+                            branch_price_minor(OuterRef("service_id"), storefront.branch_id),
+                            F("service__price_minor"),
+                            output_field=IntegerField(),
+                        ) * F("quantity"),
                         output_field=IntegerField(),
                     )
                 )
@@ -272,26 +279,52 @@ def salon_stylists(storefront, branch_id=None):
         .order_by("created_at")
     )
 
+# Hides a service a branch switched off. Still off: as written it keeps only
+# services WITH an `available` row, and the platform's rule is different
+# (audit F2). Branch PRICES do not wait for it (branch_price_minor, S7).
 BRANCH_AVAILABILITY_ENABLED = False
 
 
+def branch_price_minor(service_ref, branch_id):
+    """
+    One service's own price at one branch, as a subquery:
+    `service_branch_availability.price_minor`, or NULL when the branch has no
+    row for the service or a row with no price.
+
+    `service_ref` names the service in the outer query (an OuterRef). The
+    price only: whether the branch offers the service is the availability
+    filter's business (BRANCH_AVAILABILITY_ENABLED). menu.service_price turns
+    it into the price the customer sees, with booking-api's rule.
+    """
+    return Subquery(
+        ServiceBranchAvailability.objects.filter(
+            service_id=service_ref,
+            branch_id=branch_id,
+        ).values("price_minor")[:1],
+        output_field=IntegerField(),
+    )
+
+
 def salon_services(storefront, branch_id=None):
+    branch_id = branch_id or storefront.branch_id
     qs = Service.objects.filter(
         tenant_id=storefront.tenant_id,
         status="PUBLISHED",
         deleted_at__isnull=True,
         online_booking_enabled=True,
+    ).annotate(
+        # This branch's own price, if the salon set one (S7). Read always:
+        # booking-api charges it whether or not the filter below is on.
+        branch_price_minor=branch_price_minor(OuterRef("pk"), branch_id),
     )
 
     if BRANCH_AVAILABILITY_ENABLED:
-        branch_id = branch_id or storefront.branch_id
         availability = ServiceBranchAvailability.objects.filter(
             service_id=OuterRef("pk"),
             branch_id=branch_id,
         )
         qs = qs.annotate(
             branch_available=Subquery(availability.values("available")[:1]),
-            branch_price_minor=Subquery(availability.values("price_minor")[:1]),
         ).filter(branch_available=True)
 
     return qs.order_by("name")
@@ -642,8 +675,8 @@ def services_by_ids(service_ids):
     #
     # A tenant with several branches has several storefronts and this picks
     # the oldest. See the known gap in docs/SERVICES_DETAILS_API.md: a real fix
-    # needs service_branch_availability, which is not read anywhere yet
-    # (BRANCH_AVAILABILITY_ENABLED is False).
+    # needs service_branch_availability's `available` rows, which are not
+    # read yet (BRANCH_AVAILABILITY_ENABLED is False; only its prices are).
     storefronts = (
         Storefront.objects.filter(
             tenant_id=OuterRef("tenant_id"),
@@ -665,6 +698,93 @@ def services_by_ids(service_ids):
             primary_media.values("url")[:1], output_field=TextField()
         ),
     )
+
+
+# A service in one of these statuses opens on the detail screen even with no
+# published_version (see service_for_salon). The other three, DRAFT,
+# PENDING_REVISION and REVISION_REQUESTED, need a version.
+DETAIL_STATUSES_WITHOUT_VERSION = ("PUBLISHED", "HIDDEN", "ARCHIVED")
+
+
+def service_for_salon(salon, service_id):
+    """
+    One service on this salon's menu, in whatever state it is in now, or None.
+
+    For the Service Detail screen (GET /salon/<id>/service/<id>). Unlike
+    `salon_services`, a service pulled from sale (hidden, archived, deleted,
+    online booking off) is still found: a deep link or an old booking must
+    still open, marked inactive.
+
+    None, and so a 404, in two cases:
+
+      * Another tenant's service. A service has no salon column: it belongs to
+        a tenant, and every branch (storefront) of that tenant sells the same
+        menu, so one service id opens at each of them.
+      * A service that was never on sale: a DRAFT, PENDING_REVISION or
+        REVISION_REQUESTED service with no `published_version`.
+
+    `published_version` is set on the first publish and never cleared (not
+    `published_at`: archiving and a revision request clear it), so any
+    service with a version opens. Services published before the platform had
+    versions have none, so a PUBLISHED, HIDDEN or ARCHIVED status opens too
+    (Rafa, 2026-09-30): an old service must never turn into a 404 just
+    because it was hidden or archived. HIDDEN can only follow PUBLISHED on the
+    platform. ARCHIVED can also follow a DRAFT, so a draft archived without
+    ever being published opens too, as inactive.
+    """
+    return (
+        Service.objects.filter(id=service_id, tenant_id=salon.tenant_id)
+        .filter(
+            Q(published_version__isnull=False)
+            | Q(status__in=DETAIL_STATUSES_WITHOUT_VERSION)
+        )
+        # This salon's own branch price, as on the tab (menu.service_price).
+        .annotate(branch_price_minor=branch_price_minor(OuterRef("pk"), salon.branch_id))
+        .first()
+    )
+
+
+def service_photo_urls(salon, service_id):
+    """
+    The photos of one service, as two lists of URLs, in display order:
+    `(own, linked)`. The Service Detail screen shows own first, then linked
+    (service_detail.photos merges them).
+
+    own: the service's catalogue photos (service_media), the ones the salon
+    uploads in the service editor. Primary first, then sort order, then
+    oldest: the same order that picks services-details' `image_url`, so the
+    hero here is that image. Deleted ones are left out. They have no
+    moderation or public flag.
+
+    linked: this salon's own gallery photos tagged with the service
+    (storefront_media.linked_service_id). The same rules as the gallery on the
+    salon's page: kind GALLERY, public, approved, not deleted. Only THIS
+    storefront's, never another branch's.
+
+    Two small queries, URLs only.
+    """
+    own = (
+        ServiceMedia.objects.filter(
+            service_id=service_id,
+            tenant_id=salon.tenant_id,
+            deleted_at__isnull=True,
+        )
+        .order_by("-is_primary", "sort_order", "created_at", "id")
+        .values_list("url", flat=True)
+    )
+    linked = (
+        StorefrontMedia.objects.filter(
+            storefront_id=salon.id,
+            linked_service_id=service_id,
+            kind="GALLERY",
+            is_public=True,
+            moderation_status="APPROVED",
+            deleted_at__isnull=True,
+        )
+        .order_by("sort_order", "created_at", "id")
+        .values_list("url", flat=True)
+    )
+    return list(own), list(linked)
 
 def salon_profile(storefront_id, user=None):
 
@@ -1135,23 +1255,51 @@ def service_stage_rows(service_ids):
     )
 
 
-def skill_bridge(tenant_id, catalog_skill_ids):
-    """catalog_skill id → this tenant's skill id (or None), keyed by code."""
-    if not catalog_skill_ids:
+def service_stages(service_id):
+    """
+    One service's stages, in stage order, read ONCE for the Service Detail
+    screen: `name_en` for the "What's Included" chips (S4), and the same
+    `service_id`, `skill_id` and `min_level` as `service_stage_rows`, so the
+    rows can go straight to `stylist_rows(stages=...)` for the experts (S5)
+    without a second stage query.
+
+    Stage order is `sort_order`, as the platform lists them (its gRPC fills
+    `included_steps` in that order); oldest, then id, break a tie.
+    """
+    return list(
+        ServiceStage.objects.filter(service_id=service_id)
+        .order_by("sort_order", "created_at", "id")
+        .values("service_id", "skill_id", "min_level", "name_en")
+    )
+
+
+def skill_bridge(tenant_id, stage_skill_ids):
+    """
+    A stage's skill id → this tenant's skill id, or None when nothing can
+    satisfy it. Every id comes back as a key. The rules are `skills.resolve`.
+
+    A stage's skill id is one of the salon's own skills now, or an old
+    catalog_skill id, so both tables are read, as the platform does.
+    """
+    if not stage_skill_ids:
         return {}
 
+    stage_skill_ids = list(stage_skill_ids)
+
     catalog_rows = CatalogSkill.objects.filter(
-        id__in=list(catalog_skill_ids)
+        id__in=stage_skill_ids
     ).values("id", "code")
 
     # Whole catalogue rather than a code-filtered query: a tenant holds a few
     # dozen skills, and the bridge needs every code to match against anyway.
+    # RETIRED skills are read too, like the platform does: a stage built on a
+    # skill that was retired later must still count as a requirement (one
+    # nobody can meet), not vanish.
     tenant_rows = Skill.objects.filter(
         tenant_id=tenant_id,
-        deleted_at__isnull=True,
-    ).values("id", "code")
+    ).values("id", "code", "deleted_at")
 
-    return bridge_skills(list(catalog_rows), list(tenant_rows))
+    return resolve_skills(stage_skill_ids, list(tenant_rows), list(catalog_rows))
 
 
 def staff_skill_rows(tenant_id, staff_ids):
@@ -1171,7 +1319,7 @@ def stylist_service_coverage(storefront, service_ids, staff_ids, stages=None):
     """
     staff id → the requested services that person can perform alone.
 
-    Four small queries — stages, catalog codes, tenant codes, assignments —
+    Four small queries (stages, catalog codes, tenant skills, assignments),
     and then the matching happens in `skills.py`. Doing it in SQL would mean
     expressing the code bridge and the two level scales as a join, and the
     only readable place for either is Python.
@@ -1182,10 +1330,10 @@ def stylist_service_coverage(storefront, service_ids, staff_ids, stages=None):
     if stages is None:
         stages = service_stage_rows(service_ids)
 
-    catalog_to_tenant = skill_bridge(
+    resolved = skill_bridge(
         storefront.tenant_id, {row["skill_id"] for row in stages}
     )
-    required = skill_requirements(stages, catalog_to_tenant)
+    required = skill_requirements(stages, resolved)
     held = held_skill_levels(staff_skill_rows(storefront.tenant_id, staff_ids))
 
     return skill_coverage(list(service_ids), required, held)
@@ -1274,16 +1422,17 @@ def service_timing_rows(storefront, service_ids, branch_id=None):
     salon contributes no duration and no stylist — an empty answer rather than
     an error, which is what this endpoint promises for a bad service id.
 
-    `name` and `price_minor` (and `branch_price_minor`, where branch prices
-    are on) are the figures the services tab shows, for a caller that has to
+    `name`, `price_minor` and `branch_price_minor` are the figures the
+    services tab prices from (menu.service_price), for a caller that has to
     name and price what it read the timing of.
     """
     if not service_ids:
         return []
 
-    fields = ["id", "name", "price_minor", "duration_minutes", "stage_minutes", "lead_time_minutes"]
-    if BRANCH_AVAILABILITY_ENABLED:
-        fields.append("branch_price_minor")
+    fields = [
+        "id", "name", "price_minor", "branch_price_minor",
+        "duration_minutes", "stage_minutes", "lead_time_minutes",
+    ]
 
     stages = ServiceStage.objects.filter(service_id=OuterRef("pk")).values(
         "service_id"

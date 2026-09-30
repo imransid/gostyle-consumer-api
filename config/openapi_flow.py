@@ -69,6 +69,7 @@ FLOW = (
         (
             ("GET", "/api/v1/salon/{salon_id}", "The salon"),
             ("GET", "/api/v1/salon/{salon_id}/services", "Its services"),
+            ("GET", "/api/v1/salon/{salon_id}/service/{service_id}", "One of its services, for the detail screen"),
             ("GET", "/api/v1/salon/{salon_id}/stylists", "Its stylists (for some services, if given)"),
             ("GET", "/api/v1/salon/{salon_id}/packages", "Its packages"),
             ("GET", "/api/v1/salon/{salon_id}/products", "Its shop"),

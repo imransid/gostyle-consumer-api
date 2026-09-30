@@ -172,6 +172,13 @@ flat amount. Use `deposit_percentage`.
 }
 ```
 
+### `price` is this branch's
+
+A service's `price` is this branch's own price when the salon set one for it
+(0 included), else the service's own price, before VAT: the price booking-api
+charges at this branch. So the same service can cost differently at two
+branches of one salon.
+
 ### Category ids are UUIDs, not fixed slugs
 
 The spec assumed `haircut_styling`, `nail_care` and so on were global
@@ -191,9 +198,10 @@ tenant fills in parent categories, the chip becomes the parent and the
 group stays the child, with **no change to this response shape**. Filter
 groups by `category_id` and it works in both worlds.
 
-A service with no category appears under a group named `"Other"` with
-`id` and `category_id` both set to the string `"other"`. Do not drop it;
-it is a bookable service.
+A service with no category, or whose category was deleted, appears under
+a group named `"Other"` with `id` and `category_id` both set to the string
+`"other"`. There is at most one such group, and one `"other"` chip. Do not
+drop it; it is a bookable service.
 
 ### `duration_min` equals `duration_max` today
 
@@ -295,7 +303,8 @@ when it starts filling.
 ### `price_before` and `save_amount` may be null
 
 They are computed by summing the member services at their individual
-prices. When a bundle is priced at or above the sum of its parts there
+prices at this branch (the branch's own price when the salon set one, as on
+the Services tab). When a bundle is priced at or above the sum of its parts there
 is no saving, and both fields come back null rather than 0. Hide the
 strikethrough row in that case.
 
