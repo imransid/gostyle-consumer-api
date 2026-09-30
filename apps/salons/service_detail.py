@@ -9,6 +9,9 @@ fields in S2; photos, content, experts and the rest in S3 to S6.
 
 from .menu import category_chip, is_on_menu, service_price
 
+# The app shows four thumbs and a fifth behind "+N" (contract §3).
+GALLERY_MAX = 5
+
 
 def core_fields(salon, service, categories):
     """
@@ -35,4 +38,29 @@ def core_fields(salon, service, categories):
         "category": {"id": chip["id"], "label": chip["label"]},
         # The tab's three rules. False still answers 200: the app hides Book.
         "is_active": is_on_menu(service),
+    }
+
+
+def photos(own, linked):
+    """
+    hero_url, gallery and gallery_count, from the two lists
+    `selectors.service_photo_urls` reads.
+
+    The service's own photos first, then the salon's gallery photos linked to
+    it, each list in its own order. A URL already in the list is left out
+    (the same picture twice would show as two thumbs and count twice), and
+    so is a blank one. The hero is the first photo and stays in the gallery;
+    the gallery is the first GALLERY_MAX, and gallery_count counts them all,
+    so the app's "+N" is gallery_count - len(gallery).
+    """
+    urls, seen = [], set()
+    for url in [*own, *linked]:
+        if url and url not in seen:
+            seen.add(url)
+            urls.append(url)
+
+    return {
+        "hero_url": urls[0] if urls else None,
+        "gallery": urls[:GALLERY_MAX],
+        "gallery_count": len(urls),
     }

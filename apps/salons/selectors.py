@@ -708,6 +708,49 @@ def service_for_salon(salon, service_id):
         .first()
     )
 
+
+def service_photo_urls(salon, service_id):
+    """
+    The photos of one service, as two lists of URLs, in display order:
+    `(own, linked)`. The Service Detail screen shows own first, then linked
+    (service_detail.photos merges them).
+
+    own: the service's catalogue photos (service_media), the ones the salon
+    uploads in the service editor. Primary first, then sort order, then
+    oldest: the same order that picks services-details' `image_url`, so the
+    hero here is that image. Deleted ones are left out. They have no
+    moderation or public flag.
+
+    linked: this salon's own gallery photos tagged with the service
+    (storefront_media.linked_service_id). The same rules as the gallery on the
+    salon's page: kind GALLERY, public, approved, not deleted. Only THIS
+    storefront's, never another branch's.
+
+    Two small queries, URLs only.
+    """
+    own = (
+        ServiceMedia.objects.filter(
+            service_id=service_id,
+            tenant_id=salon.tenant_id,
+            deleted_at__isnull=True,
+        )
+        .order_by("-is_primary", "sort_order", "created_at", "id")
+        .values_list("url", flat=True)
+    )
+    linked = (
+        StorefrontMedia.objects.filter(
+            storefront_id=salon.id,
+            linked_service_id=service_id,
+            kind="GALLERY",
+            is_public=True,
+            moderation_status="APPROVED",
+            deleted_at__isnull=True,
+        )
+        .order_by("sort_order", "created_at", "id")
+        .values_list("url", flat=True)
+    )
+    return list(own), list(linked)
+
 def salon_profile(storefront_id, user=None):
 
     qs = (

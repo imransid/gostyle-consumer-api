@@ -9,6 +9,8 @@ with a bad id: our JSON 404, never Django's HTML page.
 S2: the core fields, and the Services tab pinned before its price and chip
 code moved to menu.py, shared with this screen.
 
+S3: hero_url, gallery (at most 5) and gallery_count.
+
 The selectors are mocked; no database.
 """
 
@@ -23,7 +25,7 @@ from django.urls import resolve, reverse
 from rest_framework.test import APIRequestFactory
 
 from apps.salons import menu, selectors
-from apps.salons.service_detail import core_fields
+from apps.salons.service_detail import GALLERY_MAX, core_fields, photos
 from apps.salons.service_detail_views import (
     NO_SALON,
     NO_SERVICE,
@@ -55,7 +57,9 @@ class RouteTests(SimpleTestCase):
             return_value=service or None,
         ) as service_lookup, mock.patch(
             "apps.salons.service_detail_views.salon_categories", return_value=CATEGORIES
-        ) as categories_lookup:
+        ) as categories_lookup, mock.patch(
+            "apps.salons.service_detail_views.service_photo_urls", return_value=([], [])
+        ):
             self.salon_lookup = salon_lookup
             self.service_lookup = service_lookup
             self.categories_lookup = categories_lookup
@@ -323,7 +327,9 @@ class CoreFieldsTests(SimpleTestCase):
         with mock.patch("apps.salons.service_detail_views.salon_profile", return_value=salon), \
                 mock.patch("apps.salons.service_detail_views.service_for_salon", return_value=row), \
                 mock.patch("apps.salons.service_detail_views.salon_categories",
-                           return_value=CATEGORIES) as categories:
+                           return_value=CATEGORIES) as categories, \
+                mock.patch("apps.salons.service_detail_views.service_photo_urls",
+                           return_value=([], [])):
             self.categories_lookup = categories
             response = self.client.get(url(service=row.id))
         self.assertEqual(response.status_code, 200)
@@ -340,6 +346,9 @@ class CoreFieldsTests(SimpleTestCase):
             "duration_max": 45,
             "category": {"id": str(PARENT), "label": "Haircut & Styling"},
             "is_active": True,
+            "hero_url": None,
+            "gallery": [],
+            "gallery_count": 0,
         })
 
     def test_categories_are_read_for_the_salon_s_tenant(self):
@@ -445,3 +454,134 @@ class MenuHelperTests(SimpleTestCase):
             deleted_at__isnull=True,
             online_booking_enabled=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# S3: photos
+# ---------------------------------------------------------------------------
+
+def photo(n, where="own"):
+    return f"https://bucket.s3.me-central-1.amazonaws.com/{where}/{n}.jpg"
+
+
+class PhotosTests(SimpleTestCase):
+    """service_detail.photos: the two lists merged into the contract's fields."""
+
+    def test_no_photos(self):
+        self.assertEqual(photos([], []), {"hero_url": None, "gallery": [], "gallery_count": 0})
+
+    def test_own_photos_come_first_then_linked(self):
+        out = photos([photo(1), photo(2)], [photo(1, "linked")])
+        self.assertEqual(out["gallery"], [photo(1), photo(2), photo(1, "linked")])
+
+    def test_the_hero_is_the_first_photo_and_stays_in_the_gallery(self):
+        out = photos([photo(1), photo(2)], [])
+        self.assertEqual(out["hero_url"], photo(1))
+        self.assertEqual(out["gallery"][0], photo(1))
+
+    def test_only_linked_photos_give_the_hero_too(self):
+        out = photos([], [photo(7, "linked")])
+        self.assertEqual(out, {"hero_url": photo(7, "linked"),
+                               "gallery": [photo(7, "linked")], "gallery_count": 1})
+
+    def test_at_most_five_and_the_count_is_all_of_them(self):
+        own = [photo(n) for n in range(4)]
+        linked = [photo(n, "linked") for n in range(13)]
+        out = photos(own, linked)
+        self.assertEqual(GALLERY_MAX, 5)
+        self.assertEqual(out["gallery"], own + [photo(0, "linked")])
+        self.assertEqual(out["gallery_count"], 17)  # "+N" = 17 - 5 = 12
+
+    def test_five_or_fewer_is_the_whole_list(self):
+        own = [photo(n) for n in range(5)]
+        out = photos(own, [])
+        self.assertEqual((out["gallery"], out["gallery_count"]), (own, 5))
+
+    def test_a_url_already_in_the_list_is_left_out_and_not_counted(self):
+        out = photos([photo(1), photo(2), photo(1)], [photo(2), photo(3, "linked")])
+        self.assertEqual(out["gallery"], [photo(1), photo(2), photo(3, "linked")])
+        self.assertEqual(out["gallery_count"], 3)
+
+    def test_a_blank_url_is_left_out(self):
+        out = photos(["", photo(1)], [None, photo(2, "linked")])
+        self.assertEqual(out["hero_url"], photo(1))
+        self.assertEqual(out["gallery_count"], 2)
+
+
+class ServicePhotoUrlsTests(SimpleTestCase):
+    """selectors.service_photo_urls: which rows, in which order."""
+
+    def read(self):
+        salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT)
+        with mock.patch.object(selectors, "ServiceMedia") as own, \
+                mock.patch.object(selectors, "StorefrontMedia") as linked:
+            own.objects.filter.return_value.order_by.return_value.values_list.return_value = [photo(1)]
+            linked.objects.filter.return_value.order_by.return_value.values_list.return_value = [photo(2, "linked")]
+            answer = selectors.service_photo_urls(salon, SERVICE)
+        return own, linked, answer
+
+    def test_answers_both_lists_as_lists(self):
+        _, _, answer = self.read()
+        self.assertEqual(answer, ([photo(1)], [photo(2, "linked")]))
+
+    def test_own_photos_not_deleted_primary_then_sort_order_then_oldest(self):
+        own, _, _ = self.read()
+        own.objects.filter.assert_called_once_with(
+            service_id=SERVICE, tenant_id=TENANT, deleted_at__isnull=True,
+        )
+        own.objects.filter.return_value.order_by.assert_called_once_with(
+            "-is_primary", "sort_order", "created_at", "id",
+        )
+        own.objects.filter.return_value.order_by.return_value.values_list.assert_called_once_with(
+            "url", flat=True,
+        )
+
+    def test_linked_photos_this_salon_s_public_approved_gallery_only(self):
+        # Not another branch's storefront, not private, not waiting for (or
+        # refused) approval, not deleted, not a cover, logo or story.
+        _, linked, _ = self.read()
+        linked.objects.filter.assert_called_once_with(
+            storefront_id=SALON,
+            linked_service_id=SERVICE,
+            kind="GALLERY",
+            is_public=True,
+            moderation_status="APPROVED",
+            deleted_at__isnull=True,
+        )
+        linked.objects.filter.return_value.order_by.assert_called_once_with(
+            "sort_order", "created_at", "id",
+        )
+
+
+class PhotoFieldsTests(SimpleTestCase):
+    """The three photo fields in the answer, through the URL."""
+
+    def get(self, own, linked):
+        salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT)
+        with mock.patch("apps.salons.service_detail_views.salon_profile", return_value=salon), \
+                mock.patch("apps.salons.service_detail_views.service_for_salon",
+                           return_value=service_row()), \
+                mock.patch("apps.salons.service_detail_views.salon_categories",
+                           return_value=CATEGORIES), \
+                mock.patch("apps.salons.service_detail_views.service_photo_urls",
+                           return_value=(own, linked)) as reader:
+            self.reader = reader
+            return self.client.get(url()).json()
+
+    def test_the_photos_are_read_for_this_salon_and_service(self):
+        self.get([], [])
+        (salon, service_id), _ = self.reader.call_args
+        self.assertEqual((salon.id, service_id), (SALON, SERVICE))
+
+    def test_seven_photos(self):
+        own = [photo(n) for n in range(3)]
+        linked = [photo(n, "linked") for n in range(4)]
+        body = self.get(own, linked)
+        self.assertEqual(body["hero_url"], photo(0))
+        self.assertEqual(body["gallery"], own + linked[:2])
+        self.assertEqual(body["gallery_count"], 7)
+
+    def test_no_photos(self):
+        body = self.get([], [])
+        self.assertEqual((body["hero_url"], body["gallery"], body["gallery_count"]),
+                         (None, [], 0))
