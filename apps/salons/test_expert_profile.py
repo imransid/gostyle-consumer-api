@@ -9,7 +9,11 @@ whose home branch is this salon's branch, and whose login account is live.
 E1: the route GET /api/v1/salon/<salon_id>/stylist/<stylist_id>, its 404s and
 auth. Every request goes through the real URL (the Django test client),
 because the point is what the URL layer does with a bad id: our JSON 404,
-never Django's HTML page. The answer is {id, salon_id} until E2.
+never Django's HTML page.
+
+E2: the person (id, salon_id, name, title, role, avatar_url, rating,
+review_count), built from the stylist's own row of GET /salon/<id>/stylists
+and compared with that route on the same rows.
 
 The querysets are built and inspected, never run: the platform's tables are
 unmanaged, so they do not exist in the test database. The views are called
@@ -29,6 +33,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from apps.salons import (
+    expert_profile,
     expert_profile_views,
     group_views,
     params,
@@ -322,8 +327,8 @@ class RouteTests(Seams, SimpleTestCase):
     def test_a_stylist_of_this_salon_answers_200_without_a_token(self):
         response = self.call()
         self.assertEqual(response.status_code, 200)
-        # Exactly these two until E2 adds the person.
-        self.assertEqual(response.json(), {"id": str(HERE), "salon_id": str(SALON)})
+        self.assertEqual(response.json()["id"], str(HERE))
+        self.assertEqual(response.json()["salon_id"], str(SALON))
 
     def test_a_signed_in_customer_gets_the_same_answer(self):
         # The token is optional (Q1): with one, the route answers the same.
@@ -335,7 +340,7 @@ class RouteTests(Seams, SimpleTestCase):
                 request, salon_id=str(SALON), stylist_id=str(HERE),
             )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data, {"id": str(HERE), "salon_id": str(SALON)})
+        self.assertEqual(response.data, self.call().json())
 
     def test_the_selectors_get_the_parsed_ids(self):
         self.call()
@@ -533,6 +538,11 @@ class OpenApiTests(Seams, SimpleTestCase):
         content = self.operation()["responses"]["200"]["content"]["application/json"]
         self.assertEqual(list(content["schema"]["properties"]), list(self.call().json()))
 
+    def test_the_200_example_has_the_answer_s_keys(self):
+        content = self.operation()["responses"]["200"]["content"]["application/json"]
+        example = content["examples"]["AStylistOfThisSalon"]["value"]
+        self.assertEqual(list(example), list(self.call().json()))
+
     def test_the_404_example_is_the_real_body(self):
         example = self.operation()["responses"]["404"]["content"]["application/json"]
         real = self.call(found=False).json()
@@ -541,3 +551,184 @@ class OpenApiTests(Seams, SimpleTestCase):
     def test_a_token_is_accepted_not_needed(self):
         # `{}` is "no token": the route is public, and the JWT is optional.
         self.assertEqual(self.operation()["security"], [{"jwtAuth": []}, {}])
+
+
+# ---------------------------------------------------------------------------
+# E2: the person
+# ---------------------------------------------------------------------------
+
+PERSON_KEYS = ("name", "title", "role", "avatar_url")
+
+
+def member(number, first, last, position=None, job_title=None, avatar=None):
+    """A stylist as `salon_stylists` gives one."""
+    return types.SimpleNamespace(
+        id=uuid.UUID(int=number), tenant_id=TENANT, branch_id=BRANCH,
+        first_name=first, last_name=last, position=position,
+        job_title=job_title, avatar_url=avatar,
+    )
+
+
+class Listed(list):
+    """
+    The salon's stylist list, standing in for the queryset: what the list
+    route iterates, and what `stylist_for_salon` narrows to one id.
+    """
+
+    def filter(self, id):
+        return Listed(s for s in self if s.id == id)
+
+    def first(self):
+        return self[0] if self else None
+
+
+class CoreFieldsTests(SimpleTestCase):
+    """`expert_profile.core_fields`: pure, the Expert step's row in, the person out."""
+
+    salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT, branch_id=BRANCH)
+
+    def fields(self, **overrides):
+        row = views._stylist_row(stylist())
+        row.update(overrides)
+        return expert_profile.core_fields(self.salon, row)
+
+    def test_the_person_so_far(self):
+        self.assertEqual(self.fields(), {
+            "id": str(HERE),
+            "salon_id": str(SALON),
+            "name": "Liam Johnson",
+            "title": "Senior Barber",
+            "role": "Barber and Grooming Expert",
+            "avatar_url": None,
+            "rating": None,
+            "review_count": 0,
+        })
+
+    def test_the_ids_are_strings(self):
+        fields = self.fields()
+        self.assertIsInstance(fields["id"], str)
+        self.assertIsInstance(fields["salon_id"], str)
+
+    def test_name_title_role_and_avatar_are_the_row_s_own(self):
+        fields = self.fields(
+            name="Zara Khan", title="Senior Stylist", role="Colour Expert",
+            avatar_url="https://x/z.png",
+        )
+        self.assertEqual(
+            [fields[key] for key in PERSON_KEYS],
+            ["Zara Khan", "Senior Stylist", "Colour Expert", "https://x/z.png"],
+        )
+
+    def test_each_can_be_null(self):
+        fields = self.fields(name=None, title=None, role=None, avatar_url=None)
+        self.assertEqual([fields[key] for key in PERSON_KEYS], [None] * 4)
+
+    def test_no_reviews_yet_is_null_and_0(self):
+        # The contract's types (Q14): rating null = "nobody has rated them",
+        # review_count 0 = "No reviews yet". Never the row's own null count.
+        fields = self.fields(rating=None, review_count=None)
+        self.assertIsNone(fields["rating"])
+        self.assertEqual(fields["review_count"], 0)
+        self.assertIsInstance(fields["review_count"], int)
+
+    def test_only_the_contract_s_keys(self):
+        # The list row also carries tenant_id and branch_id (and, until their
+        # own steps, years_experience and day_off): not sent from here.
+        self.assertEqual(
+            list(self.fields()),
+            ["id", "salon_id", "name", "title", "role", "avatar_url", "rating", "review_count"],
+        )
+
+
+class PersonFieldsTests(Seams, SimpleTestCase):
+    """The route answers the person."""
+
+    def test_the_answer_is_the_person(self):
+        self.assertEqual(self.call().json(), {
+            "id": str(HERE),
+            "salon_id": str(SALON),
+            "name": "Liam Johnson",
+            "title": "Senior Barber",
+            "role": "Barber and Grooming Expert",
+            "avatar_url": None,
+            "rating": None,
+            "review_count": 0,
+        })
+
+    def test_salon_id_is_the_salon_s_id_whatever_case_the_path_used(self):
+        response = self.call(url(salon=str(SALON).upper()))
+        self.assertEqual(response.json()["salon_id"], str(SALON))
+
+
+class PersonMatchesTheStylistsRouteTests(SimpleTestCase):
+    """
+    The same person reads the same on both screens: name, title, role and
+    avatar_url here equal that stylist's row of GET /salon/:id/stylists.
+
+    Both routes run for real down to the salon's stylist list; only the salon
+    and the list are mocked, and they are the SAME rows for both.
+    """
+
+    def setUp(self):
+        self.staff = Listed([
+            member(1, "Zara", "Khan", "Senior Stylist", "Colour Expert", "https://x/z.png"),
+            member(2, "Adam", "Lee", None, "Barber"),                 # no title
+            member(3, "Cara", None, "Stylist", None),                 # no role, one name
+            member(4, None, None),                                    # no name at all
+            member(5, "Eve", "Stone", "", "", None),                  # blanks, not nulls
+        ])
+
+    def both(self, staff_id):
+        salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT, branch_id=BRANCH)
+        with ExitStack() as stack:
+            def patch(target, **kw):
+                return stack.enter_context(mock.patch(target, **kw))
+            patch("apps.salons.views.salon_profile", return_value=salon)
+            patch("apps.salons.expert_profile_views.salon_profile", return_value=salon)
+            # The one list, for both: the tab iterates it, the profile narrows it.
+            patch("apps.salons.views.salon_stylists", return_value=self.staff)
+            patch("apps.salons.selectors.salon_stylists", return_value=self.staff)
+
+            listed = self.client.get(f"/api/v1/salon/{SALON}/stylists")
+            profile = self.client.get(url(stylist=staff_id))
+        self.assertEqual(listed.status_code, 200)
+        rows = {row["id"]: row for row in listed.json()["stylists"]}
+        return rows, profile
+
+    def test_every_stylist_reads_the_same_on_both(self):
+        for one in self.staff:
+            with self.subTest(stylist=one.first_name):
+                rows, profile = self.both(one.id)
+                self.assertEqual(profile.status_code, 200)
+                row, person = rows[str(one.id)], profile.json()
+                self.assertEqual(person["id"], row["id"])
+                for key in PERSON_KEYS:
+                    self.assertEqual(person[key], row[key], key)
+
+    def test_the_comparison_is_not_trivial(self):
+        rows, profile = self.both(self.staff[0].id)
+        self.assertEqual(
+            [profile.json()[key] for key in PERSON_KEYS],
+            ["Zara Khan", "Senior Stylist", "Colour Expert", "https://x/z.png"],
+        )
+        _, blanks = self.both(self.staff[4].id)
+        # A blank title or role is null, as in the list: never "".
+        self.assertEqual(
+            [blanks.json()[key] for key in PERSON_KEYS], ["Eve Stone", None, None, None]
+        )
+        _, nameless = self.both(self.staff[3].id)
+        self.assertIsNone(nameless.json()["name"])
+
+    def test_review_count_is_0_here_and_null_in_the_list(self):
+        # Decided (Q14): the contract types it a number on this screen. The
+        # list row is left as it is.
+        rows, profile = self.both(self.staff[0].id)
+        self.assertEqual(profile.json()["review_count"], 0)
+        self.assertIsNone(rows[str(self.staff[0].id)]["review_count"])
+        self.assertIsNone(profile.json()["rating"])
+        self.assertIsNone(rows[str(self.staff[0].id)]["rating"])
+
+    def test_a_stylist_who_is_not_in_the_list_is_404_on_the_profile(self):
+        _, profile = self.both(uuid.UUID(int=99))
+        self.assertEqual(profile.status_code, 404)
+        self.assertEqual(profile.json()["detail"], NO_STYLIST)
