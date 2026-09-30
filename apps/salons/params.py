@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import datetime, timedelta
 
@@ -247,6 +248,27 @@ def parse_map(params):
 
 
 
+
+
+# The dashed form only, any case: what a UUID in a path looks like. Braces,
+# "urn:uuid:" and the bare 32 hex digits are refused, as <uuid:> refuses them.
+_PATH_UUID = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+
+
+def path_uuid(value):
+    """
+    An id from the PATH as a UUID, or None when it is not one.
+
+    For the routes that take their ids as <str:> (the service detail, the
+    expert profile): with Django's <uuid:> converter a bad id never reaches a
+    view, and Django answers it with its own HTML page, not our JSON 404. So
+    those views read the ids as strings and check them here.
+    """
+    if not isinstance(value, str) or not _PATH_UUID.fullmatch(value):
+        return None
+    return uuid.UUID(value)
 
 
 def _uuid(params, name):

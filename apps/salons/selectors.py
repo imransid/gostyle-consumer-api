@@ -309,6 +309,24 @@ def salon_stylists(storefront, branch_id=None):
         .order_by("created_at")
     )
 
+
+def stylist_for_salon(storefront, stylist_id):
+    """
+    One stylist of this salon, or None.
+
+    For the Expert Profile screen (GET /salon/<id>/stylist/<id>). It is
+    `salon_stylists` narrowed to one id, so it opens exactly the people the
+    Stylists tab and the Expert step list, with the same name, title, role
+    and avatar.
+
+    None, and so a 404, for everyone that list leaves out: another business's
+    stylist, a stylist of another salon of the same business (never a
+    cross-salon read), one who left or never joined, a deleted one, and one
+    whose login account is gone.
+    """
+    return salon_stylists(storefront).filter(id=stylist_id).first()
+
+
 # Hides a service a branch switched off. Still off: as written it keeps only
 # services WITH an `available` row, and the platform's rule is different
 # (audit F2). Branch PRICES do not wait for it (branch_price_minor, S7), and

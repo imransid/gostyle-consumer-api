@@ -13,13 +13,10 @@ salon, its services and its stylists, so the detail opens too. A token is
 accepted, and a bad or expired one is still a 401, because the JWT check runs
 on every route whatever its permission.
 
-EVERY 404 IS OURS. The ids come in as strings and are checked here. With
-Django's <uuid:> converter a bad id never reaches a view: Django answers it
-with its own HTML page, not our JSON envelope.
+EVERY 404 IS OURS. The ids come in as strings and are checked here
+(params.path_uuid). With Django's <uuid:> converter a bad id never reaches a
+view: Django answers it with its own HTML page, not our JSON envelope.
 """
-
-import re
-import uuid
 
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import (
@@ -33,6 +30,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .params import path_uuid
 from .selectors import (
     salon_categories,
     salon_profile,
@@ -47,19 +45,6 @@ from .views import _OUR_ENVELOPE, stylist_rows
 # Written for the customer: the app shows `detail` on its empty state.
 NO_SALON = "This salon is not available."
 NO_SERVICE = "This service is no longer on the menu."
-
-# The dashed form only, any case: what a UUID in a path looks like. Braces,
-# "urn:uuid:" and the bare 32 hex digits are refused, as <uuid:> refuses them.
-_UUID = re.compile(
-    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-)
-
-
-def path_uuid(value):
-    """The id from the path as a UUID, or None when it is not one."""
-    if not isinstance(value, str) or not _UUID.fullmatch(value):
-        return None
-    return uuid.UUID(value)
 
 
 @extend_schema(

@@ -6,20 +6,37 @@ E0: who counts as a salon's stylist. One list (selectors.salon_stylists) for
 every screen, and the rule is the platform's and booking-api's own: a stylist
 whose home branch is this salon's branch, and whose login account is live.
 
+E1: the route GET /api/v1/salon/<salon_id>/stylist/<stylist_id>, its 404s and
+auth. Every request goes through the real URL (the Django test client),
+because the point is what the URL layer does with a bad id: our JSON 404,
+never Django's HTML page. The answer is {id, salon_id} until E2.
+
 The querysets are built and inspected, never run: the platform's tables are
 unmanaged, so they do not exist in the test database. The views are called
-with that one list mocked.
+with their selectors mocked.
 """
 
 import types
 import uuid
+from contextlib import ExitStack
 from unittest import mock
 
-from django.db.models import Exists
+from django.db.models import Exists, QuerySet
 from django.test import SimpleTestCase
+from django.urls import resolve, reverse
+from drf_spectacular.generators import SchemaGenerator
 from rest_framework.exceptions import ValidationError
+from rest_framework.test import APIRequestFactory, force_authenticate
 
-from apps.salons import group_views, selectors, views
+from apps.salons import (
+    expert_profile_views,
+    group_views,
+    params,
+    selectors,
+    service_detail_views,
+    views,
+)
+from apps.salons.expert_profile_views import NO_SALON, NO_STYLIST, SalonExpertProfileView
 
 SALON = uuid.UUID("33333333-3333-3333-3333-333333333333")
 TENANT = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -249,3 +266,278 @@ class StylistListRouteTests(SimpleTestCase):
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.json()["errors"][0]["field"], "tenant_id")
         self.salons.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# E1: the route, the 404s and auth
+# ---------------------------------------------------------------------------
+
+def url(salon=SALON, stylist=HERE):
+    return f"/api/v1/salon/{salon}/stylist/{stylist}"
+
+
+class Seams:
+    """
+    The view with every selector it reads mocked. A test passes only what it
+    cares about. Each mock is kept on self (salon_lookup, stylist_lookup) for
+    call checks.
+    """
+
+    def seams(self, stack, *, salon=True, found=True):
+        found_salon = (
+            types.SimpleNamespace(id=SALON, tenant_id=TENANT, branch_id=BRANCH) if salon else None
+        )
+        answers = {
+            "salon_profile": found_salon,
+            "stylist_for_salon": stylist() if found else None,
+        }
+        mocks = {
+            name: stack.enter_context(mock.patch.object(
+                expert_profile_views, name, return_value=answer,
+            ))
+            for name, answer in answers.items()
+        }
+        self.salon_lookup = mocks["salon_profile"]
+        self.stylist_lookup = mocks["stylist_for_salon"]
+
+    def call(self, path=None, *, salon=True, found=True, **headers):
+        with ExitStack() as stack:
+            self.seams(stack, salon=salon, found=found)
+            return self.client.get(path or url(), **headers)
+
+
+class RouteTests(Seams, SimpleTestCase):
+    """What the endpoint answers, through the URL layer."""
+
+    def assert_our_404(self, response, detail):
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response["Content-Type"], "application/json")
+        body = response.json()
+        self.assertEqual(body["code"], "not_found")
+        self.assertEqual(body["detail"], detail)
+        self.assertEqual(
+            body["errors"], [{"field": None, "code": "not_found", "message": detail}]
+        )
+
+    def test_a_stylist_of_this_salon_answers_200_without_a_token(self):
+        response = self.call()
+        self.assertEqual(response.status_code, 200)
+        # Exactly these two until E2 adds the person.
+        self.assertEqual(response.json(), {"id": str(HERE), "salon_id": str(SALON)})
+
+    def test_a_signed_in_customer_gets_the_same_answer(self):
+        # The token is optional (Q1): with one, the route answers the same.
+        request = APIRequestFactory().get(url())
+        force_authenticate(request, user=types.SimpleNamespace(is_authenticated=True))
+        with ExitStack() as stack:
+            self.seams(stack)
+            response = SalonExpertProfileView.as_view()(
+                request, salon_id=str(SALON), stylist_id=str(HERE),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {"id": str(HERE), "salon_id": str(SALON)})
+
+    def test_the_selectors_get_the_parsed_ids(self):
+        self.call()
+        self.salon_lookup.assert_called_once_with(SALON)
+        (salon, stylist_id), _ = self.stylist_lookup.call_args
+        self.assertEqual(salon.id, SALON)
+        self.assertEqual(stylist_id, HERE)
+
+    def test_a_salon_id_that_is_not_a_uuid_is_our_json_404(self):
+        response = self.call(url(salon="not-a-uuid"))
+        self.assert_our_404(response, NO_SALON)
+        self.salon_lookup.assert_not_called()
+        self.stylist_lookup.assert_not_called()
+
+    def test_a_stylist_id_that_is_not_a_uuid_is_our_json_404(self):
+        response = self.call(url(stylist="also-not"))
+        self.assert_our_404(response, NO_STYLIST)
+        self.stylist_lookup.assert_not_called()
+
+    def test_both_ids_bad_names_the_salon(self):
+        self.assert_our_404(self.call(url(salon="x", stylist="y")), NO_SALON)
+
+    def test_an_unknown_salon_is_404(self):
+        self.assert_our_404(self.call(salon=False), NO_SALON)
+        self.stylist_lookup.assert_not_called()
+
+    def test_a_stylist_not_found_at_this_salon_is_404(self):
+        # Another business's stylist, another salon's, one who left, one never
+        # joined, a deleted one, or no such id: the selector answers None for
+        # all of them (see StylistForSalonTests).
+        self.assert_our_404(self.call(found=False), NO_STYLIST)
+
+    def test_an_uppercase_uuid_is_accepted(self):
+        response = self.call(url(salon=str(SALON).upper(), stylist=str(HERE).upper()))
+        self.assertEqual(response.status_code, 200)
+        self.salon_lookup.assert_called_once_with(SALON)
+        self.assertEqual(self.stylist_lookup.call_args.args[1], HERE)
+
+    def test_other_uuid_spellings_are_404(self):
+        for spelling in (
+            HERE.hex,                     # 32 hex digits, no dashes
+            "{%s}" % HERE,                # braces
+            "urn:uuid:%s" % HERE,         # a URN
+            str(HERE)[:-1],               # one digit short
+            str(HERE)[:-1] + "g",         # not hex
+        ):
+            with self.subTest(spelling=spelling):
+                self.assert_our_404(self.call(url(stylist=spelling)), NO_STYLIST)
+                self.assert_our_404(self.call(url(salon=spelling)), NO_SALON)
+
+    def test_a_bad_token_is_401_even_on_this_public_route(self):
+        response = self.call(HTTP_AUTHORIZATION="Bearer not.a.token")
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["code"], "not_authenticated")
+        self.salon_lookup.assert_not_called()
+
+    def test_only_get(self):
+        with mock.patch.object(expert_profile_views, "salon_profile"):
+            response = self.client.post(url())
+        self.assertEqual(response.status_code, 405)
+        self.assertEqual(response.json()["code"], "method_not_allowed")
+
+
+class SentenceTests(SimpleTestCase):
+    """`detail` is shown to the customer on the app's empty state."""
+
+    def test_the_stylist_sentence_is_the_contract_s_word_for_word(self):
+        self.assertEqual(NO_STYLIST, "This stylist is no longer at this salon.")
+
+    def test_the_salon_sentence_is_the_service_detail_s(self):
+        # One sentence for the same case on both screens.
+        self.assertEqual(NO_SALON, service_detail_views.NO_SALON)
+
+
+class UrlTests(SimpleTestCase):
+    """The new route next to the old ones."""
+
+    def test_the_route_has_a_name(self):
+        self.assertEqual(
+            reverse("salon-expert-profile", kwargs={"salon_id": SALON, "stylist_id": HERE}),
+            url(),
+        )
+
+    def test_any_segment_reaches_the_view(self):
+        match = resolve(url(salon="nope", stylist="nope"))
+        self.assertIs(match.func.view_class, SalonExpertProfileView)
+        self.assertEqual(match.kwargs, {"salon_id": "nope", "stylist_id": "nope"})
+
+    def test_the_stylists_list_route_is_unchanged(self):
+        # `stylists` (plural) is the list; `stylist/<id>` is one person.
+        match = resolve(f"/api/v1/salon/{SALON}/stylists")
+        self.assertIs(match.func.view_class, views.SalonStylistsView)
+        self.assertEqual(match.kwargs, {"salon_id": SALON})
+
+    def test_the_service_detail_route_is_unchanged(self):
+        match = resolve(f"/api/v1/salon/{SALON}/service/{HERE}")
+        self.assertIs(match.func.view_class, service_detail_views.SalonServiceDetailView)
+        self.assertEqual(match.kwargs, {"salon_id": str(SALON), "service_id": str(HERE)})
+
+
+class PathUuidTests(SimpleTestCase):
+    """`path_uuid` moved to params.py, shared by both detail screens."""
+
+    def test_parses_the_dashed_form_in_any_case(self):
+        self.assertEqual(params.path_uuid(str(SALON)), SALON)
+        self.assertEqual(params.path_uuid(str(SALON).upper()), SALON)
+
+    def test_anything_else_is_none(self):
+        for value in (None, "", " %s" % SALON, SALON.hex, "{%s}" % SALON, "not-a-uuid", SALON):
+            with self.subTest(value=value):
+                self.assertIsNone(params.path_uuid(value))
+
+    def test_both_screens_use_the_one_function(self):
+        # Still importable from the service detail's module, where it was.
+        self.assertIs(service_detail_views.path_uuid, params.path_uuid)
+        self.assertIs(expert_profile_views.path_uuid, params.path_uuid)
+
+
+class StylistForSalonTests(SimpleTestCase):
+    """`selectors.stylist_for_salon`: which stylists the profile may open."""
+
+    salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT, branch_id=BRANCH)
+
+    def test_it_is_the_salon_s_own_list_narrowed_to_one_id(self):
+        # The Expert step's list, so exactly the Expert step's people (Q2).
+        with mock.patch.object(selectors, "salon_stylists") as listed:
+            listed.return_value.filter.return_value.first.return_value = "row"
+            answer = selectors.stylist_for_salon(self.salon, HERE)
+        listed.assert_called_once_with(self.salon)
+        listed.return_value.filter.assert_called_once_with(id=HERE)
+        self.assertEqual(answer, "row")
+
+    def query(self):
+        """The real query, caught where it would run."""
+        with mock.patch.object(QuerySet, "first", autospec=True, return_value=None) as first:
+            answer = selectors.stylist_for_salon(self.salon, HERE)
+        self.assertIsNone(answer)
+        (queryset,), _ = first.call_args
+        return queryset
+
+    def test_the_query_asks_for_that_one_stylist(self):
+        self.assertIn(("id", "exact", HERE), conditions(self.query().query))
+
+    def test_everyone_the_contract_wants_404_is_shut_out_by_a_condition(self):
+        found = conditions(self.query().query)
+        for who, condition in (
+            ("another business's stylist", ("tenant_id", "exact", TENANT)),
+            ("another salon's stylist, same business", ("branch_id", "exact", BRANCH)),
+            ("a stylist with no home branch", ("branch_id", "isnull", False)),
+            ("invited, never joined", ("onboarding_state", "exact", "ACTIVE")),
+            ("left: INACTIVE or ARCHIVED", ("employment_status", "exact", "ACTIVE")),
+            ("a deleted staff record", ("deleted_at", "isnull", True)),
+        ):
+            with self.subTest(who=who):
+                self.assertIn(condition, found)
+
+    def test_a_stylist_with_a_deleted_login_is_shut_out_too(self):
+        self.assertIn(("deleted_at", "isnull", True), conditions(login_check(self.query())))
+
+
+class OpenApiTests(Seams, SimpleTestCase):
+    """The route's OpenAPI entry describes what the view answers."""
+
+    PATH = "/api/v1/salon/{salon_id}/stylist/{stylist_id}"
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.schema = SchemaGenerator().get_schema(request=None, public=True)
+
+    def operation(self):
+        return self.schema["paths"][self.PATH]["get"]
+
+    def test_only_get_is_documented(self):
+        methods = {key for key in self.schema["paths"][self.PATH] if key != "parameters"}
+        self.assertEqual(methods, {"get"})
+
+    def test_it_sits_on_the_salon_s_page_in_the_flow(self):
+        self.assertEqual(self.operation()["tags"], ["5. A salon's page"])
+        self.assertRegex(self.operation()["summary"], r"^Step \d+: One of its stylists")
+
+    def test_both_path_ids_are_uuids(self):
+        in_path = {
+            p["name"]: p["schema"] for p in self.operation()["parameters"] if p["in"] == "path"
+        }
+        self.assertEqual(set(in_path), {"salon_id", "stylist_id"})
+        for name, schema in in_path.items():
+            with self.subTest(name=name):
+                self.assertEqual(schema, {"type": "string", "format": "uuid"})
+
+    def test_the_answers_are_200_401_and_404(self):
+        self.assertEqual(set(self.operation()["responses"]), {"200", "401", "404"})
+
+    def test_the_200_has_exactly_the_fields_the_view_answers(self):
+        content = self.operation()["responses"]["200"]["content"]["application/json"]
+        self.assertEqual(list(content["schema"]["properties"]), list(self.call().json()))
+
+    def test_the_404_example_is_the_real_body(self):
+        example = self.operation()["responses"]["404"]["content"]["application/json"]
+        real = self.call(found=False).json()
+        self.assertEqual(example["examples"]["NoSuchStylist"]["value"], real)
+
+    def test_a_token_is_accepted_not_needed(self):
+        # `{}` is "no token": the route is public, and the JWT is optional.
+        self.assertEqual(self.operation()["security"], [{"jwtAuth": []}, {}])
