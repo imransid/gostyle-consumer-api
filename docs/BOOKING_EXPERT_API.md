@@ -139,6 +139,11 @@ The rules, in full:
 9. **Skills are not availability.** This answers "who is qualified", not "who
    is free on Tuesday at 3". `day_off` is display text; slots belong to the
    Time step.
+10. **Only this salon's own stylists.** A stylist is listed at the salon of
+    their home branch (`staff_profile.branch_id`) and nowhere else, and only
+    with a live login account. That is who booking-api will accept for this
+    salon, so a stylist of another salon of the same business is never
+    offered here. See `SALON_PROFILE_API.md` §3.
 
 ---
 

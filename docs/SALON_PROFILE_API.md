@@ -263,6 +263,14 @@ enter it.
 Only staff who have actually joined appear here: someone invited but who
 never accepted is filtered out.
 
+**Only this salon's own stylists.** A stylist belongs to one branch (their
+home branch on the platform), and only that branch's salon lists them. In a
+business with two salons, each salon shows its own people, never the other's:
+the booking would refuse them ("That stylist does not work at this salon").
+A stylist with no home branch, or whose login account was deleted, is not
+listed either. The Expert step, the service detail's `experts`, nearest
+available and the group booking all read this same list.
+
 ---
 
 ## 4. Packages tab — `GET /salon/:id/packages`

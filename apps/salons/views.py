@@ -561,7 +561,10 @@ class SalonStylistsView(APIView):
 @extend_schema(
     parameters=[
         OpenApiParameter("tenant_id", str, required=True, description="Tenant UUID"),
-        OpenApiParameter("branch_id", str, required=False, description="Branch UUID"),
+        OpenApiParameter(
+            "branch_id", str, required=True,
+            description="Branch UUID: the salon whose stylists are listed.",
+        ),
     ],
 )
 class StylistListView(APIView):
@@ -573,8 +576,12 @@ class StylistListView(APIView):
         except ParamError as exc:
             raise ValidationError({exc.param: [exc.message]}) from exc
 
+        # The salon OF THAT BRANCH, not the tenant's first one: the list is
+        # one salon's own stylists (salon_stylists), so in a business with two
+        # salons the first one would answer with the wrong people.
         salon = discoverable_salons().filter(
             tenant_id=params["tenant_id"],
+            branch_id=params["branch_id"],
         ).first()
         if salon is None:
             raise Http404("Salon not found")

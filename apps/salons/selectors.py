@@ -251,19 +251,49 @@ def salon_packages(storefront):
 
 
 def salon_stylists(storefront, branch_id=None):
-    user = UserAccount.objects.filter(id=OuterRef("user_id"))
+    """
+    The stylists of ONE salon: who the app may show there, and book there.
 
-    filters = dict(
-        tenant_id=storefront.tenant_id,
-        employment_status="ACTIVE",
-        onboarding_state="ACTIVE",
+    The one list behind the Stylists tab and the Expert step, the service
+    detail's experts, nearest available, the group booking's stylist check and
+    the routine's avatars, so they all agree on who works here.
+
+    A stylist is at a salon when (docs/EXPERT_PROFILE_AUDIT.md, E0):
+
+      * They are this business's staff: employed (ACTIVE), joined (onboarding
+        ACTIVE, so an invite never accepted is out) and not deleted.
+      * Their HOME BRANCH is this salon's branch. `staff_profile.branch_id` is
+        the one branch a stylist belongs to: the platform rosters them only
+        there, and booking-api books them only there (its roster is the
+        platform's ListStylists for that branch). A stylist of another branch
+        of the same business, or with no home branch, is left out: the booking
+        would be refused ("That stylist does not work at this salon").
+      * Their login account is live: a `user_account` of the same tenant, not
+        deleted. The platform's ListStylists drops anyone without one, so
+        booking-api cannot book them either. The name and the avatar are read
+        from that account only.
+
+    NOT behind BRANCH_AVAILABILITY_ENABLED: that flag is about which SERVICES
+    a branch sells, and it is still off.
+    """
+    user = UserAccount.objects.filter(
+        id=OuterRef("user_id"),
+        tenant_id=OuterRef("tenant_id"),
         deleted_at__isnull=True,
     )
-    if BRANCH_AVAILABILITY_ENABLED:
-        filters["branch_id"] = branch_id or storefront.branch_id
 
     return (
-        StaffProfile.objects.filter(**filters)
+        StaffProfile.objects.filter(
+            tenant_id=storefront.tenant_id,
+            branch_id=branch_id or storefront.branch_id,
+            # Said out loud: `branch_id=None` alone would read as IS NULL and
+            # list exactly the stylists with no home branch.
+            branch_id__isnull=False,
+            employment_status="ACTIVE",
+            onboarding_state="ACTIVE",
+            deleted_at__isnull=True,
+        )
+        .filter(Exists(user))
         .annotate(
             first_name=Subquery(user.values("first_name")[:1], output_field=TextField()),
             last_name=Subquery(user.values("last_name")[:1], output_field=TextField()),
@@ -281,7 +311,8 @@ def salon_stylists(storefront, branch_id=None):
 
 # Hides a service a branch switched off. Still off: as written it keeps only
 # services WITH an `available` row, and the platform's rule is different
-# (audit F2). Branch PRICES do not wait for it (branch_price_minor, S7).
+# (audit F2). Branch PRICES do not wait for it (branch_price_minor, S7), and
+# neither do a branch's own STYLISTS (salon_stylists).
 BRANCH_AVAILABILITY_ENABLED = False
 
 

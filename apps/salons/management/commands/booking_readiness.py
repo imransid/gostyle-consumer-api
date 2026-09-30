@@ -91,7 +91,8 @@ class Command(BaseCommand):
         stylists = list(salon_stylists(salon))
         services = list(salon_services(salon))
         self.line("stylists (active)", len(stylists), len(stylists) > 0,
-                  "No active staff. Staff → invite and activate.")
+                  "No active staff at this branch. Staff → invite and "
+                  "activate, with this branch as their own.")
         self.line("bookable services", len(services), len(services) > 0,
                   "No PUBLISHED, online-bookable service.")
         if not stylists or not services:

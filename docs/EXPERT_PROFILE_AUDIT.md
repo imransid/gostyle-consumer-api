@@ -624,7 +624,7 @@ and managed, so its tests use the real test database. `urls.py` and
 
 | Step | What | Files | Tests |
 |---|---|---|---|
-| E0 | **F1, F6, F13 (Q3). No switch.** `salon_stylists` keeps only a stylist whose home branch is this salon's branch (`staff_profile.branch_id = salon.branch_id`, null hidden) and whose login account is live (same tenant, not deleted). It is the shared list, so `/stylists`, `experts`, nearest available, the group booking check and the routine avatars all change together. `StylistListView` finds its salon by `branch_id`. The rule does **not** use `BRANCH_AVAILABILITY_ENABLED` (that flag also hides services, service detail F2) | `selectors.py` (`salon_stylists`), `views.py` (`StylistListView`) | home branch = this salon: shown; another branch: gone from `/stylists`, `experts`, nearest available (`offers: []`) and refused by the group check; no home branch: hidden; deleted login, missing login, login of another tenant: hidden; a business with one salon: unchanged; `/stylists?tenant_id=&branch_id=` answers that branch's salon, unknown branch 404 |
+| E0 | **Built, reviewed by Rafa (2026-09-30).** **F1, F6, F13 (Q3). No switch.** `salon_stylists` keeps only a stylist whose home branch is this salon's branch (`staff_profile.branch_id = salon.branch_id`, null hidden) and whose login account is live (same tenant, not deleted). It is the shared list, so `/stylists`, `experts`, nearest available, the group booking check and the routine avatars all change together. `StylistListView` finds its salon by `branch_id`. The rule does **not** use `BRANCH_AVAILABILITY_ENABLED` (that flag also hides services, service detail F2) | `selectors.py` (`salon_stylists`), `views.py` (`StylistListView`) | home branch = this salon: shown; another branch: gone from `/stylists`, `experts`, nearest available (`offers: []`) and refused by the group check; no home branch: hidden; deleted login, missing login, login of another tenant: hidden; a business with one salon: unchanged; `/stylists?tenant_id=&branch_id=` answers that branch's salon, unknown branch 404 |
 | E1 | Route `salon/<str:salon_id>/stylist/<str:stylist_id>`, view skeleton, 404s, `AllowAny`. `path_uuid` moved to `params.py`. `FLOW` entry in `config/openapi_flow.py` | `urls.py`, new `expert_profile_views.py`, `selectors.py` (new `stylist_for_salon`), `params.py` | non-UUID in each position = JSON 404; unknown salon "This salon is not available."; another tenant's stylist, another salon's stylist, INVITED, INACTIVE, ARCHIVED and deleted = 404 "This stylist is no longer at this salon."; no token 200; bad token 401; `test_openapi_flow` green; service detail tests green after the `path_uuid` move |
 | E2 | The person: `id`, `salon_id`, `name`, `title`, `role`, `avatar_url`, `rating: null`, `review_count: 0` | new pure `apps/salons/expert_profile.py`, view | `name`, `title`, `role`, `avatar_url` equal to that stylist's Expert step row on the same mocks; `null` name, title, role, avatar; `review_count` is `0` here while the list row keeps `null` |
 | E3a | **F3, F4:** the salon heart answers 422 for a bad id and never 500 on a double tap. Today's answers pinned first | `views.py` (`FavouriteListView.post`) | save, unsave, missing id 422 (today's), bad id 422 (new), unique clash answers `true`, no token 401 |
@@ -654,7 +654,7 @@ a token, `POST /api/v1/favourite` with `stylist_id` twice, then a non-UUID id.
 
 ## 9. Read-only checks for the server
 
-**Database.** `scripts/sql/expert_profile_live_checks.sql` (not committed).
+**Database.** `scripts/sql/expert_profile_live_checks.sql` (committed with E0).
 One `SELECT` in a read-only transaction that ends with `ROLLBACK`. It ran
 clean on the local database.
 
@@ -685,9 +685,11 @@ psql -h <DB_HOST> -p <DB_PORT> -U <DB_USER> -d <DB_NAME> \
 | Stylists rostered | 6 of 7 |
 | booking-api `STAFF_FROM_PLATFORM` | `true` |
 | booking-api `SKILLS_UNVERIFIED` | `true` |
+| Calls to `GET /stylists?tenant_id=&branch_id=` in the last 2 weeks (live logs) | 0 |
 
-So: E0 changes no live answer today (no switch), and rosters are filled enough
-for `day_off` (Q7 final yes).
+So: E0 changes no live answer today (no switch), the new 404 on
+`GET /stylists?tenant_id=&branch_id=` (F13) touches nobody, and rosters are
+filled enough for `day_off` (Q7 final yes).
 
 **booking-api switches.** The line that reads them, printing only the two:
 
