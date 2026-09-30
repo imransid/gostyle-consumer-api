@@ -47,7 +47,8 @@ or a choice. **MISSING** no data anywhere today.
    is `False`. For a branch with its own price, the app shows one number and the
    create checks another: `amount_mismatch`. Price does **not** change by stylist
    or by date in booking-api (the platform has tables for both, booking-api
-   reads neither). See 2.1 and Q1.
+   reads neither). See 2.1 and Q1. **Fixed in S7:** every shown service price
+   now reads the salon's own branch price with booking-api's rule.
 4. **Experts reuse is almost free, but the helper it reuses has drifted from
    the platform.** Since the platform migration of 2026-09-18, a stage's skill
    can be the salon's **own** skill. Our filter (`skills.py`) only knows the 8
@@ -119,6 +120,18 @@ never checked.
 **So "matching the Services tab to the fil" and "agreeing with the booking
 payload" are two different numbers wherever a branch has its own price.** Today
 the tab already has this bug, and the new screen would copy it.
+
+**Fixed in S7.** `selectors.branch_price_minor` reads
+`service_branch_availability.price_minor` for the salon's own branch (price
+only, the availability filter stays off, F2), and `menu.service_price` applies
+booking-api's rule: a set branch price is used (0 means 0), no row or a null
+price is the service's own. Every place a service price is shown uses it: the
+Services tab, this screen, the group booking's service lines
+(`group_views._catalogue`, from `service_timing_rows`), and the Packages tab's
+"price before" (the same rule in SQL, `Coalesce`). services-details stays on
+the base price: it has no branch (its known gap). Note: booking-api refuses a
+price of 0 (`BOOKING_STATE_INVALID`), so a branch price of 0 shows as 0 and
+cannot be booked, exactly as booking-api would have it.
 
 Can one service's price differ:
 
@@ -407,7 +420,7 @@ is unmanaged. `apps/salons/urls.py` and `selectors.py` use CRLF: keep `\r\n`.
 | S4 | Content: `included`, `preparation`, `details`. Pure functions | new `apps/salons/service_detail.py` | blank and repeated stage names; `None` and whitespace care text; CRLF lines; pre before post; each details row only when set; "20 min" text; "Suitable for" for each of the 4 audiences, unknown audience = no row |
 | S5 | `experts`: `stylist_rows(salon, [id], stages=...)` with the S4 stages (one query); `[]` when pulled or no stages | view | same list and order as `SalonStylistsView` on the same mocks; pulled = `[]`; no stages = `[]`; no 422 ever |
 | S6 | `rating: null`, `review_count: 0`, `products: []`, with a comment saying why. OpenAPI (`extend_schema`, response serializer). Our FE doc `docs/SERVICE_DETAIL_API.md`: what differs from their draft (auth, 404 `errors`, UUID category ids, `experts` meaning, one id at every branch, URLs) | view, `docs/` | keys present with those values; `manage.py spectacular` builds; openapi flow test |
-| S7 | (Q1) Branch price on the tab and this screen together: read `service_branch_availability.price_minor` for the salon's branch, price only, no filter (F2 untouched). **Copy booking-api's rule exactly (Rafa, 2026-09-30): the branch price whenever one is set, so 0 means 0** (`menu.service_price` uses `or` today, so 0 falls back to the base price; keep that until S7) | `selectors.py`, `views.py` (tab `_service`), `menu.py` | override wins; null override = base; no row = base; **0 override = 0**; tab and detail give the same number |
+| S7 | **Built (Rafa to review).** Also the group lines and the Packages tab's "price before", see 2.1. (Q1) Branch price on the tab and this screen together: read `service_branch_availability.price_minor` for the salon's branch, price only, no filter (F2 untouched). **Copy booking-api's rule exactly (Rafa, 2026-09-30): the branch price whenever one is set, so 0 means 0** (`menu.service_price` uses `or` today, so 0 falls back to the base price; keep that until S7) | `selectors.py`, `views.py` (tab `_service`), `menu.py` | override wins; null override = base; no row = base; **0 override = 0**; tab and detail give the same number |
 | S7b | The tab's two "Other" groups (found in S2): a service with no category and one whose category was deleted give two groups with the same id `other`. Fix in its own commit next to S7, since both change the tab (Rafa, 2026-09-30) | `views.py` (`SalonServicesView`) | one "Other" group holding both; `ServicesTabTests` updated on purpose |
 
 Order: S0, S1 to S6, then S7. S0 and S7 each change an existing answer, so each

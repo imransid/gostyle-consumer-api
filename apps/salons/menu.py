@@ -16,12 +16,21 @@ def service_price(svc):
     """
     One visit's price, before VAT, in major units (a Decimal).
 
-    The branch price when the selector read one (`branch_price_minor`, only
-    while selectors.BRANCH_AVAILABILITY_ENABLED is on), else the service's
-    own `price_minor`. It must be the number booking-api charges, or the
-    booking create answers amount_mismatch.
+    `svc` is a service row: a model instance, or a dict from `.values()`.
+
+    booking-api's rule, exactly (the platform's gRPC ListServices, which is
+    what booking-api prices from: `override?.priceMinor ?? s.priceMinor`):
+    the salon's own branch price when one is set, so 0 means 0; no branch
+    row, or a branch row with no price, means the service's own
+    `price_minor`. The selectors read `branch_price_minor` for the salon's
+    branch (`selectors.branch_price_minor`). Any other number here is an
+    amount_mismatch when the customer books.
     """
-    return major(getattr(svc, "branch_price_minor", None) or svc.price_minor)
+    if isinstance(svc, dict):
+        base, branch = svc.get("price_minor"), svc.get("branch_price_minor")
+    else:
+        base, branch = svc.price_minor, getattr(svc, "branch_price_minor", None)
+    return major(branch if branch is not None else base)
 
 
 def category_chip(categories, category_id):

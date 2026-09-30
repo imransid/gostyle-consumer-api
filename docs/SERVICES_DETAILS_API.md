@@ -122,16 +122,20 @@ on its own has nothing to be grouped under.
   salon is a storefront, one per branch, so this picks the tenant's storefront —
   preferring a `PUBLIC` one, then the oldest. **A tenant with several branches
   therefore always names the same salon**, even for a service sold at only one
-  of them. The fix is `service_branch_availability`, which is not read anywhere
-  yet (`selectors.BRANCH_AVAILABILITY_ENABLED` is `False`); when it is, this is
-  one of the call sites that has to learn about it.
+  of them. The fix is `service_branch_availability`'s `available` rows, which
+  are not read yet (`selectors.BRANCH_AVAILABILITY_ENABLED` is `False`; only
+  its prices are); when they are, this is one of the call sites that has to
+  learn about it.
 - **`salon_id` can be `null`**, when a service's tenant has no live storefront
   at all. That is a data hole rather than a state the product has, and the row
   is still returned: dropping it would put a gap in a basket over a link the app
   probably was not going to draw.
 - **`price` ignores branch pricing** for the same reason. A service id arrives
   without a branch, so `service_branch_availability.price_minor` cannot be
-  applied even where it exists. The menu endpoint has the same hole today.
+  applied even where it exists. The Services tab and the service detail
+  (`SERVICE_DETAIL_API.md`) do read it, so for a service with a branch price
+  this `price` can differ from theirs. It stays the base price on purpose:
+  there is no branch here to read.
 
 ---
 

@@ -247,8 +247,9 @@ What each kind becomes:
 
 ## 5. What the server decides
 
-1. **Prices** come from the salon's records. booking-api prices the party
-   itself.
+1. **Prices** come from the salon's records, at this branch: a service's
+   branch price when the salon set one, as on the Services tab and as
+   booking-api prices it. booking-api prices the party itself.
 2. **No child discount.** booking-api has no field for age, so `child` costs
    the same as `adult`. The spec's 50% is not applied (§8).
 3. **No deposit.** `deposit_amount` is `0`. Every group booking is confirmed

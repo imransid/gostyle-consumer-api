@@ -226,11 +226,18 @@ def salon_packages(storefront):
                 .values("total")[:1],
                 output_field=IntegerField(),
             ),
+            # The member services at their prices HERE (menu.service_price's
+            # rule, in SQL: the branch price when set, 0 included, else the
+            # service's own), so "price before" and "save" match the tab.
             sum_minor=Subquery(
                 items.values("package_id")
                 .annotate(
                     total=Sum(
-                        F("service__price_minor") * F("quantity"),
+                        Coalesce(
+                            branch_price_minor(OuterRef("service_id"), storefront.branch_id),
+                            F("service__price_minor"),
+                            output_field=IntegerField(),
+                        ) * F("quantity"),
                         output_field=IntegerField(),
                     )
                 )
@@ -272,26 +279,52 @@ def salon_stylists(storefront, branch_id=None):
         .order_by("created_at")
     )
 
+# Hides a service a branch switched off. Still off: as written it keeps only
+# services WITH an `available` row, and the platform's rule is different
+# (audit F2). Branch PRICES do not wait for it (branch_price_minor, S7).
 BRANCH_AVAILABILITY_ENABLED = False
 
 
+def branch_price_minor(service_ref, branch_id):
+    """
+    One service's own price at one branch, as a subquery:
+    `service_branch_availability.price_minor`, or NULL when the branch has no
+    row for the service or a row with no price.
+
+    `service_ref` names the service in the outer query (an OuterRef). The
+    price only: whether the branch offers the service is the availability
+    filter's business (BRANCH_AVAILABILITY_ENABLED). menu.service_price turns
+    it into the price the customer sees, with booking-api's rule.
+    """
+    return Subquery(
+        ServiceBranchAvailability.objects.filter(
+            service_id=service_ref,
+            branch_id=branch_id,
+        ).values("price_minor")[:1],
+        output_field=IntegerField(),
+    )
+
+
 def salon_services(storefront, branch_id=None):
+    branch_id = branch_id or storefront.branch_id
     qs = Service.objects.filter(
         tenant_id=storefront.tenant_id,
         status="PUBLISHED",
         deleted_at__isnull=True,
         online_booking_enabled=True,
+    ).annotate(
+        # This branch's own price, if the salon set one (S7). Read always:
+        # booking-api charges it whether or not the filter below is on.
+        branch_price_minor=branch_price_minor(OuterRef("pk"), branch_id),
     )
 
     if BRANCH_AVAILABILITY_ENABLED:
-        branch_id = branch_id or storefront.branch_id
         availability = ServiceBranchAvailability.objects.filter(
             service_id=OuterRef("pk"),
             branch_id=branch_id,
         )
         qs = qs.annotate(
             branch_available=Subquery(availability.values("available")[:1]),
-            branch_price_minor=Subquery(availability.values("price_minor")[:1]),
         ).filter(branch_available=True)
 
     return qs.order_by("name")
@@ -642,8 +675,8 @@ def services_by_ids(service_ids):
     #
     # A tenant with several branches has several storefronts and this picks
     # the oldest. See the known gap in docs/SERVICES_DETAILS_API.md: a real fix
-    # needs service_branch_availability, which is not read anywhere yet
-    # (BRANCH_AVAILABILITY_ENABLED is False).
+    # needs service_branch_availability's `available` rows, which are not
+    # read yet (BRANCH_AVAILABILITY_ENABLED is False; only its prices are).
     storefronts = (
         Storefront.objects.filter(
             tenant_id=OuterRef("tenant_id"),
@@ -705,6 +738,8 @@ def service_for_salon(salon, service_id):
             Q(published_version__isnull=False)
             | Q(status__in=DETAIL_STATUSES_WITHOUT_VERSION)
         )
+        # This salon's own branch price, as on the tab (menu.service_price).
+        .annotate(branch_price_minor=branch_price_minor(OuterRef("pk"), salon.branch_id))
         .first()
     )
 
@@ -1387,16 +1422,17 @@ def service_timing_rows(storefront, service_ids, branch_id=None):
     salon contributes no duration and no stylist — an empty answer rather than
     an error, which is what this endpoint promises for a bad service id.
 
-    `name` and `price_minor` (and `branch_price_minor`, where branch prices
-    are on) are the figures the services tab shows, for a caller that has to
+    `name`, `price_minor` and `branch_price_minor` are the figures the
+    services tab prices from (menu.service_price), for a caller that has to
     name and price what it read the timing of.
     """
     if not service_ids:
         return []
 
-    fields = ["id", "name", "price_minor", "duration_minutes", "stage_minutes", "lead_time_minutes"]
-    if BRANCH_AVAILABILITY_ENABLED:
-        fields.append("branch_price_minor")
+    fields = [
+        "id", "name", "price_minor", "branch_price_minor",
+        "duration_minutes", "stage_minutes", "lead_time_minutes",
+    ]
 
     stages = ServiceStage.objects.filter(service_id=OuterRef("pk")).values(
         "service_id"

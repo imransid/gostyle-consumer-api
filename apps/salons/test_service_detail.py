@@ -18,6 +18,8 @@ S5: experts, the Expert step's own list, compared with GET /salon/:id/stylists.
 S6: rating, review_count and products (empty for now), and the OpenAPI shape
 and example checked against what the view really answers.
 
+S7: the branch price, booking-api's rule, wherever a service price is shown.
+
 The selectors are mocked; no database.
 """
 
@@ -31,13 +33,13 @@ from decimal import Decimal
 from unittest import mock
 
 from django.conf import settings
-from django.db.models import Q
+from django.db.models import IntegerField, OuterRef, Q, Value
 from django.test import SimpleTestCase
 from django.urls import resolve, reverse
 from drf_spectacular.generators import SchemaGenerator
 from rest_framework.test import APIRequestFactory
 
-from apps.salons import menu, selectors, skills
+from apps.salons import group_views, menu, selectors, skills
 from apps.salons.service_detail import (
     GALLERY_MAX,
     content,
@@ -59,6 +61,7 @@ from apps.salons.views import SalonServicesView
 
 SALON = uuid.UUID("33333333-3333-3333-3333-333333333333")
 TENANT = uuid.UUID("11111111-1111-1111-1111-111111111111")
+BRANCH = uuid.UUID("22222222-2222-2222-2222-222222222222")
 SERVICE = uuid.UUID("66666666-6666-6666-6666-666666666660")
 
 
@@ -219,11 +222,13 @@ class ServiceForSalonTests(SimpleTestCase):
     """`selectors.service_for_salon`: which rows the detail screen may open."""
 
     def lookup(self):
-        salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT)
-        with mock.patch.object(selectors, "Service") as service:
-            first = service.objects.filter.return_value.filter.return_value.first
-            first.return_value = "row"
+        salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT, branch_id=BRANCH)
+        with mock.patch.object(selectors, "Service") as service, \
+                mock.patch.object(selectors, "branch_price_minor", return_value="price") as price:
+            chain = service.objects.filter.return_value.filter.return_value
+            chain.annotate.return_value.first.return_value = "row"
             answer = selectors.service_for_salon(salon, SERVICE)
+        self.price = price
         return service, answer
 
     def test_only_this_salon_s_tenant(self):
@@ -233,6 +238,13 @@ class ServiceForSalonTests(SimpleTestCase):
         service, answer = self.lookup()
         service.objects.filter.assert_called_once_with(id=SERVICE, tenant_id=TENANT)
         self.assertEqual(answer, "row")
+
+    def test_the_row_carries_this_salon_s_own_branch_price(self):
+        service, _ = self.lookup()
+        self.price.assert_called_once_with(OuterRef("pk"), BRANCH)
+        service.objects.filter.return_value.filter.return_value.annotate.assert_called_once_with(
+            branch_price_minor="price",
+        )
 
     def test_only_a_service_that_was_on_sale_once(self):
         service, _ = self.lookup()
@@ -364,6 +376,11 @@ class ServicesTabTests(SimpleTestCase):
         line = self.get([row]).data["service_groups"][0]["services"][0]
         self.assertEqual(line["price"], Decimal("99.00"))
 
+    def test_a_zero_branch_price_is_zero_on_the_tab(self):
+        row = service_row(branch_price_minor=0)
+        line = self.get([row]).data["service_groups"][0]["services"][0]
+        self.assertEqual(line["price"], Decimal("0"))
+
     def test_no_branch_price_falls_back_to_the_service_price(self):
         row = service_row(branch_price_minor=None)
         line = self.get([row]).data["service_groups"][0]["services"][0]
@@ -411,7 +428,8 @@ class CoreFieldsTests(Seams, SimpleTestCase):
     def test_the_price_is_the_tab_s_number_for_the_same_row(self):
         salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT)
         for price_minor, branch in [(12000, None), (8050, None), (1, None),
-                                    (99999, None), (12000, 9900), (12000, 1)]:
+                                    (99999, None), (12000, 9900), (12000, 1),
+                                    (12000, 0), (12000, 15000)]:
             row = service_row(price_minor=price_minor, branch_price_minor=branch)
             with self.subTest(price_minor=price_minor, branch=branch):
                 tab = SalonServicesView._service(row)["price"]
@@ -475,12 +493,12 @@ class MenuHelperTests(SimpleTestCase):
             Decimal("120.00"),
         )
 
-    def test_a_zero_branch_price_falls_back_to_the_service_price(self):
-        # As the tab has always done (`or`). Pinned here so S7 (branch
-        # prices) decides it on purpose rather than by accident.
+    def test_a_zero_branch_price_is_zero(self):
+        # S7, on purpose: booking-api's rule (a set price is used), so 0
+        # means 0. Until S7 the tab's `or` fell back to the service price.
         self.assertEqual(
             menu.service_price(service_row(price_minor=12000, branch_price_minor=0)),
-            Decimal("120.00"),
+            Decimal("0"),
         )
 
     def test_category_chip_is_a_fresh_dict(self):
@@ -1068,3 +1086,104 @@ class FeDocTests(Seams, SimpleTestCase):
         no_salon = self.call(salon=False).json()
         self.assertIn(no_service, self.blocks)
         self.assertIn(no_salon, self.blocks)
+
+
+# ---------------------------------------------------------------------------
+# S7: the branch price
+# ---------------------------------------------------------------------------
+
+MISSING = object()
+
+
+class BranchPriceRuleTests(SimpleTestCase):
+    """
+    menu.service_price is booking-api's rule (the platform gRPC's
+    `override?.priceMinor ?? s.priceMinor`): a branch price that is set is
+    used, 0 included; no branch row, or a null price, is the service's own.
+    """
+
+    CASES = [
+        # (service price_minor, branch price_minor, shown)
+        (12000, 9900, Decimal("99.00")),     # the override wins
+        (12000, 15000, Decimal("150.00")),   # above the base too
+        (12000, None, Decimal("120.00")),    # a branch row with no price
+        (12000, MISSING, Decimal("120.00")), # no branch row at all
+        (12000, 0, Decimal("0")),            # 0 means 0
+    ]
+
+    def test_a_model_row(self):
+        for base, branch, shown in self.CASES:
+            with self.subTest(branch=branch):
+                extra = {} if branch is MISSING else {"branch_price_minor": branch}
+                self.assertEqual(menu.service_price(service_row(price_minor=base, **extra)), shown)
+
+    def test_a_values_dict(self):
+        for base, branch, shown in self.CASES:
+            with self.subTest(branch=branch):
+                row = {"price_minor": base}
+                if branch is not MISSING:
+                    row["branch_price_minor"] = branch
+                self.assertEqual(menu.service_price(row), shown)
+
+
+class BranchPriceSelectorTests(SimpleTestCase):
+    """Every selector a shown service price comes from reads this branch's price."""
+
+    storefront = types.SimpleNamespace(tenant_id=TENANT, branch_id=BRANCH)
+
+    def test_the_subquery_is_one_service_s_price_at_one_branch(self):
+        with mock.patch.object(selectors, "ServiceBranchAvailability") as sba:
+            selectors.branch_price_minor(OuterRef("pk"), BRANCH)
+        # The price only: never the `available` flag (audit F2).
+        sba.objects.filter.assert_called_once_with(service_id=OuterRef("pk"), branch_id=BRANCH)
+        sba.objects.filter.return_value.values.assert_called_once_with("price_minor")
+
+    def price_stub(self):
+        return mock.patch.object(
+            selectors, "branch_price_minor",
+            return_value=Value(None, output_field=IntegerField()),
+        )
+
+    def test_the_tab_reads_the_salon_s_own_branch_price(self):
+        with self.price_stub() as price:
+            qs = selectors.salon_services(self.storefront)
+        price.assert_called_once_with(OuterRef("pk"), BRANCH)
+        self.assertIn("branch_price_minor", qs.query.annotations)
+        # The availability filter stays off (F2 untouched).
+        self.assertNotIn("branch_available", qs.query.annotations)
+
+    def test_the_availability_filter_is_still_behind_its_flag(self):
+        with self.price_stub() as price, \
+                mock.patch.object(selectors, "BRANCH_AVAILABILITY_ENABLED", True):
+            qs = selectors.salon_services(self.storefront)
+        price.assert_called_once_with(OuterRef("pk"), BRANCH)
+        self.assertIn("branch_price_minor", qs.query.annotations)
+        self.assertIn("branch_available", qs.query.annotations)
+
+    def test_the_group_rows_carry_the_branch_price(self):
+        with mock.patch.object(selectors, "salon_services") as services:
+            selectors.service_timing_rows(self.storefront, [SERVICE])
+        values = services.return_value.filter.return_value.annotate.return_value.values
+        self.assertIn("branch_price_minor", values.call_args.args)
+        self.assertIn("price_minor", values.call_args.args)
+
+    def test_the_package_sum_reads_this_branch_s_prices(self):
+        # "price before" on the Packages tab sums the member services.
+        with self.price_stub() as price:
+            selectors.salon_packages(self.storefront)
+        price.assert_called_once_with(OuterRef("service_id"), BRANCH)
+
+
+class SamePriceEverywhereTests(SimpleTestCase):
+    """The tab, the detail screen and the group's lines give the same number."""
+
+    def test_tab_detail_and_group(self):
+        salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT)
+        for base, branch, shown in BranchPriceRuleTests.CASES:
+            with self.subTest(branch=branch):
+                extra = {} if branch is MISSING else {"branch_price_minor": branch}
+                row = service_row(price_minor=base, **extra)
+                tab = SalonServicesView._service(row)["price"]
+                detail = core_fields(salon, row, CATEGORIES)["price"]
+                group = group_views._catalogue({"s": {"name": row.name, "price_minor": base, **extra}})
+                self.assertEqual((tab, detail, group["s"]["price"]), (shown, shown, shown))

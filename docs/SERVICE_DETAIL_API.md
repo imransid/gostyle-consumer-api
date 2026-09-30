@@ -30,7 +30,10 @@ products, and the experts who can do it. **One call draws the whole screen.**
    `null`.
 4. **One service id works at every branch of a salon.** A service belongs to
    the salon business, not to one branch, so the same `service_id` opens under
-   each branch's `salon_id`. Today the price is the same at every branch.
+   each branch's `salon_id`. The price is that branch's own when the salon
+   set one for it (else the service's own price), so the same service can
+   cost differently at two branches, exactly as each branch's Services tab
+   shows it.
 5. **Photo URLs are plain storage URLs**, with no fixed host
    (`https://<bucket>.s3.<region>.amazonaws.com/...` today). Use them as they
    are; do not build or check a host. The host in the example is only an
@@ -184,7 +187,7 @@ not in `included`: it would only repeat the title.
 | `salon_id`      | uuid            | The `salon_id` from the path, echoed. |
 | `name`          | string          | The title. |
 | `description`   | string \| null | As the salon wrote it; `null` when it wrote none. The same text as the Services tab. |
-| `price`         | number          | One visit, before VAT, in the salon's currency. **The same number as the Services tab**, and the one the booking create checks. |
+| `price`         | number          | One visit, before VAT, in the salon's currency, at this branch: the branch's own price when the salon set one, else the service's. **The same number as the Services tab**, and the one the booking create checks. |
 | `duration_min`  | number          | Minutes. |
 | `duration_max`  | number          | Minutes. Today always equal to `duration_min`. |
 | `category`      | object          | `{ id, label }`: the Services tab's chip (the parent category when there is one). `id` is a UUID, or `"other"`. Never `null`. |
@@ -270,8 +273,9 @@ salon is trained for (only the fields that matter here):
 - **The gallery is capped at five**, and `gallery_count` carries the real
   number.
 - **`experts` is the stylists route's list**, computed by the same code.
-- **The price is the Services tab's**, before VAT, from the same code, and it
-  is the number booking-api checks when the booking is created. A price shown
+- **The price is the Services tab's**, before VAT, from the same code: this
+  branch's own price when the salon set one (0 included), else the service's.
+  It is the number booking-api checks when the booking is created. A price shown
   here and the price in the booking payload agree.
 - **Duration is a pair of minutes, never a sentence.** `details` spells it out
   for the Key Details row.

@@ -491,10 +491,11 @@ class ServiceDetailSerializer(serializers.Serializer):
         # only authority on what is charged (BOOKING_CREATE_API.md), so a
         # customer holding a stale basket is corrected there, not here.
         #
-        # No branch price is read: a service id arrives without a branch, and
-        # service_branch_availability is not read anywhere yet
-        # (selectors.BRANCH_AVAILABILITY_ENABLED). When it is, this is one of
-        # the call sites that has to learn about it.
+        # The BASE price, on purpose (Rafa, S7): a service id arrives without
+        # a branch, so there is no branch price to read. The Services tab and
+        # the service detail DO read it (menu.service_price), so for a service
+        # with a branch price this can differ from them. Known gap,
+        # docs/SERVICES_DETAILS_API.md section 4.
         return major(obj.price_minor)
 
     @extend_schema_field(
