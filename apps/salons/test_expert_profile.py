@@ -35,6 +35,10 @@ E8: the fields that are empty for now, the contract's key order, and the
 OpenAPI shape and example checked against what the view really answers. (The
 FE doc's own check is in test_favourite.py, beside the real heart.)
 
+E9: GET /api/v1/services?tenant_id=&branch_id=, the old menu route, finds its
+salon by branch when one is sent (audit F13's twin). What must not change is
+pinned first.
+
 The querysets are built and inspected, never run: the platform's tables are
 unmanaged, so they do not exist in the test database. The views are called
 with their selectors mocked.
@@ -2655,3 +2659,237 @@ class ShapeOpenApiTests(Seams, SimpleTestCase):
         for flag in ("is_network_member", "is_favorite", "has_story"):
             with self.subTest(flag=flag):
                 self.assertEqual(properties[flag]["type"], "boolean")
+
+
+# ---------------------------------------------------------------------------
+# E9: GET /services?tenant_id=&branch_id=
+# ---------------------------------------------------------------------------
+
+SECOND_SALON = uuid.UUID("33333333-3333-3333-3333-3333333333b2")
+SECOND_BRANCH = uuid.UUID("22222222-2222-2222-2222-2222222222b2")
+NO_SUCH_BRANCH = uuid.UUID("22222222-2222-2222-2222-2222222222ee")
+OTHER_TENANT = uuid.UUID("11111111-1111-1111-1111-1111111111ee")
+
+FIRST = types.SimpleNamespace(id=SALON, tenant_id=TENANT, branch_id=BRANCH)
+SECOND = types.SimpleNamespace(id=SECOND_SALON, tenant_id=TENANT, branch_id=SECOND_BRANCH)
+SOMEONE_ELSES = types.SimpleNamespace(
+    id=uuid.UUID(int=0xE15E), tenant_id=OTHER_TENANT, branch_id=NO_SUCH_BRANCH,
+)
+
+
+class Salons(list):
+    """Public salons, standing in for the queryset the route narrows."""
+
+    def filter(self, **wanted):
+        return Salons(
+            salon for salon in self
+            if all(getattr(salon, name) == value for name, value in wanted.items())
+        )
+
+    def first(self):
+        return self[0] if self else None
+
+
+def menu_at(salon):
+    """
+    One menu for the business, priced per branch: the second salon set its
+    own price for the beard trim, and the first did not.
+    """
+    dearer = salon.branch_id == SECOND_BRANCH
+    return [
+        menu_service(1, "A Buzz Cut", CUTS, 12000, 30, "Clippers all over."),
+        menu_service(2, "B Beard Trim", BEARD, 8050, 20,
+                     branch_price_minor=9900 if dearer else None),
+    ]
+
+
+def menu_answer(trim_price):
+    """GET /services for that menu, as JSON."""
+    return {
+        "service_categories": [
+            {"id": "all", "label": "All"},
+            {"id": str(HAIR), "label": "Hair", "icon": "scissors"},
+            {"id": str(BEARD), "label": "Beard", "icon": "beard"},
+        ],
+        "service_groups": [
+            {"id": str(CUTS), "category_id": str(HAIR), "name": "Precision Cuts",
+             "services": [tab_line(BUZZ, 120.0)]},
+            {"id": str(BEARD), "category_id": str(BEARD), "name": "Beard",
+             "services": [tab_line(TRIM, trim_price)]},
+        ],
+    }
+
+
+class ServicesRoute:
+    """GET /api/v1/services, with the salons and the menu mocked at the edges."""
+
+    def services(self, query, salons=(FIRST,)):
+        known = {salon.id: salon for salon in (FIRST, SECOND, SOMEONE_ELSES)}
+        with ExitStack() as stack:
+            def patch(name, **kw):
+                return stack.enter_context(mock.patch.object(views, name, **kw))
+            self.lookup = patch("discoverable_salons", return_value=Salons(salons))
+            patch("salon_profile", side_effect=lambda salon_id: known.get(salon_id))
+            patch("salon_categories", return_value=MENU_CATEGORIES)
+            patch("salon_services", side_effect=menu_at)
+            response = self.client.get(f"/api/v1/services?{query}")
+            if response.status_code == 200:
+                self.tab = self.client.get(
+                    f"/api/v1/salon/{salons[0].id}/services"
+                ).json()
+        return response
+
+
+class ServicesRoutePinnedTests(ServicesRoute, SimpleTestCase):
+    """
+    Pinned BEFORE E9: what the route answers without a branch_id, and with the
+    salon's own branch_id, must not change.
+    """
+
+    def test_without_branch_id_the_tenant_s_menu(self):
+        response = self.services(f"tenant_id={TENANT}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), menu_answer(80.5))
+        # The same answer as that salon's Services tab.
+        self.assertEqual(response.json(), self.tab)
+
+    def test_with_the_salon_s_own_branch_id_the_same_answer(self):
+        with_branch = self.services(f"tenant_id={TENANT}&branch_id={BRANCH}")
+        self.assertEqual(with_branch.status_code, 200)
+        self.assertEqual(with_branch.json(), menu_answer(80.5))
+        self.assertEqual(with_branch.json(), self.services(f"tenant_id={TENANT}").json())
+
+    def test_without_branch_id_a_business_with_two_salons_gets_its_first(self):
+        # Not a good answer for the second salon, and exactly today's: a
+        # caller that wants a branch's own prices sends its branch_id.
+        response = self.services(f"tenant_id={TENANT}", salons=(FIRST, SECOND))
+        self.assertEqual(response.json(), menu_answer(80.5))
+
+    def test_the_category_filter(self):
+        response = self.services(f"tenant_id={TENANT}&category_id={BEARD}")
+        self.assertEqual(
+            response.json()["service_groups"], menu_answer(80.5)["service_groups"][1:],
+        )
+        with_branch = self.services(f"tenant_id={TENANT}&branch_id={BRANCH}&category_id={BEARD}")
+        self.assertEqual(with_branch.json(), response.json())
+
+    def test_a_tenant_with_no_public_salon_is_404(self):
+        response = self.services(f"tenant_id={TENANT}", salons=())
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response["Content-Type"], "application/json")
+        self.assertEqual(response.json()["detail"], "Salon not found")
+
+    def test_tenant_id_is_required_and_the_ids_must_be_uuids(self):
+        for query, field in (
+            ("", "tenant_id"),
+            ("tenant_id=nope", "tenant_id"),
+            (f"tenant_id={TENANT}&branch_id=nope", "branch_id"),
+            (f"tenant_id={TENANT}&category_id=nope", "category_id"),
+        ):
+            with self.subTest(query=query):
+                response = self.services(query)
+                self.assertEqual(response.status_code, 422)
+                self.assertEqual(response.json()["errors"][0]["field"], field)
+                self.lookup.assert_not_called()
+
+
+class ServicesRouteByBranchTests(ServicesRoute, SimpleTestCase):
+    """
+    E9: with a branch_id, the salon OF THAT BRANCH, so the menu is priced as
+    that branch prices it. The route used to take the tenant's first public
+    salon whatever branch_id said.
+    """
+
+    BOTH = (FIRST, SECOND)
+
+    def test_the_second_salon_s_branch_gets_the_second_salon_s_prices(self):
+        response = self.services(f"tenant_id={TENANT}&branch_id={SECOND_BRANCH}", salons=self.BOTH)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), menu_answer(99.0))
+
+    def test_the_first_salon_s_branch_still_gets_the_first_salon_s(self):
+        response = self.services(f"tenant_id={TENANT}&branch_id={BRANCH}", salons=self.BOTH)
+        self.assertEqual(response.json(), menu_answer(80.5))
+
+    def test_each_branch_answers_its_own_services_tab(self):
+        for salon in self.BOTH:
+            with self.subTest(salon=salon.id), ExitStack() as stack:
+                answer = self.services(
+                    f"tenant_id={TENANT}&branch_id={salon.branch_id}", salons=self.BOTH,
+                ).json()
+                for name, kw in (("salon_profile", {"return_value": salon}),
+                                 ("salon_categories", {"return_value": MENU_CATEGORIES}),
+                                 ("salon_services", {"side_effect": menu_at})):
+                    stack.enter_context(mock.patch.object(views, name, **kw))
+                tab = self.client.get(f"/api/v1/salon/{salon.id}/services").json()
+                self.assertEqual(answer, tab)
+
+    def test_the_salon_is_looked_up_by_tenant_and_branch(self):
+        self.services(f"tenant_id={TENANT}&branch_id={SECOND_BRANCH}", salons=self.BOTH)
+        with mock.patch.object(Salons, "filter", autospec=True, return_value=Salons()) as narrowed:
+            self.services(f"tenant_id={TENANT}&branch_id={SECOND_BRANCH}", salons=self.BOTH)
+        narrowed.assert_called_once()
+        self.assertEqual(
+            narrowed.call_args.kwargs, {"tenant_id": TENANT, "branch_id": SECOND_BRANCH},
+        )
+
+    def test_without_branch_id_only_the_tenant_is_asked_about(self):
+        with mock.patch.object(Salons, "filter", autospec=True, return_value=Salons()) as narrowed:
+            self.services(f"tenant_id={TENANT}", salons=self.BOTH)
+        narrowed.assert_called_once()
+        self.assertEqual(narrowed.call_args.kwargs, {"tenant_id": TENANT})
+
+    def test_a_branch_that_is_no_public_salon_of_the_tenant_is_404(self):
+        response = self.services(f"tenant_id={TENANT}&branch_id={NO_SUCH_BRANCH}", salons=self.BOTH)
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response["Content-Type"], "application/json")
+        self.assertEqual(response.json(), {
+            "detail": "Salon not found",
+            "code": "not_found",
+            "errors": [{"field": None, "code": "not_found", "message": "Salon not found"}],
+        })
+
+    def test_another_business_s_branch_is_404_too(self):
+        # The branch is a real public salon, of someone else.
+        everyone = (FIRST, SECOND, SOMEONE_ELSES)
+        response = self.services(
+            f"tenant_id={TENANT}&branch_id={SOMEONE_ELSES.branch_id}", salons=everyone,
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Salon not found")
+
+    def test_the_category_filter_on_a_branch_s_menu(self):
+        response = self.services(
+            f"tenant_id={TENANT}&branch_id={SECOND_BRANCH}&category_id={BEARD}", salons=self.BOTH,
+        )
+        self.assertEqual(
+            response.json()["service_groups"], menu_answer(99.0)["service_groups"][1:],
+        )
+
+    def test_the_same_404_as_the_stylists_route(self):
+        # GET /stylists?tenant_id=&branch_id= answers the same for the same
+        # branch (E0), so the two old routes agree on which salon a branch is.
+        with mock.patch.object(views, "discoverable_salons", return_value=Salons(self.BOTH)):
+            stylists = self.client.get(
+                f"/api/v1/stylists?tenant_id={TENANT}&branch_id={NO_SUCH_BRANCH}"
+            )
+        services = self.services(f"tenant_id={TENANT}&branch_id={NO_SUCH_BRANCH}", salons=self.BOTH)
+        self.assertEqual((stylists.status_code, services.status_code), (404, 404))
+        self.assertEqual(stylists.json(), services.json())
+
+
+class ServicesRouteOpenApiTests(SimpleTestCase):
+    """The route's parameters say what branch_id does."""
+
+    def parameters(self):
+        schema = SchemaGenerator().get_schema(request=None, public=True)
+        return {p["name"]: p for p in schema["paths"]["/api/v1/services"]["get"]["parameters"]}
+
+    def test_branch_id_is_optional_and_described(self):
+        branch = self.parameters()["branch_id"]
+        self.assertNotIn("required", branch)
+        self.assertIn("price", branch["description"])
+
+    def test_tenant_id_is_required(self):
+        self.assertIs(self.parameters()["tenant_id"]["required"], True)
+

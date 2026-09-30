@@ -605,9 +605,19 @@ class StylistListView(APIView):
         
 @extend_schema(
     parameters=[
-        OpenApiParameter("tenant_id", str, required=True),
-        OpenApiParameter("branch_id", str, required=False),
-        OpenApiParameter("category_id", str, required=False),
+        OpenApiParameter("tenant_id", str, required=True, description="Tenant UUID"),
+        OpenApiParameter(
+            "branch_id", str, required=False,
+            description=(
+                "Branch UUID: the salon whose menu is answered, at that "
+                "branch's own prices. Without it, the tenant's first public "
+                "salon. A branch that is no public salon of the tenant is 404."
+            ),
+        ),
+        OpenApiParameter(
+            "category_id", str, required=False,
+            description="Only the groups of this chip, or this one group.",
+        ),
     ],
 )
 class ServiceListView(APIView):
@@ -619,9 +629,15 @@ class ServiceListView(APIView):
         except ParamError as exc:
             raise ValidationError({exc.param: [exc.message]}) from exc
 
-        salon = discoverable_salons().filter(
-            tenant_id=params["tenant_id"],
-        ).first()
+        # With a branch, the salon OF THAT BRANCH, as GET /stylists finds its
+        # own: a price is a branch's own (menu.service_price), so in a
+        # business with two salons the tenant's first one would answer with
+        # the wrong prices. Without a branch the lookup is what it always was.
+        wanted = {"tenant_id": params["tenant_id"]}
+        if params["branch_id"]:
+            wanted["branch_id"] = params["branch_id"]
+
+        salon = discoverable_salons().filter(**wanted).first()
         if salon is None:
             raise Http404("Salon not found")
 

@@ -640,7 +640,7 @@ and managed, so its tests use the real test database. `urls.py` and
 | E6 | **Built, reviewed by Rafa (2026-09-30).** `media` as `{id, type, url, thumbnail_url}`, `media_count`, `has_story` (Q9, Q10). One query reads every tagged photo's `id`, `url` and `mime_type`; the rule (type, what is left out, the cap, the count) is pure. A row with no URL is left out too, as on the service detail | `selectors.py` (new `stylist_media_rows`), `expert_profile.py` | newest first, `id` breaks a tie; cap 5 with `media_count` 7; deleted, private, unapproved left out; another salon's and another tenant's left out; a `staff_id` that is not this stylist left out; an image: `type` `image`, `thumbnail_url` `null`; a video left out and not counted; unknown file type left out; none: `[]`, `0`, `has_story: false`; one photo: `has_story: true` |
 | E7 | **Built, reviewed by Rafa (2026-09-30).** `day_off` (Q7, final yes). A pure rule plus one selector (shifts of the listed stylists at this branch, 4 roster weeks). Used by the profile **and** by `stylist_rows`, so the Expert step and `experts` fill it too (the list gains 2 queries: shifts, and the salon's snapshot for its open days) | `selectors.py`, new pure rule in `expert_profile.py` (or `roster.py`), `views.py` (`stylist_rows`, `_stylist_row`) | one steady day "Tuesday"; two "Friday, Saturday" in week order; a day the salon is closed is never a day off, with or without a shift; works every open day `null`; off in one week only `null`; 1 rostered week `null`; no shifts `null`; salon hours not published `null`; shifts at another branch ignored; the list row and the profile give the same text |
 | E8 | **Built, reviewed by Rafa (2026-09-30).** The empty fields: `bio: null`, `years_experience: null`, `price_level: null`, `is_network_member: false`. The answer's keys are in the contract's order. OpenAPI (`extend_schema`, response serializer, a real example). Our FE doc `docs/EXPERT_PROFILE_API.md`: every field, what differs from their text (3.6), and the question to them about `is_network_member` | view, new `expert_profile_serializers.py`, `docs/` | keys present with those values; the example is the view's real answer; `manage.py spectacular` builds with no new warning; the FE doc's JSON blocks parse |
-| E9 | **F13's twin (Rafa): `GET /services?tenant_id=&branch_id=`** finds its salon by `branch_id` when one is sent, so the price is that branch's. Its own small last step | `views.py` (`ServiceListView`) | with `branch_id`: that branch's salon and price; unknown branch 404; without `branch_id`: today's answer; a business with one salon: unchanged |
+| E9 | **Built, reviewed by Rafa (2026-09-30).** **F13's twin (Rafa): `GET /services?tenant_id=&branch_id=`** finds its salon by `branch_id` when one is sent, so the price is that branch's. Its own small last step | `views.py` (`ServiceListView`) | with `branch_id`: that branch's salon and price; unknown branch 404; without `branch_id`: today's answer; a business with one salon: unchanged |
 
 Order: E0, E1, E2, E3a, E3b, E4, E5, E6, E7, E8, E9. E0, E3a, E4, E7 and E9
 change or touch existing answers, so each stays a separate commit you can
@@ -692,10 +692,13 @@ psql -h <DB_HOST> -p <DB_PORT> -U <DB_USER> -d <DB_NAME> \
 | booking-api `STAFF_FROM_PLATFORM` | `true` |
 | booking-api `SKILLS_UNVERIFIED` | `true` |
 | Calls to `GET /stylists?tenant_id=&branch_id=` in the last 2 weeks (live API logs, JSON) | 3, all with a public salon's real tenant and branch (Green Wave twice, the salon of branch `b7e92439` once) |
+| Calls to `GET /services?tenant_id=` in the last 2 weeks (live API logs, JSON) | 6, all with `tenant_id` only, no `branch_id` |
 
 So: E0 changes no live answer today (no switch), the new 404 on
 `GET /stylists?tenant_id=&branch_id=` (F13) would have touched none of those 3
-calls, and rosters are filled enough for `day_off` (Q7 final yes).
+calls, and rosters are filled enough for `day_off` (Q7 final yes). E9 changes
+none of the 6 `GET /services` calls: without a `branch_id` the route answers
+exactly as before.
 
 (The first log check said "no call" because it read the wrong file. E0's
 commit message `28514e7` repeats that; the line above is the right one.)
