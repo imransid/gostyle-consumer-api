@@ -35,7 +35,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import menu
-from .expert_profile import core_fields, service_groups
+from .expert_profile import core_fields, salon_block, service_groups
 from .params import path_uuid
 from .selectors import (
     is_favourite_stylist,
@@ -46,7 +46,7 @@ from .selectors import (
     stylist_for_salon,
     stylist_service_coverage,
 )
-from .views import _OUR_ENVELOPE, _stylist_row
+from .views import _OUR_ENVELOPE, _stylist_row, salon_profile_data
 
 # Written for the customer: the app shows `detail` on its empty state. The
 # salon's is the service detail's own sentence; the stylist's is the
@@ -67,8 +67,8 @@ _SERVICE_ROW = {
     },
 }
 
-# The 200 so far: the person (E2), the heart (E3b) and the services (E4). E8
-# replaces this with the full shape.
+# The 200 so far: the person (E2), the heart (E3b), the services (E4) and the
+# salon (E5). E8 replaces this with the full shape.
 _ANSWER_SO_FAR = {
     "type": "object",
     "properties": {
@@ -81,6 +81,17 @@ _ANSWER_SO_FAR = {
         "rating": {"type": "number", "nullable": True},
         "review_count": {"type": "integer"},
         "is_favorite": {"type": "boolean"},
+        "salon": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "format": "uuid"},
+                "name": {"type": "string", "nullable": True},
+                "is_open": {"type": "boolean", "nullable": True},
+                "hours_today": {"type": "string", "nullable": True},
+                "latitude": {"type": "number", "nullable": True},
+                "longitude": {"type": "number", "nullable": True},
+            },
+        },
         "service_groups": {
             "type": "array",
             "items": {
@@ -95,7 +106,7 @@ _ANSWER_SO_FAR = {
     },
     "required": [
         "id", "salon_id", "name", "title", "role", "avatar_url", "rating", "review_count",
-        "is_favorite", "service_groups",
+        "is_favorite", "salon", "service_groups",
     ],
 }
 
@@ -132,8 +143,12 @@ _ANSWER_SO_FAR = {
                 "to get it, a guest always gets false. `service_groups` is "
                 "only what this stylist can do, in the groups, order, rows "
                 "and prices of GET /salon/{salon_id}/services; a group's "
-                "`id` is that route's group id (a UUID, or `other`). The "
-                "rest of the screen's fields are being added."
+                "`id` is that route's group id (a UUID, or `other`). `salon` "
+                "says what GET /salon/{salon_id} says: the same name, "
+                "`is_open` (null when the salon published no hours) and pin "
+                "(null when it has none). `hours_today` is null on a day the "
+                "salon does not open. The rest of the screen's fields are "
+                "being added."
             ),
             examples=[
                 OpenApiExample(
@@ -148,6 +163,14 @@ _ANSWER_SO_FAR = {
                         "rating": None,
                         "review_count": 0,
                         "is_favorite": False,
+                        "salon": {
+                            "id": "c6c248ab-f2cd-4f12-a31e-243c6e64b3b5",
+                            "name": "Green Wave Salon",
+                            "is_open": True,
+                            "hours_today": "10:00 AM - 9:00 PM",
+                            "latitude": 25.2213,
+                            "longitude": 55.2621,
+                        },
                         "service_groups": [
                             {
                                 "id": "7a1d3c52-0b86-4c0e-9d53-1f2a6b7c8d90",
@@ -213,6 +236,10 @@ class SalonExpertProfileView(APIView):
         # The caller's own heart on this stylist: read with their token when
         # they sent one, false for a guest (the contract's section 3).
         body["is_favorite"] = is_favourite_stylist(request.user, stylist.id)
+
+        # The salon, from its own page's answer (GET /salon/<id>): the same
+        # name, open now and pin, by the same code.
+        body["salon"] = salon_block(salon_profile_data(salon))
         body["service_groups"] = self._service_groups(salon, stylist)
         return Response(body)
 

@@ -21,6 +21,9 @@ itself, and is_favorite read from the real table, are in test_favourite.py.
 E4: service_groups, only what this stylist does, grouped as the Services
 tab. The tab is pinned first, before its grouping moved to menu.py.
 
+E5: the salon block, from GET /salon/<id>'s own answer. That route is pinned
+first, before its body moved to a function both screens call.
+
 The querysets are built and inspected, never run: the platform's tables are
 unmanaged, so they do not exist in the test database. The views are called
 with their selectors mocked.
@@ -28,7 +31,9 @@ with their selectors mocked.
 
 import types
 import uuid
+import zoneinfo
 from contextlib import ExitStack
+from datetime import datetime
 from unittest import mock
 
 from django.db.models import Exists, QuerySet
@@ -49,6 +54,7 @@ from apps.salons import (
     views,
 )
 from apps.salons.expert_profile_views import NO_SALON, NO_STYLIST, SalonExpertProfileView
+from apps.salons.snapshot import normalize
 
 SALON = uuid.UUID("33333333-3333-3333-3333-333333333333")
 TENANT = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -288,12 +294,33 @@ def url(salon=SALON, stylist=HERE):
     return f"/api/v1/salon/{salon}/stylist/{stylist}"
 
 
+# GET /salon/<id>'s answer for the salon, cut to what the profile reads.
+SALON_PAGE = {
+    "id": str(SALON),
+    "name": "Green Wave Salon",
+    "is_open": True,
+    "hours_today": "10:00 AM - 9:00 PM",
+    "location": {"address": "Shop 4", "latitude": 25.2213, "longitude": 55.2621,
+                 "map_url": "https://maps.google.com/?q=25.2213,55.2621"},
+}
+
+# The salon block that answer gives.
+SALON_BLOCK = {
+    "id": str(SALON),
+    "name": "Green Wave Salon",
+    "is_open": True,
+    "hours_today": "10:00 AM - 9:00 PM",
+    "latitude": 25.2213,
+    "longitude": 55.2621,
+}
+
+
 def mock_platform_reads(stack, *, salon=True, found=True, person=None,
-                        services=(), covered=(), categories=None):
+                        services=(), covered=(), categories=None, salon_page=None):
     """
-    Every read the view makes of the PLATFORM's tables, mocked: the salon, the
-    stylist, the menu, its stages, who covers what, the categories. Returns
-    the mocks by selector name.
+    Every read the view makes of the PLATFORM's tables, mocked: the salon, its
+    own page's answer, the stylist, the menu, its stages, who covers what, the
+    categories. Returns the mocks by selector name.
 
     `covered` is the services this stylist can do. One place, because the
     test database has none of these tables: test_favourite.py uses it too,
@@ -306,6 +333,7 @@ def mock_platform_reads(stack, *, salon=True, found=True, person=None,
         person = stylist()
     answers = {
         "salon_profile": found_salon,
+        "salon_profile_data": SALON_PAGE if salon_page is None else salon_page,
         "stylist_for_salon": person if found else None,
         "salon_services": list(services),
         "service_stage_rows": [],
@@ -323,14 +351,15 @@ def mock_platform_reads(stack, *, salon=True, found=True, person=None,
 class Seams:
     """
     The view with every selector it reads mocked. A test passes only what it
-    cares about. Each mock is kept on self (salon_lookup, stylist_lookup,
-    favourite_lookup, services_lookup, stages_lookup, coverage_lookup,
-    categories_lookup) for call checks.
+    cares about. Each mock is kept on self (salon_lookup, salon_page_lookup,
+    stylist_lookup, favourite_lookup, services_lookup, stages_lookup,
+    coverage_lookup, categories_lookup) for call checks.
     """
 
     def seams(self, stack, *, favourite=False, **reads):
         mocks = mock_platform_reads(stack, **reads)
         self.salon_lookup = mocks["salon_profile"]
+        self.salon_page_lookup = mocks["salon_profile_data"]
         self.stylist_lookup = mocks["stylist_for_salon"]
         self.services_lookup = mocks["salon_services"]
         self.stages_lookup = mocks["service_stage_rows"]
@@ -341,10 +370,10 @@ class Seams:
         ))
 
     def call(self, path=None, *, salon=True, found=True, favourite=False,
-             services=(), covered=(), **headers):
+             services=(), covered=(), salon_page=None, **headers):
         with ExitStack() as stack:
             self.seams(stack, salon=salon, found=found, favourite=favourite,
-                       services=services, covered=covered)
+                       services=services, covered=covered, salon_page=salon_page)
             return self.client.get(path or url(), **headers)
 
 
@@ -691,6 +720,7 @@ class PersonFieldsTests(Seams, SimpleTestCase):
             "rating": None,
             "review_count": 0,
             "is_favorite": False,      # E3b
+            "salon": SALON_BLOCK,      # E5
             "service_groups": [],      # E4
         })
 
@@ -727,8 +757,10 @@ class PersonMatchesTheStylistsRouteTests(SimpleTestCase):
             # The one list, for both: the tab iterates it, the profile narrows it.
             patch("apps.salons.views.salon_stylists", return_value=self.staff)
             patch("apps.salons.selectors.salon_stylists", return_value=self.staff)
-            # Not what this compares: the profile's menu (E4), empty here.
+            # Not what this compares: the profile's menu (E4), empty here,
+            # and the salon's own page (E5).
             patch("apps.salons.expert_profile_views.salon_services", return_value=[])
+            patch("apps.salons.expert_profile_views.salon_profile_data", return_value=SALON_PAGE)
 
             listed = self.client.get(f"/api/v1/salon/{SALON}/stylists")
             profile = self.client.get(url(stylist=staff_id))
@@ -1217,6 +1249,7 @@ class RealSkillRules:
         patch("apps.salons.expert_profile_views.salon_services", return_value=list(MENU))
         patch("apps.salons.expert_profile_views.service_stage_rows", side_effect=stages_of)
         patch("apps.salons.expert_profile_views.is_favourite_stylist", return_value=False)
+        patch("apps.salons.expert_profile_views.salon_profile_data", return_value=SALON_PAGE)
         patch("apps.salons.selectors.salon_stylists", return_value=Listed(TEAM))
         # Shared by both, under stylist_service_coverage.
         patch("apps.salons.selectors.skill_bridge",
@@ -1352,3 +1385,343 @@ class ServiceGroupsOpenApiTests(Seams, SimpleTestCase):
         _, examples = self.shape()
         (one,) = examples["AStylistOfThisSalon"]["value"]["service_groups"][:1]
         self.assertEqual(list(one), ["id", "name", "services"])
+
+
+# ---------------------------------------------------------------------------
+# E5: the salon block. A salon row as `salon_profile` gives one, its
+# published snapshot, and a clock.
+# ---------------------------------------------------------------------------
+
+DUBAI = zoneinfo.ZoneInfo("Asia/Dubai")
+WEDNESDAY_3PM = datetime(2026, 9, 30, 15, 0, tzinfo=DUBAI)      # open, 10:00 to 21:00
+WEDNESDAY_8AM = datetime(2026, 9, 30, 8, 0, tzinfo=DUBAI)       # before opening
+SUNDAY_3PM = datetime(2026, 10, 4, 15, 0, tzinfo=DUBAI)         # the closed weekday
+
+OPEN_DAY = {"open": "10:00", "close": "21:00", "closed": False}
+WEEKLY = [{"day": day, **OPEN_DAY} for day in ("mon", "tue", "wed", "thu", "fri", "sat")]
+WEEKLY.append({"day": "sun", "closed": True})
+
+SNAPSHOT = {
+    "IDENTITY": {"nameEn": "Green Wave Salon", "tagEn": "Sharp cuts", "aboutEn": "About us."},
+    "HOURS": {"weekly": WEEKLY},
+    "MAP": {"lat": 25.2213, "lng": 55.2621, "address": "Shop 4, Al Wasl Road"},
+    "BADGES": {"priceTier": "MID_RANGE"},
+    "AMENITIES": {"items": ["WIFI", "PARKING"]},
+    "SOCIALS": {"instagram": "greenwave"},
+    "POLICY": {"cancelWindowHours": 24},
+}
+
+
+def snapshot(**sections):
+    """The published snapshot, with some sections replaced (None drops one)."""
+    merged = {**SNAPSHOT, **sections}
+    return normalize({key: value for key, value in merged.items() if value is not None})
+
+
+def salon_row(**overrides):
+    """The salon as `selectors.salon_profile` gives it: row plus annotations."""
+    return types.SimpleNamespace(**{
+        "id": SALON, "slug": "green-wave", "tenant_id": TENANT, "branch_id": BRANCH,
+        "cover_url": "https://x/cover.jpg", "logo_url": "https://x/logo.png",
+        "avg_rating": 4.64, "review_count": 12, "currency": "AED",
+        "gallery_urls": ["https://x/1.jpg"], "branch_name": "Al Wasl Branch",
+        "lat": 25.1, "lng": 55.2, "branch_timezone": "Asia/Dubai", "manual_state": None,
+        "deposit_mode": "NONE", "deposit_bps": None, "has_story": True, "is_favorite": False,
+        "live_version_id": uuid.UUID(int=3),
+        **overrides,
+    })
+
+
+def clock(moment):
+    """`datetime` as views.py sees it, with `now` fixed at one moment."""
+    fixed = mock.Mock(wraps=datetime)
+    fixed.now.return_value = moment
+    return mock.patch.object(views, "datetime", fixed)
+
+
+class SalonProfilePinnedTests(SimpleTestCase):
+    """
+    GET /salon/<id>, pinned BEFORE its body moved to views.salon_profile_data
+    (E5), so the move provably changes nothing on the salon's own page.
+    """
+
+    def salon_page(self, row=None, published=None, moment=WEDNESDAY_3PM, found=True):
+        row = row or salon_row()
+        with mock.patch.object(views, "salon_profile", return_value=row if found else None) as lookup, \
+                mock.patch.object(views, "read_snapshot",
+                                  return_value=snapshot() if published is None else published), \
+                clock(moment):
+            response = self.client.get(f"/api/v1/salon/{SALON}")
+        self.lookup = lookup
+        return response
+
+    EXPECTED = {
+        "id": str(SALON),
+        "slug": "green-wave",
+        "cover_url": "https://x/cover.jpg",
+        "logo_url": "https://x/logo.png",
+        "rating": 4.6,
+        "review_count": 12,
+        "currency": "AED",
+        "gallery": ["https://x/1.jpg"],
+        "name": "Green Wave Salon",
+        "tagline": "Sharp cuts",
+        "bio": "About us.",
+        "category": None,
+        "price_level": 2,
+        "amenities": ["wifi", "parking"],
+        "social_links": [{"platform": "instagram", "url": "https://instagram.com/greenwave"}],
+        "location": {
+            "address": "Shop 4, Al Wasl Road",
+            "latitude": 25.2213,
+            "longitude": 55.2621,
+            "map_url": "https://maps.google.com/?q=25.2213,55.2621",
+        },
+        "booking_policy": {
+            "deposit_required": False,
+            "deposit_percentage": 0,
+            "deposit_amount": 0,
+            "free_cancellation": True,
+            "cancel_window_hours": 24,
+        },
+        "is_open": True,
+        "status": "OPEN",
+        "hours_today": "10:00 AM - 9:00 PM",
+        "has_story": True,
+        "is_favorite": False,
+        "active_booking": None,
+    }
+
+    def test_the_whole_answer(self):
+        response = self.salon_page()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), self.EXPECTED)
+        self.assertEqual(list(response.json()), list(self.EXPECTED))
+
+    def test_before_opening(self):
+        body = self.salon_page(moment=WEDNESDAY_8AM).json()
+        self.assertEqual(
+            (body["is_open"], body["status"], body["hours_today"]),
+            (False, "CLOSED", "10:00 AM - 9:00 PM"),
+        )
+
+    def test_a_closed_weekday(self):
+        body = self.salon_page(moment=SUNDAY_3PM).json()
+        self.assertEqual(
+            (body["is_open"], body["status"], body["hours_today"]), (False, "CLOSED", "Closed"),
+        )
+
+    def test_closed_by_hand(self):
+        body = self.salon_page(row=salon_row(manual_state="CLOSED")).json()
+        self.assertEqual(
+            (body["is_open"], body["status"], body["hours_today"]), (False, "CLOSED", "Closed"),
+        )
+
+    def test_no_hours_published(self):
+        body = self.salon_page(published=snapshot(HOURS=None)).json()
+        self.assertEqual(
+            (body["is_open"], body["status"], body["hours_today"]), (None, None, None),
+        )
+
+    def test_no_published_name_or_pin_falls_back_to_the_branch(self):
+        body = self.salon_page(published=snapshot(IDENTITY=None, MAP=None)).json()
+        self.assertEqual(body["name"], "Al Wasl Branch")
+        self.assertEqual(
+            (body["location"]["latitude"], body["location"]["longitude"]), (25.1, 55.2),
+        )
+
+    def test_the_salon_is_read_for_this_caller(self):
+        self.salon_page()
+        (salon_id,), kwargs = self.lookup.call_args
+        self.assertEqual(salon_id, SALON)
+        self.assertFalse(kwargs["user"].is_authenticated)       # a guest here
+
+    def test_an_unknown_salon_is_404(self):
+        response = self.salon_page(found=False)
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Salon not found")
+
+
+class SalonBlockRuleTests(SimpleTestCase):
+    """`expert_profile.salon_block`: pure, the salon page's answer in, the block out."""
+
+    def block(self, **overrides):
+        return expert_profile.salon_block({**SALON_PAGE, **overrides})
+
+    def test_the_block(self):
+        self.assertEqual(self.block(), SALON_BLOCK)
+
+    def test_the_contract_s_six_keys_in_its_order(self):
+        self.assertEqual(
+            list(self.block()),
+            ["id", "name", "is_open", "hours_today", "latitude", "longitude"],
+        )
+
+    def test_the_id_is_a_string(self):
+        self.assertEqual(self.block(id=SALON)["id"], str(SALON))
+
+    def test_closed_today_is_null_not_the_word(self):
+        # The salon's own page says "Closed" (a closed weekday, or closed by
+        # hand). Here null hides the row (Rafa, Q16).
+        self.assertIsNone(self.block(hours_today="Closed", is_open=False)["hours_today"])
+
+    def test_open_hours_are_printed_as_they_are(self):
+        block = self.block(hours_today="6:00 PM - 2:00 AM", is_open=False)
+        self.assertEqual(block["hours_today"], "6:00 PM - 2:00 AM")
+
+    def test_no_hours_published_is_null_and_null(self):
+        block = self.block(hours_today=None, is_open=None)
+        self.assertIsNone(block["hours_today"])
+        # null, never false: nobody has said when this salon opens.
+        self.assertIsNone(block["is_open"])
+
+    def test_is_open_false_stays_false(self):
+        self.assertIs(self.block(is_open=False)["is_open"], False)
+
+    def test_no_pin_is_null_and_null(self):
+        block = self.block(location={"address": None, "latitude": None, "longitude": None,
+                                     "map_url": None})
+        self.assertEqual((block["latitude"], block["longitude"]), (None, None))
+
+    def test_no_address_or_map_url_goes_out(self):
+        self.assertNotIn("address", self.block())
+        self.assertNotIn("map_url", self.block())
+        self.assertNotIn("location", self.block())
+
+
+class SalonFieldTests(Seams, SimpleTestCase):
+    """The route answers the salon block."""
+
+    def test_the_block_of_the_salon_page_s_answer(self):
+        self.assertEqual(self.call().json()["salon"], SALON_BLOCK)
+
+    def test_the_salon_page_is_asked_once_for_this_salon(self):
+        self.call()
+        self.salon_page_lookup.assert_called_once_with(self.salon_lookup.return_value)
+
+    def test_closed_today(self):
+        page = {**SALON_PAGE, "is_open": False, "hours_today": "Closed"}
+        salon = self.call(salon_page=page).json()["salon"]
+        self.assertEqual((salon["is_open"], salon["hours_today"]), (False, None))
+
+    def test_a_404_never_reads_the_salon_page(self):
+        self.call(found=False)
+        self.salon_page_lookup.assert_not_called()
+        self.call(salon=False)
+        self.salon_page_lookup.assert_not_called()
+
+
+class SalonBlockMatchesTheSalonPageTests(SimpleTestCase):
+    """
+    The same salon reads the same on both screens: name, is_open and the pin
+    here equal GET /salon/<id> on the same row, the same snapshot and the same
+    clock. Both routes run for real down to those three.
+    """
+
+    # (what, the salon row, its snapshot, the moment, the block's five values)
+    CASES = [
+        ("open now", {}, {}, WEDNESDAY_3PM,
+         ("Green Wave Salon", True, "10:00 AM - 9:00 PM", 25.2213, 55.2621)),
+        ("before opening", {}, {}, WEDNESDAY_8AM,
+         ("Green Wave Salon", False, "10:00 AM - 9:00 PM", 25.2213, 55.2621)),
+        ("a closed weekday", {}, {}, SUNDAY_3PM,
+         ("Green Wave Salon", False, None, 25.2213, 55.2621)),
+        ("closed by hand", {"manual_state": "CLOSED"}, {}, WEDNESDAY_3PM,
+         ("Green Wave Salon", False, None, 25.2213, 55.2621)),
+        ("busy, set by hand before opening", {"manual_state": "BUSY"}, {}, WEDNESDAY_8AM,
+         ("Green Wave Salon", True, "10:00 AM - 9:00 PM", 25.2213, 55.2621)),
+        ("no hours published", {}, {"HOURS": None}, WEDNESDAY_3PM,
+         ("Green Wave Salon", None, None, 25.2213, 55.2621)),
+        ("overnight hours, late evening", {},
+         {"HOURS": {"weekly": [{"day": "wed", "open": "18:00", "close": "02:00", "closed": False}]}},
+         datetime(2026, 9, 30, 23, 0, tzinfo=DUBAI),
+         ("Green Wave Salon", True, "6:00 PM - 2:00 AM", 25.2213, 55.2621)),
+        ("no published name", {}, {"IDENTITY": None}, WEDNESDAY_3PM,
+         ("Al Wasl Branch", True, "10:00 AM - 9:00 PM", 25.2213, 55.2621)),
+        ("no published pin: the branch pin", {}, {"MAP": None}, WEDNESDAY_3PM,
+         ("Green Wave Salon", True, "10:00 AM - 9:00 PM", 25.1, 55.2)),
+        ("no pin at all", {"lat": None, "lng": None}, {"MAP": None}, WEDNESDAY_3PM,
+         ("Green Wave Salon", True, "10:00 AM - 9:00 PM", None, None)),
+    ]
+
+    def both(self, row, published, moment):
+        with ExitStack() as stack:
+            def patch(target, **kw):
+                return stack.enter_context(mock.patch(target, **kw))
+            # The SAME row, snapshot and clock for both routes.
+            patch("apps.salons.views.salon_profile", return_value=row)
+            patch("apps.salons.expert_profile_views.salon_profile", return_value=row)
+            patch("apps.salons.views.read_snapshot", return_value=published)
+            stack.enter_context(clock(moment))
+            # Not what this compares: the person, the heart, the menu.
+            patch("apps.salons.expert_profile_views.stylist_for_salon", return_value=stylist())
+            patch("apps.salons.expert_profile_views.is_favourite_stylist", return_value=False)
+            patch("apps.salons.expert_profile_views.salon_services", return_value=[])
+
+            page = self.client.get(f"/api/v1/salon/{SALON}")
+            profile = self.client.get(url())
+        self.assertEqual((page.status_code, profile.status_code), (200, 200))
+        return page.json(), profile.json()["salon"]
+
+    def test_name_is_open_and_the_pin_equal_the_salon_page(self):
+        for what, row, sections, moment, _ in self.CASES:
+            with self.subTest(what=what):
+                page, block = self.both(salon_row(**row), snapshot(**sections), moment)
+                self.assertEqual(block["id"], page["id"])
+                self.assertEqual(block["name"], page["name"])
+                self.assertEqual(block["is_open"], page["is_open"])
+                self.assertEqual(block["latitude"], page["location"]["latitude"])
+                self.assertEqual(block["longitude"], page["location"]["longitude"])
+
+    def test_hours_today_is_the_page_s_except_closed_is_null(self):
+        for what, row, sections, moment, _ in self.CASES:
+            with self.subTest(what=what):
+                page, block = self.both(salon_row(**row), snapshot(**sections), moment)
+                if page["hours_today"] == "Closed":
+                    self.assertIsNone(block["hours_today"])
+                else:
+                    self.assertEqual(block["hours_today"], page["hours_today"])
+
+    def test_the_comparison_is_not_trivial(self):
+        # Each case worked out by hand.
+        for what, row, sections, moment, wanted in self.CASES:
+            with self.subTest(what=what):
+                _, block = self.both(salon_row(**row), snapshot(**sections), moment)
+                self.assertEqual(
+                    (block["name"], block["is_open"], block["hours_today"],
+                     block["latitude"], block["longitude"]),
+                    wanted,
+                )
+
+    def test_both_closed_days_were_in_the_cases(self):
+        # The two ways to be closed today really say "Closed" on the page.
+        pages = {what: self.both(salon_row(**row), snapshot(**sections), moment)[0]
+                 for what, row, sections, moment, _ in self.CASES}
+        self.assertEqual(pages["a closed weekday"]["hours_today"], "Closed")
+        self.assertEqual(pages["closed by hand"]["hours_today"], "Closed")
+
+
+class SalonBlockOpenApiTests(Seams, SimpleTestCase):
+    """The 200's shape names the salon block."""
+
+    def shape(self):
+        schema = SchemaGenerator().get_schema(request=None, public=True)
+        operation = schema["paths"]["/api/v1/salon/{salon_id}/stylist/{stylist_id}"]["get"]
+        content = operation["responses"]["200"]["content"]["application/json"]
+        return content["schema"]["properties"]["salon"], content["examples"]
+
+    def test_the_block_has_exactly_the_answer_s_keys(self):
+        block, _ = self.shape()
+        self.assertEqual(list(block["properties"]), list(self.call().json()["salon"]))
+
+    def test_what_can_be_null_says_so(self):
+        block, _ = self.shape()
+        for key in ("is_open", "hours_today", "latitude", "longitude"):
+            with self.subTest(key=key):
+                self.assertIs(block["properties"][key]["nullable"], True)
+
+    def test_the_example_has_the_block(self):
+        _, examples = self.shape()
+        self.assertEqual(
+            list(examples["AStylistOfThisSalon"]["value"]["salon"]), list(SALON_BLOCK),
+        )

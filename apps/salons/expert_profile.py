@@ -4,8 +4,11 @@ The Expert Profile screen's answer, built from rows the view has read.
 Pure: rows in, dicts out, no queryset. The view (expert_profile_views.py)
 reads; this writes the contract's fields (docs/expert-profile-fe-contract.md
 §2). Built step by step (docs/EXPERT_PROFILE_AUDIT.md, section 8): the person
-in E2; the services in E4; the salon, the media and the rest in E5 to E8.
+in E2; the services in E4; the salon in E5; the media and the rest in E6 to
+E8.
 """
+
+from .hours import CLOSED_TODAY
 
 
 def core_fields(salon, row):
@@ -63,3 +66,36 @@ def service_groups(tab_groups, covered_ids):
         if rows:
             groups.append({"id": group["id"], "name": group["name"], "services": rows})
     return groups
+
+
+def salon_block(page):
+    """
+    salon: the salon this stylist is read at, as `{id, name, is_open,
+    hours_today, latitude, longitude}`.
+
+    `page` is GET /salon/<id>'s own answer for that salon
+    (`views.salon_profile_data`). Taking the finished answer is the point:
+    the published name, "open now" and the pin are decided in one place, so
+    the salon reads the same here as on its own page.
+
+    Two things differ from that page, both on purpose (Rafa, Q16):
+
+      * `hours_today` is null on a day the salon does not open (a closed
+        weekday, or closed by hand), where the page says "Closed". The
+        contract's null hides the row.
+      * The pin is two flat numbers, without the page's address and map link.
+        The published MAP pin, else the branch's, else null and null.
+
+    `is_open` is the page's, null included: null is "no hours published",
+    which is not the same as closed.
+    """
+    location = page["location"]
+    hours_today = page["hours_today"]
+    return {
+        "id": str(page["id"]),
+        "name": page["name"],
+        "is_open": page["is_open"],
+        "hours_today": None if hours_today == CLOSED_TODAY else hours_today,
+        "latitude": location["latitude"],
+        "longitude": location["longitude"],
+    }

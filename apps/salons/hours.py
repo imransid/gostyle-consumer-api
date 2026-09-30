@@ -6,6 +6,10 @@ STATES = ("OPEN", "BUSY", "WALK_INS", "SPECIAL_HOURS", "CLOSED")
 
 # Which states mean "a customer can come in right now".
 OPEN_STATES = ("OPEN", "BUSY", "WALK_INS")
+
+# What `hours_today` says on a day the salon does not open: a closed weekday,
+# or a day closed by hand.
+CLOSED_TODAY = "Closed"
 from datetime import datetime, timedelta
 
 def _minutes(hhmm):
@@ -141,7 +145,7 @@ def resolve(weekly, exception, state, weekday_index, now_hhmm):
     if row is None:
         is_open, hours_today, opens_at, closes_at = None, None, None, None
     elif row.get("closed"):
-        is_open, hours_today, opens_at, closes_at = False, "Closed", None, None
+        is_open, hours_today, opens_at, closes_at = False, CLOSED_TODAY, None, None
     else:
         opens, closes = row.get("open"), row.get("close")
         is_open = is_within(opens, closes, now_hhmm)
@@ -157,7 +161,7 @@ def resolve(weekly, exception, state, weekday_index, now_hhmm):
             # happens today. Leaving the times in place would print "Closes at
             # 10:00 PM" next to a CLOSED badge, which is the exact
             # contradiction the manual state exists to resolve.
-            hours_today, opens_at, closes_at = "Closed", None, None
+            hours_today, opens_at, closes_at = CLOSED_TODAY, None, None
 
     return {
         "is_open": is_open,

@@ -301,6 +301,43 @@ class SalonDiscoveryDetailView(RetrieveAPIView):
         return with_published_card_fields(discoverable_salons())
 
 
+def salon_profile_data(salon):
+    """
+    GET /salon/<id>'s whole answer, for a salon row `salon_profile` has read.
+
+    A function, not only the view's body, because the Expert Profile screen
+    shows the same salon (its `salon` block: name, open now, today's hours,
+    the pin) and must say the same things about it. It reads them from this
+    answer, so the two screens cannot disagree.
+
+    One query: the published snapshot.
+    """
+    snapshot = read_snapshot(salon)
+
+    tz = timezones.resolve(salon.branch_timezone, salon.id)
+    now = datetime.now(tz)
+
+    hours = resolve_hours(
+        weekly=snapshot["HOURS"].get("weekly"),
+        # No storefront_status_exception table in this schema version, so
+        # a dated exception cannot be read yet. Re-check against staging
+        # before release.
+        exception=None,
+        state=salon.manual_state,
+        weekday_index=now.weekday(),
+        now_hhmm=now.strftime("%H:%M"),
+    )
+
+    return SalonProfileSerializer(
+        salon,
+        context={
+            "snapshot": snapshot,
+            "hours": hours,
+            "cancel_window_hours": snapshot["POLICY"].get("cancelWindowHours"),
+        },
+    ).data
+
+
 class SalonProfileView(APIView):
 
     permission_classes = [AllowAny]
@@ -310,31 +347,7 @@ class SalonProfileView(APIView):
         if salon is None:
             raise Http404("Salon not found")
 
-        snapshot = read_snapshot(salon)
-
-        tz = timezones.resolve(salon.branch_timezone, salon.id)
-        now = datetime.now(tz)
-
-        hours = resolve_hours(
-            weekly=snapshot["HOURS"].get("weekly"),
-            # No storefront_status_exception table in this schema version, so
-            # a dated exception cannot be read yet. Re-check against staging
-            # before release.
-            exception=None,
-            state=salon.manual_state,
-            weekday_index=now.weekday(),
-            now_hhmm=now.strftime("%H:%M"),
-        )
-
-        data = SalonProfileSerializer(
-            salon,
-            context={
-                "snapshot": snapshot,
-                "hours": hours,
-                "cancel_window_hours": snapshot["POLICY"].get("cancelWindowHours"),
-            },
-        ).data
-        return Response(data)
+        return Response(salon_profile_data(salon))
 
 
 class SalonServicesView(APIView):
