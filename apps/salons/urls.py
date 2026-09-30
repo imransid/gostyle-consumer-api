@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import group_views, routine_views, series_views
+from . import group_views, routine_views, series_views, service_detail_views
 from .views import (
     BookingCreateView,
     BookingListView,
@@ -30,6 +30,13 @@ urlpatterns = [
     path("discover/<uuid:pk>", SalonDiscoveryDetailView.as_view(), name="salon-discover-detail"),
     path("salon/<uuid:salon_id>", SalonProfileView.as_view(), name="salon-profile"),
     path("salon/<uuid:salon_id>/services", SalonServicesView.as_view(), name="salon-services"),
+    # One service, for its detail screen. <str:>, not <uuid:>: a bad id must get
+    # our JSON 404, not Django's HTML one, so the view checks both ids itself.
+    path(
+        "salon/<str:salon_id>/service/<str:service_id>",
+        service_detail_views.SalonServiceDetailView.as_view(),
+        name="salon-service-detail",
+    ),
     path("salon/<uuid:salon_id>/stylists", SalonStylistsView.as_view(), name="salon-stylists"),
     path("booking", BookingCreateView.as_view(), name="booking-create"),
     path("bookings", BookingListView.as_view(), name="booking-list"),

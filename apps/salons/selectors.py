@@ -666,6 +666,48 @@ def services_by_ids(service_ids):
         ),
     )
 
+
+# A service in one of these statuses opens on the detail screen even with no
+# published_version (see service_for_salon). The other three, DRAFT,
+# PENDING_REVISION and REVISION_REQUESTED, need a version.
+DETAIL_STATUSES_WITHOUT_VERSION = ("PUBLISHED", "HIDDEN", "ARCHIVED")
+
+
+def service_for_salon(salon, service_id):
+    """
+    One service on this salon's menu, in whatever state it is in now, or None.
+
+    For the Service Detail screen (GET /salon/<id>/service/<id>). Unlike
+    `salon_services`, a service pulled from sale (hidden, archived, deleted,
+    online booking off) is still found: a deep link or an old booking must
+    still open, marked inactive.
+
+    None, and so a 404, in two cases:
+
+      * Another tenant's service. A service has no salon column: it belongs to
+        a tenant, and every branch (storefront) of that tenant sells the same
+        menu, so one service id opens at each of them.
+      * A service that was never on sale: a DRAFT, PENDING_REVISION or
+        REVISION_REQUESTED service with no `published_version`.
+
+    `published_version` is set on the first publish and never cleared (not
+    `published_at`: archiving and a revision request clear it), so any
+    service with a version opens. Services published before the platform had
+    versions have none, so a PUBLISHED, HIDDEN or ARCHIVED status opens too
+    (Rafa, 2026-09-30): an old service must never turn into a 404 just
+    because it was hidden or archived. HIDDEN can only follow PUBLISHED on the
+    platform. ARCHIVED can also follow a DRAFT, so a draft archived without
+    ever being published opens too, as inactive.
+    """
+    return (
+        Service.objects.filter(id=service_id, tenant_id=salon.tenant_id)
+        .filter(
+            Q(published_version__isnull=False)
+            | Q(status__in=DETAIL_STATUSES_WITHOUT_VERSION)
+        )
+        .first()
+    )
+
 def salon_profile(storefront_id, user=None):
 
     qs = (
