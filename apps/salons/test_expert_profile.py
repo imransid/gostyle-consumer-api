@@ -27,6 +27,10 @@ first, before its body moved to a function both screens call.
 E6: media, media_count and has_story: this salon's photos tagged with the
 stylist.
 
+E7: day_off, worked out from the roster by one rule (roster.py), on the
+profile and in every stylist row (the Stylists tab, the Expert step, the
+service detail's experts).
+
 The querysets are built and inspected, never run: the platform's tables are
 unmanaged, so they do not exist in the test database. The views are called
 with their selectors mocked.
@@ -36,10 +40,10 @@ import types
 import uuid
 import zoneinfo
 from contextlib import ExitStack
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from unittest import mock
 
-from django.db.models import Exists, QuerySet
+from django.db.models import Exists, F, QuerySet
 from django.test import SimpleTestCase
 from django.urls import resolve, reverse
 from drf_spectacular.generators import SchemaGenerator
@@ -52,11 +56,16 @@ from apps.salons import (
     group_views,
     menu,
     params,
+    roster,
     selectors,
     service_detail_views,
     views,
 )
 from apps.salons.expert_profile_views import NO_SALON, NO_STYLIST, SalonExpertProfileView
+from apps.salons.service_detail_serializers import (
+    EXAMPLE as SERVICE_DETAIL_EXAMPLE,
+    SalonServiceDetailExpertSerializer,
+)
 from apps.salons.snapshot import normalize
 
 SALON = uuid.UUID("33333333-3333-3333-3333-333333333333")
@@ -320,11 +329,12 @@ SALON_BLOCK = {
 
 def mock_platform_reads(stack, *, salon=True, found=True, person=None,
                         services=(), covered=(), categories=None, salon_page=None,
-                        media=()):
+                        media=(), day_off=None):
     """
     Every read the view makes of the PLATFORM's tables, mocked: the salon, its
-    own page's answer, the stylist, their photos, the menu, its stages, who
-    covers what, the categories. Returns the mocks by selector name.
+    snapshot, its own page's answer, the stylist, their day off, their photos,
+    the menu, its stages, who covers what, the categories. Returns the mocks
+    by selector name.
 
     `covered` is the services this stylist can do. One place, because the
     test database has none of these tables: test_favourite.py uses it too,
@@ -337,8 +347,10 @@ def mock_platform_reads(stack, *, salon=True, found=True, person=None,
         person = stylist()
     answers = {
         "salon_profile": found_salon,
+        "read_snapshot": normalize(None),
         "salon_profile_data": SALON_PAGE if salon_page is None else salon_page,
         "stylist_for_salon": person if found else None,
+        "days_off_for": {person.id: day_off} if day_off else {},
         "stylist_media_rows": list(media),
         "salon_services": list(services),
         "service_stage_rows": [],
@@ -357,15 +369,18 @@ class Seams:
     """
     The view with every selector it reads mocked. A test passes only what it
     cares about. Each mock is kept on self (salon_lookup, salon_page_lookup,
-    stylist_lookup, media_lookup, favourite_lookup, services_lookup,
-    stages_lookup, coverage_lookup, categories_lookup) for call checks.
+    snapshot_lookup, stylist_lookup, day_off_lookup, media_lookup,
+    favourite_lookup, services_lookup, stages_lookup, coverage_lookup,
+    categories_lookup) for call checks.
     """
 
     def seams(self, stack, *, favourite=False, **reads):
         mocks = mock_platform_reads(stack, **reads)
         self.salon_lookup = mocks["salon_profile"]
         self.salon_page_lookup = mocks["salon_profile_data"]
+        self.snapshot_lookup = mocks["read_snapshot"]
         self.stylist_lookup = mocks["stylist_for_salon"]
+        self.day_off_lookup = mocks["days_off_for"]
         self.media_lookup = mocks["stylist_media_rows"]
         self.services_lookup = mocks["salon_services"]
         self.stages_lookup = mocks["service_stage_rows"]
@@ -376,11 +391,12 @@ class Seams:
         ))
 
     def call(self, path=None, *, salon=True, found=True, favourite=False,
-             services=(), covered=(), salon_page=None, media=(), **headers):
+             services=(), covered=(), salon_page=None, media=(), day_off=None,
+             **headers):
         with ExitStack() as stack:
             self.seams(stack, salon=salon, found=found, favourite=favourite,
                        services=services, covered=covered, salon_page=salon_page,
-                       media=media)
+                       media=media, day_off=day_off)
             return self.client.get(path or url(), **headers)
 
 
@@ -675,6 +691,7 @@ class CoreFieldsTests(SimpleTestCase):
             "avatar_url": None,
             "rating": None,
             "review_count": 0,
+            "day_off": None,           # E7
         })
 
     def test_the_ids_are_strings(self):
@@ -709,7 +726,8 @@ class CoreFieldsTests(SimpleTestCase):
         # own steps, years_experience and day_off): not sent from here.
         self.assertEqual(
             list(self.fields()),
-            ["id", "salon_id", "name", "title", "role", "avatar_url", "rating", "review_count"],
+            ["id", "salon_id", "name", "title", "role", "avatar_url", "rating", "review_count",
+             "day_off"],
         )
 
 
@@ -726,6 +744,7 @@ class PersonFieldsTests(Seams, SimpleTestCase):
             "avatar_url": None,
             "rating": None,
             "review_count": 0,
+            "day_off": None,           # E7
             "is_favorite": False,      # E3b
             "has_story": False,        # E6
             "media": [],               # E6
@@ -1608,8 +1627,11 @@ class SalonFieldTests(Seams, SimpleTestCase):
         self.assertEqual(self.call().json()["salon"], SALON_BLOCK)
 
     def test_the_salon_page_is_asked_once_for_this_salon(self):
+        # With the snapshot the view already read (E7), so it is read once.
         self.call()
-        self.salon_page_lookup.assert_called_once_with(self.salon_lookup.return_value)
+        self.salon_page_lookup.assert_called_once_with(
+            self.salon_lookup.return_value, self.snapshot_lookup.return_value,
+        )
 
     def test_closed_today(self):
         page = {**SALON_PAGE, "is_open": False, "hours_today": "Closed"}
@@ -1664,8 +1686,11 @@ class SalonBlockMatchesTheSalonPageTests(SimpleTestCase):
             patch("apps.salons.views.salon_profile", return_value=row)
             patch("apps.salons.expert_profile_views.salon_profile", return_value=row)
             patch("apps.salons.views.read_snapshot", return_value=published)
+            patch("apps.salons.expert_profile_views.read_snapshot", return_value=published)
             stack.enter_context(clock(moment))
-            # Not what this compares: the person, the heart, the photos, the menu.
+            # Not what this compares: the person, the day off, the heart, the
+            # photos, the menu.
+            patch("apps.salons.views.roster_shift_days", return_value=[])
             patch("apps.salons.expert_profile_views.stylist_for_salon", return_value=stylist())
             patch("apps.salons.expert_profile_views.is_favourite_stylist", return_value=False)
             patch("apps.salons.expert_profile_views.stylist_media_rows", return_value=[])
@@ -1942,8 +1967,8 @@ class MediaFieldTests(Seams, SimpleTestCase):
     def test_the_answer_s_keys_so_far_in_the_contract_s_order(self):
         self.assertEqual(list(self.call().json()), [
             "id", "salon_id", "name", "title", "role", "avatar_url", "rating",
-            "review_count", "is_favorite", "has_story", "media", "media_count",
-            "salon", "service_groups",
+            "review_count", "day_off", "is_favorite", "has_story", "media",
+            "media_count", "salon", "service_groups",
         ])
 
     def test_a_404_never_reads_the_photos(self):
@@ -1981,3 +2006,487 @@ class MediaOpenApiTests(Seams, SimpleTestCase):
         self.assertEqual(list(example["media"][0]), ["id", "type", "url", "thumbnail_url"])
         self.assertGreaterEqual(example["media_count"], len(example["media"]))
         self.assertIs(example["has_story"], example["media_count"] > 0)
+
+
+# ---------------------------------------------------------------------------
+# E7: day_off, from the roster
+# ---------------------------------------------------------------------------
+
+MON, TUE, WED, THU, FRI, SAT, SUN = range(7)
+OPEN_MON_TO_SAT = frozenset({MON, TUE, WED, THU, FRI, SAT})    # WEEKLY: Sunday closed
+
+# The clock is WEDNESDAY_3PM (2026-09-30), so these are the 4 roster weeks.
+WEEK_1, WEEK_2, WEEK_3, WEEK_4 = (date(2026, 9, 7) + timedelta(weeks=n) for n in range(4))
+BEFORE_THE_WINDOW = date(2026, 8, 31)
+
+
+def rostered(who, week, weekdays):
+    """One stylist's shifts in one roster week, as `roster_shift_days` gives them."""
+    return [
+        {"staff_member_id": who, "week_start": week, "shift_date": week + timedelta(days=day)}
+        for day in weekdays
+    ]
+
+
+def one_stylist(*weeks):
+    """Shifts of one stylist: (week, weekdays) pairs."""
+    return [row for week, weekdays in weeks for row in rostered(HERE, week, weekdays)]
+
+
+class RosterWeekWindowTests(SimpleTestCase):
+    """`roster.week_window`: the 4 roster weeks that end with the current one."""
+
+    def test_any_day_of_the_week_gives_that_week_s_monday_as_the_last(self):
+        for today in (date(2026, 9, 28), date(2026, 9, 30), date(2026, 10, 4)):   # Mon, Wed, Sun
+            with self.subTest(today=today):
+                self.assertEqual(roster.week_window(today), (WEEK_1, WEEK_4))
+
+    def test_the_next_monday_moves_the_window_one_week(self):
+        self.assertEqual(
+            roster.week_window(date(2026, 10, 5)), (date(2026, 9, 14), date(2026, 10, 5)),
+        )
+
+    def test_four_weeks(self):
+        first, last = roster.week_window(date(2026, 9, 30))
+        self.assertEqual(roster.WEEKS, 4)
+        self.assertEqual((last - first).days, 21)
+        self.assertEqual((first.weekday(), last.weekday()), (MON, MON))
+
+
+class OpenWeekdaysTests(SimpleTestCase):
+    """`roster.open_weekdays`: the days the salon opens, from its published hours."""
+
+    def test_the_days_not_marked_closed(self):
+        self.assertEqual(roster.open_weekdays(WEEKLY), OPEN_MON_TO_SAT)
+
+    def test_no_published_hours_is_no_day(self):
+        for weekly in (None, [], {}, "mon", [None, "x"]):
+            with self.subTest(weekly=weekly):
+                self.assertEqual(roster.open_weekdays(weekly), frozenset())
+
+    def test_a_day_with_no_row_is_not_open(self):
+        weekly = [{"day": "mon", **OPEN_DAY}, {"day": "thu", **OPEN_DAY}]
+        self.assertEqual(roster.open_weekdays(weekly), {MON, THU})
+
+    def test_a_row_without_a_closed_flag_is_open(self):
+        self.assertEqual(roster.open_weekdays([{"day": "fri", "open": "14:00", "close": "23:00"}]), {FRI})
+
+
+class DayOffRuleTests(SimpleTestCase):
+    """`roster.day_off`: one stylist's shifts and the salon's open days in, the text out."""
+
+    EVERY_OPEN_DAY = [MON, TUE, WED, THU, FRI, SAT]
+    NOT_TUESDAY = [MON, WED, THU, FRI, SAT]
+
+    def text(self, *weeks, open_days=OPEN_MON_TO_SAT):
+        return roster.day_off(one_stylist(*weeks), open_days)
+
+    def test_one_steady_day(self):
+        self.assertEqual(self.text((WEEK_2, self.NOT_TUESDAY), (WEEK_3, self.NOT_TUESDAY)), "Tuesday")
+
+    def test_two_steady_days_in_week_order(self):
+        monday_to_thursday = [MON, TUE, WED, THU]
+        self.assertEqual(
+            self.text((WEEK_2, monday_to_thursday), (WEEK_3, monday_to_thursday)),
+            "Friday, Saturday",
+        )
+        # Week order, Monday first, whatever order the shifts came in.
+        self.assertEqual(
+            self.text((WEEK_3, [FRI, THU, WED, TUE]), (WEEK_2, [TUE, WED, THU, FRI])),
+            "Monday, Saturday",
+        )
+
+    def test_a_day_the_salon_is_closed_is_never_a_day_off(self):
+        # Sunday is closed: no shift on it is not a day off.
+        self.assertIsNone(self.text((WEEK_2, self.EVERY_OPEN_DAY), (WEEK_3, self.EVERY_OPEN_DAY)))
+        # And a shift on the closed day changes nothing.
+        with_sunday = self.NOT_TUESDAY + [SUN]
+        self.assertEqual(self.text((WEEK_2, with_sunday), (WEEK_3, with_sunday)), "Tuesday")
+
+    def test_works_every_open_day_is_null(self):
+        self.assertIsNone(self.text((WEEK_1, self.EVERY_OPEN_DAY), (WEEK_4, self.EVERY_OPEN_DAY)))
+
+    def test_off_in_one_week_only_is_null(self):
+        # A day worked in ANY rostered week is not a steady day off.
+        self.assertIsNone(self.text((WEEK_2, self.EVERY_OPEN_DAY), (WEEK_3, self.NOT_TUESDAY)))
+
+    def test_one_rostered_week_is_too_little(self):
+        self.assertEqual(roster.MIN_ROSTERED_WEEKS, 2)
+        self.assertIsNone(self.text((WEEK_4, self.NOT_TUESDAY)))
+
+    def test_no_shifts_is_null(self):
+        self.assertIsNone(roster.day_off([], OPEN_MON_TO_SAT))
+
+    def test_no_published_hours_is_null(self):
+        # Nothing says which days the salon opens, so a closed day cannot be
+        # told from a day off.
+        self.assertIsNone(
+            self.text((WEEK_2, self.NOT_TUESDAY), (WEEK_3, self.NOT_TUESDAY), open_days=frozenset())
+        )
+
+    def test_three_and_four_steady_weeks(self):
+        weeks = [(week, self.NOT_TUESDAY) for week in (WEEK_1, WEEK_2, WEEK_3, WEEK_4)]
+        self.assertEqual(self.text(*weeks[:3]), "Tuesday")
+        self.assertEqual(self.text(*weeks), "Tuesday")
+
+    def test_a_week_with_one_shift_is_a_rostered_week(self):
+        # Two weeks, one shift each, both on Monday: off every other open day.
+        self.assertEqual(
+            self.text((WEEK_2, [MON]), (WEEK_3, [MON])),
+            "Tuesday, Wednesday, Thursday, Friday, Saturday",
+        )
+
+    def test_full_english_day_names(self):
+        self.assertEqual(
+            roster.DAY_NAMES,
+            ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"),
+        )
+
+
+class DaysOffTests(SimpleTestCase):
+    """`roster.days_off`: every listed stylist at once."""
+
+    def test_each_stylist_is_judged_on_their_own_shifts(self):
+        other = uuid.UUID(int=77)
+        rows = (
+            rostered(HERE, WEEK_2, [MON, WED]) + rostered(HERE, WEEK_3, [MON, WED])
+            + rostered(other, WEEK_2, [MON, TUE, WED]) + rostered(other, WEEK_3, [MON, TUE, WED])
+        )
+        self.assertEqual(
+            roster.days_off(rows, frozenset({MON, TUE, WED})), {HERE: "Tuesday", other: None},
+        )
+
+    def test_nobody_rostered(self):
+        self.assertEqual(roster.days_off([], OPEN_MON_TO_SAT), {})
+
+
+class RosterShiftDaysTests(SimpleTestCase):
+    """`selectors.roster_shift_days`: which shifts, of whom, where, when."""
+
+    salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT, branch_id=BRANCH)
+
+    def read(self, staff):
+        with mock.patch.object(selectors, "Shift") as shift:
+            shift.objects.filter.return_value.values.return_value = ["row"]
+            answer = selectors.roster_shift_days(self.salon, staff, WEEK_1, WEEK_4)
+        return shift, answer
+
+    def test_only_this_salon_s_branch_in_the_roster_weeks_of_the_window(self):
+        # A shift at another branch is not a day worked HERE, and a roster
+        # week outside the 4 is not looked at.
+        shift, answer = self.read([HERE, ELSEWHERE])
+        shift.objects.filter.assert_called_once_with(
+            tenant_id=TENANT,
+            roster__branch_id=BRANCH,
+            roster__week_start_date__gte=WEEK_1,
+            roster__week_start_date__lte=WEEK_4,
+            staff_member_id__in=[HERE, ELSEWHERE],
+        )
+        self.assertEqual(answer, ["row"])
+
+    def test_each_row_is_who_which_week_which_day(self):
+        shift, _ = self.read([HERE])
+        shift.objects.filter.return_value.values.assert_called_once_with(
+            "staff_member_id", "shift_date", week_start=F("roster__week_start_date"),
+        )
+
+    def test_nobody_to_ask_about_is_no_query(self):
+        shift, answer = self.read([])
+        self.assertEqual(answer, [])
+        shift.objects.filter.assert_not_called()
+
+
+class DaysOffForTests(SimpleTestCase):
+    """`views.days_off_for`: the reads around the rule."""
+
+    NOT_TUESDAY = [MON, WED, THU, FRI, SAT]
+
+    def ask(self, staff=(HERE,), published=None, given=None, shifts=None, moment=WEDNESDAY_3PM):
+        salon = salon_row()
+        if shifts is None:
+            shifts = one_stylist((WEEK_2, self.NOT_TUESDAY), (WEEK_3, self.NOT_TUESDAY))
+        with mock.patch.object(views, "read_snapshot",
+                               return_value=snapshot() if published is None else published) as read, \
+                mock.patch.object(views, "roster_shift_days", return_value=shifts) as rostered_, \
+                clock(moment) as now:
+            answer = views.days_off_for(salon, list(staff), given)
+        self.read, self.rostered, self.now, self.salon = read, rostered_, now, salon
+        return answer
+
+    def test_the_text_per_stylist(self):
+        self.assertEqual(self.ask(), {HERE: "Tuesday"})
+
+    def test_the_window_is_the_four_roster_weeks_ending_with_the_current_one(self):
+        self.ask()
+        self.rostered.assert_called_once_with(self.salon, [HERE], WEEK_1, WEEK_4)
+
+    def test_today_is_the_salon_s_own_date(self):
+        self.ask()
+        self.now.now.assert_called_once_with(zoneinfo.ZoneInfo("Asia/Dubai"))
+
+    def test_the_snapshot_is_read_when_none_is_handed_in(self):
+        self.ask()
+        self.read.assert_called_once_with(self.salon)
+
+    def test_a_snapshot_handed_in_is_not_read_again(self):
+        self.assertEqual(self.ask(given=snapshot()), {HERE: "Tuesday"})
+        self.read.assert_not_called()
+
+    def test_nobody_listed_reads_nothing(self):
+        self.assertEqual(self.ask(staff=()), {})
+        self.read.assert_not_called()
+        self.rostered.assert_not_called()
+
+    def test_no_published_hours_reads_no_shift(self):
+        self.assertEqual(self.ask(published=snapshot(HOURS=None)), {})
+        self.rostered.assert_not_called()
+
+
+# Five stylists and their roster, for the routes.
+TESS = member(21, "Tess", "Moor")     # never on Tuesday
+FINN = member(22, "Finn", "Hale")     # never on Friday or Saturday
+IVY = member(23, "Ivy", "Rowe")       # every open day
+OMAR = member(24, "Omar", "Aziz")     # missed one Tuesday only
+NEWT = member(25, "Newt", "Pike")     # joined this week: one rostered week
+CREW = [TESS, FINN, IVY, OMAR, NEWT]
+
+EVERY_OPEN_DAY = [MON, TUE, WED, THU, FRI, SAT]
+CREW_ROSTER = (
+    rostered(TESS.id, WEEK_2, [MON, WED, THU, FRI, SAT]) + rostered(TESS.id, WEEK_3, [MON, WED, THU, FRI, SAT])
+    + rostered(FINN.id, WEEK_2, [MON, TUE, WED, THU]) + rostered(FINN.id, WEEK_3, [MON, TUE, WED, THU])
+    + rostered(FINN.id, WEEK_4, [MON, TUE, WED, THU])
+    + rostered(IVY.id, WEEK_2, EVERY_OPEN_DAY) + rostered(IVY.id, WEEK_3, EVERY_OPEN_DAY)
+    + rostered(OMAR.id, WEEK_2, EVERY_OPEN_DAY) + rostered(OMAR.id, WEEK_3, [MON, WED, THU, FRI, SAT])
+    + rostered(NEWT.id, WEEK_4, [MON, TUE, WED])
+    # Tess worked a Tuesday before the window: not looked at.
+    + rostered(TESS.id, BEFORE_THE_WINDOW, EVERY_OPEN_DAY)
+)
+CREW_DAY_OFF = {
+    TESS.id: "Tuesday", FINN.id: "Friday, Saturday", IVY.id: None, OMAR.id: None, NEWT.id: None,
+}
+
+
+class RosterEdges:
+    """
+    The Stylists tab, the service detail and the profile, all running for
+    real down to the roster rule. Only the rows at the edges are mocked, and
+    they are the SAME rows for all three: the salon, its published hours, the
+    stylist list, their shifts, the clock.
+    """
+
+    def edges(self, stack, moment=WEDNESDAY_3PM, published=None):
+        salon = salon_row()
+        published = snapshot() if published is None else published
+
+        def shifts_of(_salon, staff, first, last):
+            return [row for row in CREW_ROSTER
+                    if row["staff_member_id"] in set(staff) and first <= row["week_start"] <= last]
+
+        def patch(target, **kw):
+            return stack.enter_context(mock.patch(target, **kw))
+
+        for module in ("views", "expert_profile_views", "service_detail_views"):
+            patch(f"apps.salons.{module}.salon_profile", return_value=salon)
+        patch("apps.salons.views.read_snapshot", return_value=published)
+        patch("apps.salons.expert_profile_views.read_snapshot", return_value=published)
+        patch("apps.salons.views.salon_stylists", return_value=Listed(CREW))
+        patch("apps.salons.selectors.salon_stylists", return_value=Listed(CREW))
+        self.shift_read = patch("apps.salons.views.roster_shift_days", side_effect=shifts_of)
+        stack.enter_context(clock(moment))
+        # Not what this compares: the heart, the photos, the menu.
+        patch("apps.salons.expert_profile_views.is_favourite_stylist", return_value=False)
+        patch("apps.salons.expert_profile_views.stylist_media_rows", return_value=[])
+        patch("apps.salons.expert_profile_views.salon_services", return_value=[])
+
+    def tab_rows(self, **kw):
+        with ExitStack() as stack:
+            self.edges(stack, **kw)
+            response = self.client.get(f"/api/v1/salon/{SALON}/stylists")
+        self.assertEqual(response.status_code, 200)
+        return {row["id"]: row for row in response.json()["stylists"]}
+
+    def profile(self, who, **kw):
+        with ExitStack() as stack:
+            self.edges(stack, **kw)
+            response = self.client.get(url(stylist=who.id))
+        self.assertEqual(response.status_code, 200)
+        return response.json()
+
+
+class DayOffOnTheStylistsTabTests(RosterEdges, SimpleTestCase):
+    """GET /salon/<id>/stylists: every row carries its day off."""
+
+    def test_each_row_s_day_off(self):
+        rows = self.tab_rows()
+        self.assertEqual(
+            {uuid.UUID(row_id): row["day_off"] for row_id, row in rows.items()}, CREW_DAY_OFF,
+        )
+
+    def test_one_shift_read_for_the_whole_list(self):
+        self.tab_rows()
+        self.shift_read.assert_called_once()
+        (_, staff, first, last), _ = self.shift_read.call_args
+        self.assertCountEqual(staff, [who.id for who in CREW])
+        self.assertEqual((first, last), (WEEK_1, WEEK_4))
+
+    def test_no_published_hours_is_null_for_everyone(self):
+        rows = self.tab_rows(published=snapshot(HOURS=None))
+        self.assertEqual({row["day_off"] for row in rows.values()}, {None})
+
+    def test_the_other_keys_of_a_row_are_as_they_were(self):
+        row = self.tab_rows()[str(TESS.id)]
+        self.assertEqual(list(row), [
+            "id", "tenant_id", "branch_id", "name", "title", "role", "avatar_url",
+            "rating", "review_count", "years_experience", "day_off",
+        ])
+        self.assertIsNone(row["years_experience"])
+
+
+class DayOffInTheExpertStepAndTheServiceDetailTests(RosterEdges, SimpleTestCase):
+    """The filtered list, and the service detail's experts: the same rows."""
+
+    SERVICE = uuid.UUID("66666666-6666-6666-6666-666666666660")
+    SKILL = uuid.UUID(int=0xB001)
+
+    def both(self):
+        stages = [{"service_id": self.SERVICE, "skill_id": self.SKILL, "min_level": 1,
+                   "name_en": "Cut"}]
+        held = [{"staff_member_id": who.id, "skill_id": self.SKILL, "level": "SENIOR"}
+                for who in (TESS, FINN, IVY)]
+        service = types.SimpleNamespace(
+            id=self.SERVICE, tenant_id=TENANT, name="Cut", description=None, price_minor=1000,
+            duration_minutes=30, category_0_id=None, status="PUBLISHED", deleted_at=None,
+            online_booking_enabled=True, published_version=1, audience="UNISEX",
+            requires_consultation=False, requires_patch_test=False, patch_test_hours=None,
+            min_age=None, pre_care_instructions=None, post_care_instructions=None,
+        )
+        with ExitStack() as stack:
+            self.edges(stack)
+
+            def patch(target, **kw):
+                return stack.enter_context(mock.patch(target, **kw))
+            patch("apps.salons.views.salon_service_ids", return_value={self.SERVICE})
+            patch("apps.salons.views.service_stage_rows", return_value=stages)
+            patch("apps.salons.service_detail_views.service_for_salon", return_value=service)
+            patch("apps.salons.service_detail_views.salon_categories", return_value={})
+            patch("apps.salons.service_detail_views.service_photo_urls", return_value=([], []))
+            patch("apps.salons.service_detail_views.service_stages", return_value=stages)
+            patch("apps.salons.selectors.skill_bridge", return_value={self.SKILL: self.SKILL})
+            patch("apps.salons.selectors.staff_skill_rows", return_value=held)
+
+            step = self.client.get(f"/api/v1/salon/{SALON}/stylists?service_ids={self.SERVICE}")
+            detail = self.client.get(f"/api/v1/salon/{SALON}/service/{self.SERVICE}")
+        self.assertEqual((step.status_code, detail.status_code), (200, 200))
+        return step.json()["stylists"], detail.json()["experts"]
+
+    def test_the_expert_step_rows_carry_the_day_off(self):
+        step, _ = self.both()
+        self.assertEqual(
+            {row["name"]: row["day_off"] for row in step},
+            {"Tess Moor": "Tuesday", "Finn Hale": "Friday, Saturday", "Ivy Rowe": None},
+        )
+
+    def test_the_service_detail_s_experts_are_those_same_rows(self):
+        step, experts = self.both()
+        self.assertEqual(experts, step)
+
+    def test_only_the_listed_stylists_shifts_are_read(self):
+        self.both()
+        for (_, staff, _, _), _ in self.shift_read.call_args_list:
+            self.assertCountEqual(staff, [TESS.id, FINN.id, IVY.id])
+
+
+class DayOffOnTheProfileTests(RosterEdges, SimpleTestCase):
+    """The profile's day_off, and the same text as the stylist's list row."""
+
+    def test_the_list_row_and_the_profile_give_the_same_text(self):
+        rows = self.tab_rows()
+        for who in CREW:
+            with self.subTest(stylist=who.first_name):
+                self.assertEqual(self.profile(who)["day_off"], rows[str(who.id)]["day_off"])
+
+    def test_the_comparison_is_not_trivial(self):
+        self.assertEqual(self.profile(TESS)["day_off"], "Tuesday")
+        self.assertEqual(self.profile(FINN)["day_off"], "Friday, Saturday")
+        for who in (IVY, OMAR, NEWT):
+            with self.subTest(stylist=who.first_name):
+                self.assertIsNone(self.profile(who)["day_off"])
+
+    def test_the_same_whatever_the_weekday_of_the_same_week(self):
+        monday = datetime(2026, 9, 28, 9, 0, tzinfo=DUBAI)
+        for moment in (monday, WEDNESDAY_3PM, SUNDAY_3PM):
+            with self.subTest(moment=moment):
+                self.assertEqual(self.profile(TESS, moment=moment)["day_off"], "Tuesday")
+
+    def test_a_week_later_the_old_weeks_drop_out(self):
+        # The window is now weeks 2 to 5. Newt is still on one rostered week,
+        # Tess still on two.
+        later = datetime(2026, 10, 7, 15, 0, tzinfo=DUBAI)
+        self.assertEqual(self.profile(TESS, moment=later)["day_off"], "Tuesday")
+        self.assertIsNone(self.profile(NEWT, moment=later)["day_off"])
+        # Three weeks on, Tess's two weeks are behind the window: too little.
+        much_later = datetime(2026, 10, 21, 15, 0, tzinfo=DUBAI)
+        self.assertIsNone(self.profile(TESS, moment=much_later)["day_off"])
+
+    def test_no_published_hours_is_null(self):
+        self.assertIsNone(self.profile(TESS, published=snapshot(HOURS=None))["day_off"])
+
+    def test_the_salon_block_still_reads_the_same_snapshot_once(self):
+        # One snapshot read for the salon block and the open days.
+        with ExitStack() as stack:
+            self.edges(stack)
+            page_read = stack.enter_context(mock.patch(
+                "apps.salons.views.read_snapshot", return_value=snapshot()))
+            mine = stack.enter_context(mock.patch(
+                "apps.salons.expert_profile_views.read_snapshot", return_value=snapshot()))
+            self.client.get(url(stylist=TESS.id))
+        mine.assert_called_once()
+        page_read.assert_not_called()
+
+
+class DayOffFieldTests(Seams, SimpleTestCase):
+    """The route answers the day off its one read gives."""
+
+    def test_null_by_default(self):
+        self.assertIsNone(self.call().json()["day_off"])
+
+    def test_the_text(self):
+        self.assertEqual(self.call(day_off="Friday, Saturday").json()["day_off"], "Friday, Saturday")
+
+    def test_asked_for_this_salon_this_stylist_and_the_snapshot_already_read(self):
+        self.call()
+        self.day_off_lookup.assert_called_once_with(
+            self.salon_lookup.return_value, [HERE], self.snapshot_lookup.return_value,
+        )
+        # The salon block is cut from the same snapshot.
+        self.salon_page_lookup.assert_called_once_with(
+            self.salon_lookup.return_value, self.snapshot_lookup.return_value,
+        )
+        self.snapshot_lookup.assert_called_once_with(self.salon_lookup.return_value)
+
+    def test_a_404_never_reads_the_roster(self):
+        self.call(found=False)
+        self.day_off_lookup.assert_not_called()
+        self.snapshot_lookup.assert_not_called()
+
+
+class DayOffDocumentedTests(Seams, SimpleTestCase):
+    """Nothing still says day_off is always null."""
+
+    def test_the_profile_s_shape_has_a_nullable_text(self):
+        schema = SchemaGenerator().get_schema(request=None, public=True)
+        operation = schema["paths"]["/api/v1/salon/{salon_id}/stylist/{stylist_id}"]["get"]
+        content = operation["responses"]["200"]["content"]["application/json"]
+        self.assertEqual(
+            content["schema"]["properties"]["day_off"], {"type": "string", "nullable": True},
+        )
+        self.assertIn("day_off", content["examples"]["AStylistOfThisSalon"]["value"])
+
+    def test_the_service_detail_s_expert_row_says_where_it_comes_from(self):
+        help_text = SalonServiceDetailExpertSerializer().fields["day_off"].help_text
+        self.assertNotIn("Always null", help_text)
+        self.assertIn("roster", help_text)
+
+    def test_the_service_detail_s_example_shows_one(self):
+        shown = [expert["day_off"] for expert in SERVICE_DETAIL_EXAMPLE["experts"]]
+        self.assertEqual(shown, [None, "Tuesday"])

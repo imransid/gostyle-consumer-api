@@ -252,7 +252,9 @@ the selector is the safety valve. `category` accepts the same four values.
 
 - Favorites endpoints. Build the heart with local state for now.
 - Story content (see above).
-- Per-stylist ratings, years of experience, day off — no column holds them.
+- Per-stylist ratings and years of experience: no column holds them. (A
+  stylist's day off is worked out from the roster now, see
+  `SALON_PROFILE_API.md` §3.)
 
 ## Who to ping
 

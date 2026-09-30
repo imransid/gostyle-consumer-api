@@ -47,7 +47,8 @@ from .selectors import (
     stylist_media_rows,
     stylist_service_coverage,
 )
-from .views import _OUR_ENVELOPE, _stylist_row, salon_profile_data
+from .snapshot import read_snapshot
+from .views import _OUR_ENVELOPE, _stylist_row, days_off_for, salon_profile_data
 
 # Written for the customer: the app shows `detail` on its empty state. The
 # salon's is the service detail's own sentence; the stylist's is the
@@ -69,7 +70,8 @@ _SERVICE_ROW = {
 }
 
 # The 200 so far: the person (E2), the heart (E3b), the services (E4), the
-# salon (E5) and the media (E6). E8 replaces this with the full shape.
+# salon (E5), the media (E6) and the day off (E7). E8 replaces this with the
+# full shape.
 _ANSWER_SO_FAR = {
     "type": "object",
     "properties": {
@@ -81,6 +83,7 @@ _ANSWER_SO_FAR = {
         "avatar_url": {"type": "string", "nullable": True},
         "rating": {"type": "number", "nullable": True},
         "review_count": {"type": "integer"},
+        "day_off": {"type": "string", "nullable": True},
         "is_favorite": {"type": "boolean"},
         "has_story": {"type": "boolean"},
         "media": {
@@ -122,7 +125,8 @@ _ANSWER_SO_FAR = {
     },
     "required": [
         "id", "salon_id", "name", "title", "role", "avatar_url", "rating", "review_count",
-        "is_favorite", "has_story", "media", "media_count", "salon", "service_groups",
+        "day_off", "is_favorite", "has_story", "media", "media_count", "salon",
+        "service_groups",
     ],
 }
 
@@ -154,7 +158,10 @@ _ANSWER_SO_FAR = {
                 "The stylist, at this salon: the same name, title, role and "
                 "avatar as in GET /salon/{salon_id}/stylists. No stylist "
                 "reviews exist yet, so `rating` is null and `review_count` "
-                "is 0. `is_favorite` is the caller's own heart on this "
+                "is 0. `day_off` is worked out from the roster: the weekday "
+                "or weekdays the stylist never works (\"Tuesday\", \"Friday, "
+                "Saturday\"), or null when it cannot be told; the same text "
+                "as in the stylists list. `is_favorite` is the caller's own heart on this "
                 "stylist (POST /favourite with `stylist_id`): send the token "
                 "to get it, a guest always gets false. `service_groups` is "
                 "only what this stylist can do, in the groups, order, rows "
@@ -182,6 +189,7 @@ _ANSWER_SO_FAR = {
                         "avatar_url": None,
                         "rating": None,
                         "review_count": 0,
+                        "day_off": "Tuesday",
                         "is_favorite": False,
                         "has_story": True,
                         "media": [
@@ -260,8 +268,14 @@ class SalonExpertProfileView(APIView):
             raise NotFound(NO_STYLIST)
 
         # The person, from the Expert step's own row code: the same name,
-        # title, role and avatar as GET /salon/<id>/stylists gives this stylist.
-        body = core_fields(salon, _stylist_row(stylist))
+        # title, role, avatar and day off as GET /salon/<id>/stylists gives
+        # this stylist.
+        # The salon's published snapshot, read once: its open days for the
+        # day off, and its own page's answer for the salon block.
+        snapshot = read_snapshot(salon)
+
+        day_off = days_off_for(salon, [stylist.id], snapshot).get(stylist.id)
+        body = core_fields(salon, _stylist_row(stylist, day_off=day_off))
 
         # The caller's own heart on this stylist: read with their token when
         # they sent one, false for a guest (the contract's section 3).
@@ -272,7 +286,7 @@ class SalonExpertProfileView(APIView):
 
         # The salon, from its own page's answer (GET /salon/<id>): the same
         # name, open now and pin, by the same code.
-        body["salon"] = salon_block(salon_profile_data(salon))
+        body["salon"] = salon_block(salon_profile_data(salon, snapshot))
         body["service_groups"] = self._service_groups(salon, stylist)
         return Response(body)
 

@@ -4,8 +4,8 @@ The Expert Profile screen's answer, built from rows the view has read.
 Pure: rows in, dicts out, no queryset. The view (expert_profile_views.py)
 reads; this writes the contract's fields (docs/expert-profile-fe-contract.md
 §2). Built step by step (docs/EXPERT_PROFILE_AUDIT.md, section 8): the person
-in E2; the services in E4; the salon in E5; the media in E6; the rest in E7
-and E8.
+in E2; the services in E4; the salon in E5; the media in E6; the day off in
+E7; the rest in E8.
 """
 
 from .hours import CLOSED_TODAY
@@ -16,9 +16,9 @@ MEDIA_MAX = 5
 
 def core_fields(salon, row):
     """
-    id, salon_id, name, title, role and avatar_url: the person, exactly as
-    the Stylists tab and the Expert step show them. Plus rating and
-    review_count, empty until stylist reviews exist.
+    id, salon_id, name, title, role, avatar_url and day_off: the person,
+    exactly as the Stylists tab and the Expert step show them. Plus rating
+    and review_count, empty until stylist reviews exist.
 
     `row` is this stylist's own row of GET /salon/<id>/stylists
     (`views._stylist_row`). Taking the finished row, and not the staff record,
@@ -42,6 +42,9 @@ def core_fields(salon, row):
         # count; here the contract types it a number (Rafa, Q14).
         "rating": None,
         "review_count": 0,
+        # The row's own text, worked out from the roster (roster.py):
+        # "Tuesday", "Friday, Saturday", or null, which hides the row.
+        "day_off": row["day_off"],
     }
 
 

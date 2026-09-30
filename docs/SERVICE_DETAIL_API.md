@@ -54,6 +54,9 @@ Also worth knowing:
 - Each `experts` row is exactly a row of `GET /salon/:id/stylists?service_ids=`,
   so it has that route's other keys too (`tenant_id`, `branch_id`,
   `years_experience`, `day_off`, `service_ids`). Ignore what you do not use.
+  `day_off` is the stylist's steady day off, worked out from the roster
+  (`"Tuesday"`, `"Friday, Saturday"`), or `null` when it cannot be told
+  (`SALON_PROFILE_API.md` §3).
 - `details` has no hair-type "Suitability" row: that is not in the data. It has
   a "Suitable for" row instead (Men, Women, Everyone, Kids), see §2.
 
@@ -166,7 +169,7 @@ photo tagged with the service, the salon's stages and some care text:
       "rating": null,
       "review_count": null,
       "years_experience": null,
-      "day_off": null,
+      "day_off": "Tuesday",
       "service_ids": [
         "66666666-6666-6666-6666-666666666660"
       ]

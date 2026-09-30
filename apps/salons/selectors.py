@@ -1503,6 +1503,31 @@ def shift_rows(tenant_id, branch_id, staff_ids, day):
     )
 
 
+def roster_shift_days(storefront, staff_ids, first_week, last_week):
+    """
+    Which days these stylists were rostered at THIS salon's branch, in the
+    roster weeks from `first_week` to `last_week` (the weeks' Mondays, both
+    included): `staff_member_id`, `shift_date` and `week_start` of each shift.
+
+    For the day off (roster.py). A shift at another branch is not a day worked
+    here, so the branch filter runs through the roster, as in `shift_rows`.
+    The week is the roster's own `week_start_date`, not worked out from the
+    date: a roster week is what the salon planned as one.
+    """
+    if not staff_ids:
+        return []
+
+    return list(
+        Shift.objects.filter(
+            tenant_id=storefront.tenant_id,
+            roster__branch_id=storefront.branch_id,
+            roster__week_start_date__gte=first_week,
+            roster__week_start_date__lte=last_week,
+            staff_member_id__in=list(staff_ids),
+        ).values("staff_member_id", "shift_date", week_start=F("roster__week_start_date"))
+    )
+
+
 def booking_rows(tenant_id, staff_ids, window_start, window_end):
     """
     Appointments these stylists already hold, overlapping the given span.

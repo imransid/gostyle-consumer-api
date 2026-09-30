@@ -76,8 +76,11 @@ the same words on both sides of the dot is worse than leaving one side empty.
 Before this change `role` carried `position`; a build that reads only `role`
 now shows the expertise line instead of the job title.
 
-`rating`, `review_count`, `years_experience` and `day_off` are still
-permanently null — same reasons as `SALON_PROFILE_API.md` §3.
+`rating`, `review_count` and `years_experience` are still permanently null,
+for the reasons in `SALON_PROFILE_API.md` §3. `day_off` is worked out from the
+roster: the weekday or weekdays the stylist never works (`"Tuesday"`,
+`"Friday, Saturday"`), or `null` when it cannot be told. The rule is in
+`SALON_PROFILE_API.md` §3.
 
 **Order: rating descending, then name.** Every rating is null today, so it is
 name order in practice, and nothing reshuffles between refreshes.
@@ -207,5 +210,5 @@ cannot do the job. Surfacing the catalogue gap is the lesser evil.
   creation lives in gostyle-booking-api, and this filter is convenience, not
   security: a stylist who does not hold the service's skills must still be
   rejected there with `422 / stylist_missing_skill`.
-- **`rating`, `review_count`, `years_experience`, `day_off`** — still null, see
+- **`rating`, `review_count`, `years_experience`**: still null, see
   `SALON_PROFILE_API.md` §3.

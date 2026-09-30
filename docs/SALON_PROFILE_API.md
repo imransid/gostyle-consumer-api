@@ -230,7 +230,7 @@ fire badge cannot be built from this endpoint.
       "rating": null,
       "review_count": null,
       "years_experience": null,
-      "day_off": null
+      "day_off": "Tuesday"
     }
   ]
 }
@@ -245,7 +245,7 @@ Add `?service_ids=a,b` to this same endpoint to get only the staff who can
 perform those services, each with the ones they cover — the booking flow's
 Expert step. See `BOOKING_EXPERT_API.md`.
 
-**Four fields are permanently null right now.** The keys are present so
+**Three fields are permanently null right now.** The keys are present so
 the response shape stays stable. Treat null as "hide this element".
 
 | Field              | Why                                               |
@@ -253,12 +253,28 @@ the response shape stays stable. Treat null as "hide this element".
 | `rating`           | Reviews attach to the salon; no `staff_id` column |
 | `review_count`     | Same table, same reason                           |
 | `years_experience` | No column anywhere, no screen ever collects it    |
-| `day_off`          | Shift data exists but a day off is not stored     |
 
 The first two are blocked on a platform ticket to add `staff_id` to the
-review table. `day_off` may become derivable from the shift roster
-later. `years_experience` needs both a column and a place for salons to
+review table. `years_experience` needs both a column and a place for salons to
 enter it.
+
+**`day_off` is worked out from the roster.** The platform stores no day
+off, only dated shifts. So it is the weekday, or weekdays, the stylist never
+works:
+
+- a day the salon is open (a day the salon is closed is not a day off),
+- with no shift at this salon in any rostered week of the last 4 roster weeks
+  (the current week included),
+- and only when there are at least 2 rostered weeks to judge from.
+
+It is a full English day name, or several in week order: `"Tuesday"`,
+`"Friday, Saturday"`. It is `null` when it cannot be told: the stylist works
+every day the salon is open, is rostered in fewer than 2 of those weeks,
+missed a day in one week only, or the salon published no hours. Treat `null`
+as "hide this element". It is display text: whether a day can be booked is
+the Time step's question (`BOOKING_NEAREST_AVAILABLE_API.md`). The same text
+is on every screen that shows the stylist: this list, the Expert step, the
+service detail's `experts` and the expert profile.
 
 Only staff who have actually joined appear here: someone invited but who
 never accepted is filtered out.
@@ -395,7 +411,7 @@ Durations are integer minutes.
 
 - `active_booking` and `my_packages`: blocked on the consumer-to-customer
   link (see above)
-- Stylist `rating`, `review_count`, `years_experience`, `day_off`
+- Stylist `rating`, `review_count`, `years_experience`
 - `chair` and `can_start_session` on `active_booking`: nothing links a
   booking to a physical chair
 - `is_popular` on categories

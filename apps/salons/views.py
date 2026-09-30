@@ -51,7 +51,7 @@ from .booking_api import (
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from apps.accounts.models import Favourite, FavouriteStylist
 
-from . import slots, timezones
+from . import roster, slots, timezones
 from .hours import resolve as resolve_hours
 from .hours import weekly_row as hours_row
 from .menu import service_groups, service_row
@@ -70,6 +70,7 @@ from .selectors import (
     salon_packages,
     salon_products,
     manual_state_on,
+    roster_shift_days,
     salon_profile,
     salon_service_ids,
     salon_services,
@@ -301,7 +302,7 @@ class SalonDiscoveryDetailView(RetrieveAPIView):
         return with_published_card_fields(discoverable_salons())
 
 
-def salon_profile_data(salon):
+def salon_profile_data(salon, snapshot=None):
     """
     GET /salon/<id>'s whole answer, for a salon row `salon_profile` has read.
 
@@ -310,9 +311,11 @@ def salon_profile_data(salon):
     the pin) and must say the same things about it. It reads them from this
     answer, so the two screens cannot disagree.
 
-    One query: the published snapshot.
+    One query: the published snapshot, unless the caller already read it and
+    hands it in.
     """
-    snapshot = read_snapshot(salon)
+    if snapshot is None:
+        snapshot = read_snapshot(salon)
 
     tz = timezones.resolve(salon.branch_timezone, salon.id)
     now = datetime.now(tz)
@@ -393,8 +396,12 @@ def stylist_rows(salon, service_ids=None, stages=None):
         # Someone who covers none of the picked services is left out.
         staff = [s for s in staff if s.id in coverage]
 
+    # Each one's steady day off, from the roster: one read for the whole list.
+    off = days_off_for(salon, [s.id for s in staff])
+
     rows = [
-        _stylist_row(s, coverage[s.id] if service_ids else None) for s in staff
+        _stylist_row(s, coverage[s.id] if service_ids else None, off.get(s.id))
+        for s in staff
     ]
 
     # Rating first, then name, so the list does not reshuffle between
@@ -405,7 +412,40 @@ def stylist_rows(salon, service_ids=None, stages=None):
     return rows
 
 
-def _stylist_row(s, covered=None):
+def days_off_for(salon, staff_ids, snapshot=None):
+    """
+    staff id to that stylist's steady day off at this salon, as text
+    ("Tuesday", "Friday, Saturday"). A stylist with none is not in the answer.
+
+    The rule is roster.py's; this does its two reads: the salon's published
+    weekly hours (the snapshot, unless the caller already has it) and the
+    stylists' shifts at this salon's branch in the roster weeks the rule looks
+    at, counted from TODAY ON THE SALON'S OWN CLOCK.
+
+    One place for every screen that shows a stylist (the Stylists tab, the
+    Expert step, the service detail's experts, the expert profile), so the
+    same stylist has the same day off on all of them.
+
+    Nobody listed reads nothing. A salon with no published hours reads no
+    shifts: without its open days, a closed day cannot be told from a day off.
+    """
+    if not staff_ids:
+        return {}
+
+    if snapshot is None:
+        snapshot = read_snapshot(salon)
+    open_days = roster.open_weekdays(snapshot["HOURS"].get("weekly"))
+    if not open_days:
+        return {}
+
+    tz = timezones.resolve(getattr(salon, "branch_timezone", None), salon.id)
+    first_week, last_week = roster.week_window(datetime.now(tz).date())
+    return roster.days_off(
+        roster_shift_days(salon, staff_ids, first_week, last_week), open_days,
+    )
+
+
+def _stylist_row(s, covered=None, day_off=None):
     row = {
         "id": str(s.id),
         "tenant_id": str(s.tenant_id),
@@ -424,7 +464,10 @@ def _stylist_row(s, covered=None):
         "rating": None,
         "review_count": None,
         "years_experience": None,
-        "day_off": None,
+        # Worked out from the roster (days_off_for), null when it cannot be
+        # told. Display text: whether a day can be booked is the Time step's
+        # question.
+        "day_off": day_off,
     }
 
     # Only when the caller asked about services. `covered` is a list, possibly
