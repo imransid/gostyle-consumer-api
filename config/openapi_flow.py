@@ -71,6 +71,7 @@ FLOW = (
             ("GET", "/api/v1/salon/{salon_id}/services", "Its services"),
             ("GET", "/api/v1/salon/{salon_id}/service/{service_id}", "One of its services, for the detail screen"),
             ("GET", "/api/v1/salon/{salon_id}/stylists", "Its stylists (for some services, if given)"),
+            ("GET", "/api/v1/salon/{salon_id}/stylist/{stylist_id}", "One of its stylists, for the expert profile screen"),
             ("GET", "/api/v1/salon/{salon_id}/packages", "Its packages"),
             ("GET", "/api/v1/salon/{salon_id}/products", "Its shop"),
             ("GET", "/api/v1/salon/{salon_id}/stories", "Its stories"),
@@ -87,10 +88,10 @@ FLOW = (
     ),
     (
         "7. Favourites",
-        "The heart on a salon.",
+        "The heart, on a salon or on a stylist.",
         (
             ("GET", "/api/v1/favourite", "My saved salons"),
-            ("POST", "/api/v1/favourite", "Save or unsave a salon (the heart)"),
+            ("POST", "/api/v1/favourite", "Save or unsave a salon or a stylist (the heart)"),
         ),
     ),
     (

@@ -76,8 +76,11 @@ the same words on both sides of the dot is worse than leaving one side empty.
 Before this change `role` carried `position`; a build that reads only `role`
 now shows the expertise line instead of the job title.
 
-`rating`, `review_count`, `years_experience` and `day_off` are still
-permanently null — same reasons as `SALON_PROFILE_API.md` §3.
+`rating`, `review_count` and `years_experience` are still permanently null,
+for the reasons in `SALON_PROFILE_API.md` §3. `day_off` is worked out from the
+roster: the weekday or weekdays the stylist never works (`"Tuesday"`,
+`"Friday, Saturday"`), or `null` when it cannot be told. The rule is in
+`SALON_PROFILE_API.md` §3.
 
 **Order: rating descending, then name.** Every rating is null today, so it is
 name order in practice, and nothing reshuffles between refreshes.
@@ -139,13 +142,21 @@ The rules, in full:
 9. **Skills are not availability.** This answers "who is qualified", not "who
    is free on Tuesday at 3". `day_off` is display text; slots belong to the
    Time step.
+10. **Only this salon's own stylists.** A stylist is listed at the salon of
+    their home branch (`staff_profile.branch_id`) and nowhere else, and only
+    with a live login account. That is who booking-api will accept for this
+    salon, so a stylist of another salon of the same business is never
+    offered here. See `SALON_PROFILE_API.md` §3.
 
 ---
 
 ## 4. Errors
 
 Errors are for bad input only. A request whose ids are all valid never fails,
-however few stylists come back. Same envelope as `AUTH_GUIDE.md`.
+however few stylists come back.
+
+Same envelope as every other route: `detail` (a sentence), `code` (what kind
+of error), and `errors`, a list of `{ field, code, message }`.
 
 ```json
 {
@@ -202,5 +213,5 @@ cannot do the job. Surfacing the catalogue gap is the lesser evil.
   creation lives in gostyle-booking-api, and this filter is convenience, not
   security: a stylist who does not hold the service's skills must still be
   rejected there with `422 / stylist_missing_skill`.
-- **`rating`, `review_count`, `years_experience`, `day_off`** — still null, see
+- **`rating`, `review_count`, `years_experience`**: still null, see
   `SALON_PROFILE_API.md` §3.

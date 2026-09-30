@@ -20,7 +20,7 @@ from django.db.models.fields.json import KeyTextTransform, KeyTransform
 from apps.platform_data.models import StorefrontStory, StorefrontVersion
 
 from django.db.models import Value, BooleanField
-from apps.accounts.models import Favourite
+from apps.accounts.models import Favourite, FavouriteStylist
 
 
 from apps.platform_data.models import (
@@ -250,20 +250,89 @@ def salon_packages(storefront):
     )
 
 
-def salon_stylists(storefront, branch_id=None):
-    user = UserAccount.objects.filter(id=OuterRef("user_id"))
+def _live_login():
+    """
+    A stylist's login account, as a subquery on the staff row: the
+    `user_account` of that row, in the same tenant, not deleted.
 
-    filters = dict(
-        tenant_id=storefront.tenant_id,
+    The platform's ListStylists drops anyone without one, so booking-api
+    cannot book them; we do not show them either. The account's `status` is
+    not looked at, because the platform's list does not look at it.
+    """
+    return UserAccount.objects.filter(
+        id=OuterRef("user_id"),
+        tenant_id=OuterRef("tenant_id"),
+        deleted_at__isnull=True,
+    )
+
+
+def showable_stylists():
+    """
+    Every stylist the app can show, at whichever salon is theirs: the rules
+    of `salon_stylists` without the salon.
+
+    Employed (ACTIVE), joined (onboarding ACTIVE, so an invite never accepted
+    is out), not deleted, with a home branch and a live login account.
+    `salon_stylists` is these rules plus one salon, so the two cannot drift.
+    """
+    return StaffProfile.objects.filter(
+        # A stylist with no home branch belongs to no salon: the platform
+        # cannot roster them and booking-api refuses them.
+        branch_id__isnull=False,
         employment_status="ACTIVE",
         onboarding_state="ACTIVE",
         deleted_at__isnull=True,
-    )
-    if BRANCH_AVAILABILITY_ENABLED:
-        filters["branch_id"] = branch_id or storefront.branch_id
+    ).filter(Exists(_live_login()))
+
+
+def stylist_is_showable(staff_id):
+    """
+    True when this id is a stylist the app can show at some salon.
+
+    For saving a heart on a stylist (POST /favourite): the customer is not at
+    a salon there, so there is no salon to check against. A heart on anyone
+    else (an id nobody has, a stylist who left) could never be seen again.
+    """
+    return showable_stylists().filter(id=staff_id).exists()
+
+
+def salon_stylists(storefront, branch_id=None):
+    """
+    The stylists of ONE salon: who the app may show there, and book there.
+
+    The one list behind the Stylists tab and the Expert step, the service
+    detail's experts, nearest available, the group booking's stylist check and
+    the routine's avatars, so they all agree on who works here.
+
+    A stylist is at a salon when (docs/EXPERT_PROFILE_AUDIT.md, E0):
+
+      * They are this business's staff: employed (ACTIVE), joined (onboarding
+        ACTIVE, so an invite never accepted is out) and not deleted.
+      * Their HOME BRANCH is this salon's branch. `staff_profile.branch_id` is
+        the one branch a stylist belongs to: the platform rosters them only
+        there, and booking-api books them only there (its roster is the
+        platform's ListStylists for that branch). A stylist of another branch
+        of the same business, or with no home branch, is left out: the booking
+        would be refused ("That stylist does not work at this salon").
+      * Their login account is live: a `user_account` of the same tenant, not
+        deleted. The platform's ListStylists drops anyone without one, so
+        booking-api cannot book them either. The name and the avatar are read
+        from that account only.
+
+    NOT behind BRANCH_AVAILABILITY_ENABLED: that flag is about which SERVICES
+    a branch sells, and it is still off.
+    """
+    user = _live_login()
 
     return (
-        StaffProfile.objects.filter(**filters)
+        # `branch_id=None` alone would read as IS NULL and list exactly the
+        # stylists with no home branch. showable_stylists already says IS NOT
+        # NULL, so a salon with no branch finds nobody.
+        showable_stylists()
+        .filter(
+            tenant_id=storefront.tenant_id,
+            branch_id=branch_id or storefront.branch_id,
+        )
         .annotate(
             first_name=Subquery(user.values("first_name")[:1], output_field=TextField()),
             last_name=Subquery(user.values("last_name")[:1], output_field=TextField()),
@@ -279,9 +348,61 @@ def salon_stylists(storefront, branch_id=None):
         .order_by("created_at")
     )
 
+
+def stylist_for_salon(storefront, stylist_id):
+    """
+    One stylist of this salon, or None.
+
+    For the Expert Profile screen (GET /salon/<id>/stylist/<id>). It is
+    `salon_stylists` narrowed to one id, so it opens exactly the people the
+    Stylists tab and the Expert step list, with the same name, title, role
+    and avatar.
+
+    None, and so a 404, for everyone that list leaves out: another business's
+    stylist, a stylist of another salon of the same business (never a
+    cross-salon read), one who left or never joined, a deleted one, and one
+    whose login account is gone.
+    """
+    return salon_stylists(storefront).filter(id=stylist_id).first()
+
+
+def stylist_media_rows(storefront, staff_id):
+    """
+    This salon's photos tagged with one stylist, newest first: `id`, `url`
+    and `mime_type` of each. For the Expert Profile's `media`.
+
+    The same rules as the gallery on the salon's page and the photos on the
+    service detail: kind GALLERY, public, approved, not deleted, and only THIS
+    storefront's. `processing_state` is not checked, as there.
+
+    `storefront_media.staff_id` is never checked when the salon sets it (the
+    platform says so), and nothing else reads it back. So it is matched to
+    this stylist's own id, inside this salon and tenant, and a photo tagged
+    with anything else is simply not found.
+
+    Every row, not five: the screen shows five and counts them all, and which
+    rows count is decided from `mime_type` (expert_profile.media). A few
+    small columns of one stylist's photos, in one query.
+    """
+    return list(
+        StorefrontMedia.objects.filter(
+            storefront_id=storefront.id,
+            tenant_id=storefront.tenant_id,
+            staff_id=staff_id,
+            kind="GALLERY",
+            is_public=True,
+            moderation_status="APPROVED",
+            deleted_at__isnull=True,
+        )
+        .order_by("-created_at", "id")
+        .values("id", "url", "mime_type")
+    )
+
+
 # Hides a service a branch switched off. Still off: as written it keeps only
 # services WITH an `available` row, and the platform's rule is different
-# (audit F2). Branch PRICES do not wait for it (branch_price_minor, S7).
+# (audit F2). Branch PRICES do not wait for it (branch_price_minor, S7), and
+# neither do a branch's own STYLISTS (salon_stylists).
 BRANCH_AVAILABILITY_ENABLED = False
 
 
@@ -802,6 +923,19 @@ def salon_profile(storefront_id, user=None):
     )
 
     return with_is_favorite(qs, user).filter(id=storefront_id).first()
+def is_favourite_stylist(user, staff_id):
+    """
+    Has this customer saved this stylist: the heart on the expert profile.
+
+    False for a guest, with no query. The table is our own
+    (favourite_stylist), so this is one small read beside the platform's rows,
+    not a subquery inside them.
+    """
+    if user is None or not user.is_authenticated:
+        return False
+    return FavouriteStylist.objects.filter(account=user, staff_id=staff_id).exists()
+
+
 def with_is_favorite(qs, user):
     if user is None or not user.is_authenticated:
         return qs.annotate(
@@ -1366,6 +1500,31 @@ def shift_rows(tenant_id, branch_id, staff_ids, day):
             staff_member_id__in=list(staff_ids),
             shift_date=day,
         ).values("staff_member_id", "start_time", "end_time", "break_time")
+    )
+
+
+def roster_shift_days(storefront, staff_ids, first_week, last_week):
+    """
+    Which days these stylists were rostered at THIS salon's branch, in the
+    roster weeks from `first_week` to `last_week` (the weeks' Mondays, both
+    included): `staff_member_id`, `shift_date` and `week_start` of each shift.
+
+    For the day off (roster.py). A shift at another branch is not a day worked
+    here, so the branch filter runs through the roster, as in `shift_rows`.
+    The week is the roster's own `week_start_date`, not worked out from the
+    date: a roster week is what the salon planned as one.
+    """
+    if not staff_ids:
+        return []
+
+    return list(
+        Shift.objects.filter(
+            tenant_id=storefront.tenant_id,
+            roster__branch_id=storefront.branch_id,
+            roster__week_start_date__gte=first_week,
+            roster__week_start_date__lte=last_week,
+            staff_member_id__in=list(staff_ids),
+        ).values("staff_member_id", "shift_date", week_start=F("roster__week_start_date"))
     )
 
 

@@ -236,3 +236,43 @@ class Favourite(models.Model):
         indexes = [
             models.Index(fields=["account", "-created_at"]),
         ]
+
+
+class FavouriteStylist(models.Model):
+    """
+    A stylist a customer saved: the heart on the expert profile.
+
+    staff_id is a PLAIN UUID, not a ForeignKey, for the reason
+    Favourite.storefront_id is one: the stylist (staff_profile) lives in the
+    platform's tables, which this service only reads.
+
+    ITS OWN TABLE, not a second column on `favourite`. That table's
+    storefront_id is NOT NULL and its unique rule is on it, so holding
+    stylists there means loosening both; and after a rollback the older code
+    would read a stylist row as a salon. A new table is additive: code that
+    does not know it never sees it.
+
+    UNIQUE on (account, staff_id): one heart per customer and stylist,
+    wherever the stylist was opened. The toggle relies on at most one row.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    account = models.ForeignKey(
+        ConsumerAccount,
+        on_delete=models.CASCADE,
+        related_name="favourite_stylists",
+    )
+    staff_id = models.UUIDField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "favourite_stylist"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["account", "staff_id"],
+                name="favourite_stylist_account_staff_unique",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["account", "-created_at"]),
+        ]

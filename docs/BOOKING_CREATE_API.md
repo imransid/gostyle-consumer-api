@@ -145,7 +145,9 @@ untouched — `201` on success, and equally `409` and `422`:
 
 > **Two error shapes live on this endpoint.** Refusals from booking-api arrive
 > in *its* shape, above. Refusals from this service arrive in this project's
-> envelope (`AUTH_GUIDE.md`) — the four rows in the table below. The app has
+> envelope, the same as every other route: `detail` (a sentence), `code` (what
+> kind of error), and `errors`, a list of `{ field, code, message }`. They are
+> the four rows in the table below. The app has
 > to handle both here, which is the price of not translating: a translation
 > layer is one more contract to keep in step, and it would have to invent a
 > `code` for every code booking-api ever adds.

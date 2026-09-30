@@ -141,7 +141,9 @@ on its own has nothing to be grouped under.
 
 ## 5. Errors
 
-Same envelope as `AUTH_GUIDE.md`. Only a malformed request fails.
+Same envelope as every other route: `detail` (a sentence), `code` (what kind
+of error), and `errors`, a list of `{ field, code, message }`.
+Only a malformed request fails.
 
 | Case                                | Status | `code`             | `errors[0].code` |
 | ----------------------------------- | ------ | ------------------ | ---------------- |

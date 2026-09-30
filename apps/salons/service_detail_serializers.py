@@ -45,7 +45,14 @@ class SalonServiceDetailExpertSerializer(serializers.Serializer):
     rating = serializers.FloatField(allow_null=True, help_text="Always null: no stylist reviews yet.")
     review_count = serializers.IntegerField(allow_null=True, help_text="Always null: no stylist reviews yet.")
     years_experience = serializers.IntegerField(allow_null=True, help_text="Always null for now.")
-    day_off = serializers.CharField(allow_null=True, help_text="Always null for now.")
+    day_off = serializers.CharField(
+        allow_null=True,
+        help_text=(
+            "Worked out from the roster: the weekday or weekdays the stylist "
+            "never works (\"Tuesday\", \"Friday, Saturday\"). Null when it "
+            "cannot be told."
+        ),
+    )
     service_ids = serializers.ListField(
         child=serializers.UUIDField(), help_text="This service's id: the one asked about."
     )
@@ -158,7 +165,7 @@ EXAMPLE = {
             "rating": None,
             "review_count": None,
             "years_experience": None,
-            "day_off": None,
+            "day_off": "Tuesday",
             "service_ids": [
                 "66666666-6666-6666-6666-666666666660",
             ],

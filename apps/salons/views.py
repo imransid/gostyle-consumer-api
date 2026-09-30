@@ -17,6 +17,7 @@ from drf_spectacular.utils import (
 from rest_framework.exceptions import (
     APIException,
     ErrorDetail,
+    NotFound,
     UnsupportedMediaType,
     ValidationError,
 )
@@ -29,6 +30,7 @@ from .snapshot import field as snap_field
 from .params import (
     MAX_SERVICE_IDS,
     ParamError,
+    body_uuid,
     parse_discovery,
     parse_map,
     parse_nearest_available,
@@ -47,12 +49,12 @@ from .booking_api import (
 )
 
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from apps.accounts.models import Favourite
+from apps.accounts.models import Favourite, FavouriteStylist
 
-from . import slots, timezones
+from . import roster, slots, timezones
 from .hours import resolve as resolve_hours
 from .hours import weekly_row as hours_row
-from .menu import category_chip, service_price
+from .menu import service_groups, service_row
 from .money import major
 from .selectors import (
     booking_route,
@@ -68,6 +70,7 @@ from .selectors import (
     salon_packages,
     salon_products,
     manual_state_on,
+    roster_shift_days,
     salon_profile,
     salon_service_ids,
     salon_services,
@@ -77,6 +80,7 @@ from .selectors import (
     services_by_ids,
     service_timing_rows,
     shift_rows,
+    stylist_is_showable,
     stylist_service_coverage,
     tenant_for_salon,
     with_distance,
@@ -298,6 +302,45 @@ class SalonDiscoveryDetailView(RetrieveAPIView):
         return with_published_card_fields(discoverable_salons())
 
 
+def salon_profile_data(salon, snapshot=None):
+    """
+    GET /salon/<id>'s whole answer, for a salon row `salon_profile` has read.
+
+    A function, not only the view's body, because the Expert Profile screen
+    shows the same salon (its `salon` block: name, open now, today's hours,
+    the pin) and must say the same things about it. It reads them from this
+    answer, so the two screens cannot disagree.
+
+    One query: the published snapshot, unless the caller already read it and
+    hands it in.
+    """
+    if snapshot is None:
+        snapshot = read_snapshot(salon)
+
+    tz = timezones.resolve(salon.branch_timezone, salon.id)
+    now = datetime.now(tz)
+
+    hours = resolve_hours(
+        weekly=snapshot["HOURS"].get("weekly"),
+        # No storefront_status_exception table in this schema version, so
+        # a dated exception cannot be read yet. Re-check against staging
+        # before release.
+        exception=None,
+        state=salon.manual_state,
+        weekday_index=now.weekday(),
+        now_hhmm=now.strftime("%H:%M"),
+    )
+
+    return SalonProfileSerializer(
+        salon,
+        context={
+            "snapshot": snapshot,
+            "hours": hours,
+            "cancel_window_hours": snapshot["POLICY"].get("cancelWindowHours"),
+        },
+    ).data
+
+
 class SalonProfileView(APIView):
 
     permission_classes = [AllowAny]
@@ -307,31 +350,7 @@ class SalonProfileView(APIView):
         if salon is None:
             raise Http404("Salon not found")
 
-        snapshot = read_snapshot(salon)
-
-        tz = timezones.resolve(salon.branch_timezone, salon.id)
-        now = datetime.now(tz)
-
-        hours = resolve_hours(
-            weekly=snapshot["HOURS"].get("weekly"),
-            # No storefront_status_exception table in this schema version, so
-            # a dated exception cannot be read yet. Re-check against staging
-            # before release.
-            exception=None,
-            state=salon.manual_state,
-            weekday_index=now.weekday(),
-            now_hhmm=now.strftime("%H:%M"),
-        )
-
-        data = SalonProfileSerializer(
-            salon,
-            context={
-                "snapshot": snapshot,
-                "hours": hours,
-                "cancel_window_hours": snapshot["POLICY"].get("cancelWindowHours"),
-            },
-        ).data
-        return Response(data)
+        return Response(salon_profile_data(salon))
 
 
 class SalonServicesView(APIView):
@@ -343,65 +362,19 @@ class SalonServicesView(APIView):
         if salon is None:
             raise Http404("Salon not found")
 
+        # The grouping and the rows live in menu.py, shared with the Expert
+        # Profile screen (its service_groups are these groups, narrowed to
+        # one stylist), so the two screens show one menu.
         categories = salon_categories(salon.tenant_id)
-        services = salon_services(salon)
-
-        # category_0_id, not category_id: the service table has a legacy text
-        # column already named `category`, so inspectdb renamed the real
-        # foreign key rather than colliding with it.
-        #
-        # A category that is not in `categories` (deleted) files the service
-        # under None, with the services that have no category: both are
-        # "Other", and two groups with the same id "other" would draw twice.
-        grouped = {}
-        for svc in services:
-            cat_id = svc.category_0_id if svc.category_0_id in categories else None
-            grouped.setdefault(cat_id, []).append(svc)
-
-        chips = {}
-        groups = []
-
-        for cat_id, svcs in grouped.items():
-            cat = categories.get(cat_id)
-            # A service with no category, or one pointing at a deleted row,
-            # still has to appear: dropping it would silently hide a bookable
-            # service from the menu.
-            if cat is None:
-                cat = {"id": None, "name_en": "Other", "icon": None, "parent_id": None}
-
-            # The parent, as a chip. Shared with the Service Detail screen
-            # (menu.category_chip), so both name the same chip.
-            chip = category_chip(categories, cat_id)
-            chips[chip["id"]] = chip
-
-            groups.append({
-                "id": str(cat["id"]) if cat["id"] else "other",
-                "category_id": chip["id"],
-                "name": cat["name_en"],
-                "services": [self._service(s) for s in svcs],
-            })
+        chips, groups = service_groups(salon_services(salon), categories)
 
         return Response({
-            "service_categories": [{"id": "all", "label": "All"}] + list(chips.values()),
+            "service_categories": [{"id": "all", "label": "All"}] + chips,
             "service_groups": groups,
         })
 
-    @staticmethod
-    def _service(svc) -> dict:
-        # duration_min and duration_max are the SAME number. A real range needs
-        # service_variant rows with differing durations; until the app reads
-        # those, sending one value twice is honest and lets the app collapse
-        # "20 - 20 mins" to "20 mins" itself.
-        return {
-            "id": str(svc.id),
-            "name": svc.name,
-            "description": svc.description,
-            # Shared with the Service Detail screen (menu.service_price): the
-            # two must show the same number.
-            "price": service_price(svc),
-            "duration_min": svc.duration_minutes,
-            "duration_max": svc.duration_minutes,
-        }
+    # The tab's row, still reachable under its old name.
+    _service = staticmethod(service_row)
 
 def stylist_rows(salon, service_ids=None, stages=None):
     """
@@ -423,8 +396,12 @@ def stylist_rows(salon, service_ids=None, stages=None):
         # Someone who covers none of the picked services is left out.
         staff = [s for s in staff if s.id in coverage]
 
+    # Each one's steady day off, from the roster: one read for the whole list.
+    off = days_off_for(salon, [s.id for s in staff])
+
     rows = [
-        _stylist_row(s, coverage[s.id] if service_ids else None) for s in staff
+        _stylist_row(s, coverage[s.id] if service_ids else None, off.get(s.id))
+        for s in staff
     ]
 
     # Rating first, then name, so the list does not reshuffle between
@@ -435,7 +412,40 @@ def stylist_rows(salon, service_ids=None, stages=None):
     return rows
 
 
-def _stylist_row(s, covered=None):
+def days_off_for(salon, staff_ids, snapshot=None):
+    """
+    staff id to that stylist's steady day off at this salon, as text
+    ("Tuesday", "Friday, Saturday"). A stylist with none is not in the answer.
+
+    The rule is roster.py's; this does its two reads: the salon's published
+    weekly hours (the snapshot, unless the caller already has it) and the
+    stylists' shifts at this salon's branch in the roster weeks the rule looks
+    at, counted from TODAY ON THE SALON'S OWN CLOCK.
+
+    One place for every screen that shows a stylist (the Stylists tab, the
+    Expert step, the service detail's experts, the expert profile), so the
+    same stylist has the same day off on all of them.
+
+    Nobody listed reads nothing. A salon with no published hours reads no
+    shifts: without its open days, a closed day cannot be told from a day off.
+    """
+    if not staff_ids:
+        return {}
+
+    if snapshot is None:
+        snapshot = read_snapshot(salon)
+    open_days = roster.open_weekdays(snapshot["HOURS"].get("weekly"))
+    if not open_days:
+        return {}
+
+    tz = timezones.resolve(getattr(salon, "branch_timezone", None), salon.id)
+    first_week, last_week = roster.week_window(datetime.now(tz).date())
+    return roster.days_off(
+        roster_shift_days(salon, staff_ids, first_week, last_week), open_days,
+    )
+
+
+def _stylist_row(s, covered=None, day_off=None):
     row = {
         "id": str(s.id),
         "tenant_id": str(s.tenant_id),
@@ -454,7 +464,10 @@ def _stylist_row(s, covered=None):
         "rating": None,
         "review_count": None,
         "years_experience": None,
-        "day_off": None,
+        # Worked out from the roster (days_off_for), null when it cannot be
+        # told. Display text: whether a day can be booked is the Time step's
+        # question.
+        "day_off": day_off,
     }
 
     # Only when the caller asked about services. `covered` is a list, possibly
@@ -561,7 +574,10 @@ class SalonStylistsView(APIView):
 @extend_schema(
     parameters=[
         OpenApiParameter("tenant_id", str, required=True, description="Tenant UUID"),
-        OpenApiParameter("branch_id", str, required=False, description="Branch UUID"),
+        OpenApiParameter(
+            "branch_id", str, required=True,
+            description="Branch UUID: the salon whose stylists are listed.",
+        ),
     ],
 )
 class StylistListView(APIView):
@@ -573,8 +589,12 @@ class StylistListView(APIView):
         except ParamError as exc:
             raise ValidationError({exc.param: [exc.message]}) from exc
 
+        # The salon OF THAT BRANCH, not the tenant's first one: the list is
+        # one salon's own stylists (salon_stylists), so in a business with two
+        # salons the first one would answer with the wrong people.
         salon = discoverable_salons().filter(
             tenant_id=params["tenant_id"],
+            branch_id=params["branch_id"],
         ).first()
         if salon is None:
             raise Http404("Salon not found")
@@ -585,9 +605,19 @@ class StylistListView(APIView):
         
 @extend_schema(
     parameters=[
-        OpenApiParameter("tenant_id", str, required=True),
-        OpenApiParameter("branch_id", str, required=False),
-        OpenApiParameter("category_id", str, required=False),
+        OpenApiParameter("tenant_id", str, required=True, description="Tenant UUID"),
+        OpenApiParameter(
+            "branch_id", str, required=False,
+            description=(
+                "Branch UUID: the salon whose menu is answered, at that "
+                "branch's own prices. Without it, the tenant's first public "
+                "salon. A branch that is no public salon of the tenant is 404."
+            ),
+        ),
+        OpenApiParameter(
+            "category_id", str, required=False,
+            description="Only the groups of this chip, or this one group.",
+        ),
     ],
 )
 class ServiceListView(APIView):
@@ -599,9 +629,15 @@ class ServiceListView(APIView):
         except ParamError as exc:
             raise ValidationError({exc.param: [exc.message]}) from exc
 
-        salon = discoverable_salons().filter(
-            tenant_id=params["tenant_id"],
-        ).first()
+        # With a branch, the salon OF THAT BRANCH, as GET /stylists finds its
+        # own: a price is a branch's own (menu.service_price), so in a
+        # business with two salons the tenant's first one would answer with
+        # the wrong prices. Without a branch the lookup is what it always was.
+        wanted = {"tenant_id": params["tenant_id"]}
+        if params["branch_id"]:
+            wanted["branch_id"] = params["branch_id"]
+
+        salon = discoverable_salons().filter(**wanted).first()
         if salon is None:
             raise Http404("Salon not found")
 
@@ -942,6 +978,11 @@ class DiscoverStoryListView(ListAPIView):
 
 
 
+# Saving a heart on a stylist the app cannot show. Written for the customer:
+# the app shows `detail`.
+NO_STYLIST_TO_SAVE = "This stylist is no longer available."
+
+
 @extend_schema_view(
     get=extend_schema(
         parameters=[
@@ -958,18 +999,79 @@ class DiscoverStoryListView(ListAPIView):
         parameters=[],
         request={
             "application/json": {
-                "type": "object",
-                "properties": {"salon_id": {"type": "string", "format": "uuid"}},
-                "required": ["salon_id"],
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "title": "A salon",
+                        "properties": {"salon_id": {"type": "string", "format": "uuid"}},
+                        "required": ["salon_id"],
+                    },
+                    {
+                        "type": "object",
+                        "title": "A stylist",
+                        "properties": {"stylist_id": {"type": "string", "format": "uuid"}},
+                        "required": ["stylist_id"],
+                    },
+                ]
             }
         },
-        responses={200: None},
+        examples=[
+            OpenApiExample(
+                "The heart on a salon",
+                value={"salon_id": "c6c248ab-f2cd-4f12-a31e-243c6e64b3b5"},
+                request_only=True,
+            ),
+            OpenApiExample(
+                "The heart on a stylist",
+                value={"stylist_id": "04e58d74-04db-4088-bd97-e3ff765cc322"},
+                request_only=True,
+            ),
+        ],
+        responses={
+            200: OpenApiResponse(
+                response={
+                    "type": "object",
+                    "properties": {"is_favorite": {"type": "boolean"}},
+                    "required": ["is_favorite"],
+                },
+                description="Which way the heart went: true = saved now, false = unsaved now.",
+            ),
+            401: OpenApiResponse(response=_OUR_ENVELOPE, description="No token, or a bad one."),
+            404: OpenApiResponse(
+                response=_OUR_ENVELOPE,
+                description=(
+                    "Saving a stylist the app cannot show (one who left, or an "
+                    "id nobody has). Never on unsave, and never for a salon."
+                ),
+                examples=[
+                    OpenApiExample(
+                        "The stylist is gone",
+                        value={
+                            "detail": NO_STYLIST_TO_SAVE,
+                            "code": "not_found",
+                            "errors": [
+                                {"field": None, "code": "not_found", "message": NO_STYLIST_TO_SAVE}
+                            ],
+                        },
+                    ),
+                ],
+            ),
+            422: OpenApiResponse(
+                response=_OUR_ENVELOPE,
+                description=(
+                    "No id (`salon_id`: This field is required.), an id that "
+                    "is not a UUID (`invalid`, on the field that was sent), or "
+                    "both ids at once (`one_id_only`)."
+                ),
+            ),
+        },
     ),
 )
 class FavouriteListView(ListAPIView):
     """
     GET  /api/v1/favourite  the customer's saved salons, paginated
     POST /api/v1/favourite  the heart, a toggle, body {"salon_id": "..."}
+                            or {"stylist_id": "..."}
 
     NOT inheriting SalonDiscoveryListView, although it started that way and
     the filtering below is close to a copy of it. Inheriting also inherits
@@ -1049,28 +1151,87 @@ class FavouriteListView(ListAPIView):
 
     def post(self, request, *args, **kwargs):
         """
-        Tap the heart. Already saved means remove, otherwise add.
+        Tap the heart, on a salon or on a stylist. Already saved means
+        remove, otherwise add.
 
         A TOGGLE rather than separate add and delete endpoints, because that
         is what the heart button is. The response says which way it went, so
         the app sets the icon from the answer instead of guessing.
 
+        Send exactly one id: `salon_id` for a salon, `stylist_id` for a
+        stylist. Both at once is a 422 (`one_id_only`). An id that is not a
+        UUID is a 422 (`invalid`) on that field.
+
         The salon is not checked for existence: that is one extra query on
-        every tap to catch an id the app got from this same API.
+        every tap to catch an id the app got from this same API. A stylist IS
+        checked, when saving only: one the app cannot show answers 404.
         """
-        salon_id = request.data.get("salon_id")
+        # A body that is not a JSON object (a list, a bare string) has no id.
+        body = request.data if isinstance(request.data, dict) else {}
+        salon_id = body.get("salon_id")
+        stylist_id = body.get("stylist_id")
+
+        if salon_id and stylist_id:
+            # No field to blame: it is the pair that is wrong.
+            raise ValidationError({
+                "non_field_errors": [
+                    ErrorDetail("Send salon_id or stylist_id, not both.", code="one_id_only")
+                ]
+            })
+        if stylist_id:
+            return self._stylist_heart(request.user, stylist_id)
+
+        # Neither id answers as it always has: `salon_id` is required.
         if not salon_id:
             raise ValidationError({"salon_id": ["This field is required."]})
 
+        # Checked here, before the query. Left to the table's UUID column,
+        # text it cannot read raised Django's own ValidationError, which the
+        # error handler does not know: a 500 for a typo.
+        storefront_id = body_uuid(salon_id)
+        if storefront_id is None:
+            raise _invalid(ParamError("salon_id", "Must be a valid UUID."))
+
         deleted, _ = Favourite.objects.filter(
             account=request.user,
-            storefront_id=salon_id,
+            storefront_id=storefront_id,
         ).delete()
 
         if deleted:
             return Response({"is_favorite": False})
 
-        Favourite.objects.create(account=request.user, storefront_id=salon_id)
+        # get_or_create, not create. Two taps at once both find nothing to
+        # delete, and the slower one's create hit the unique rule: a 500 on a
+        # double tap. Whichever tap wrote the row, the salon is saved now, and
+        # that is the answer.
+        Favourite.objects.get_or_create(account=request.user, storefront_id=storefront_id)
+        return Response({"is_favorite": True})
+
+    @staticmethod
+    def _stylist_heart(account, stylist_id):
+        """The same toggle, on a stylist: its own table (favourite_stylist)."""
+        staff_id = body_uuid(stylist_id)
+        if staff_id is None:
+            raise _invalid(ParamError("stylist_id", "Must be a valid UUID."))
+
+        # Unsave first, and without a look at the stylist: a heart on someone
+        # who has left since must still come off.
+        deleted, _ = FavouriteStylist.objects.filter(
+            account=account,
+            staff_id=staff_id,
+        ).delete()
+
+        if deleted:
+            return Response({"is_favorite": False})
+
+        # Unlike a salon, a stylist IS looked up before saving. The customer
+        # is not at a salon here, so it is "a stylist the app can show at
+        # some salon": a heart on anyone else could never be seen again.
+        if not stylist_is_showable(staff_id):
+            raise NotFound(NO_STYLIST_TO_SAVE)
+
+        # get_or_create for the same reason as above: a double tap.
+        FavouriteStylist.objects.get_or_create(account=account, staff_id=staff_id)
         return Response({"is_favorite": True})
 
 
