@@ -19,8 +19,13 @@ BEGIN TRANSACTION READ ONLY;
 SET LOCAL search_path = public;
 
 WITH salon AS (
+    -- The weekly hours are the LIVE PUBLISHED version's (storefront
+    -- .live_version_id), the very row the app reads (snapshot.read_snapshot).
+    -- Hours published again after a run give another answer: the day off
+    -- section prints when they were last published.
     SELECT sf.id AS salon_id, sf.tenant_id, sf.branch_id,
-           (sv.snapshot -> 'HOURS' -> 'weekly')::jsonb AS weekly
+           (sv.snapshot -> 'HOURS' -> 'weekly')::jsonb AS weekly,
+           sv.published_at AS hours_published_at
     FROM storefront sf
     LEFT JOIN storefront_version sv ON sv.id = sf.live_version_id
     WHERE sf.visibility = 'PUBLIC'
@@ -255,7 +260,12 @@ answer (ord, section, what, value) AS (
     UNION ALL SELECT 43, 'D stories', 'live stories created by a stylist login', COUNT(*)::text FROM live_story ls
         WHERE EXISTS (SELECT 1 FROM stylist st WHERE st.user_id = ls.created_by_id)
 
-    -- E. Day off, from the roster (the 4 weeks that end with this week)
+    -- E. Day off, from the roster (the 4 weeks that end with this week), only
+    --    among the days a salon is open in its live published hours. For one
+    --    stylist in detail, run expert_profile_day_off_check.sql.
+    UNION ALL SELECT 48, 'E day off', 'rule: open days from the live published hours, 4 roster weeks, 2 rostered weeks minimum', 'yes'
+    UNION ALL SELECT 49, 'E day off', 'live hours last published (UTC), the newest salon',
+        COALESCE(TO_CHAR(MAX(hours_published_at), 'YYYY-MM-DD HH24:MI'), 'never') FROM salon
     UNION ALL SELECT 50, 'E day off', 'stylists whose home branch is a public salon', COUNT(*)::text FROM roster
         WHERE has_home_salon
     UNION ALL SELECT 51, 'E day off', 'of those: the salon has no published hours (day off stays null)', COUNT(*)::text FROM roster

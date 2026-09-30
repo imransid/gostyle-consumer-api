@@ -675,7 +675,7 @@ psql -h <DB_HOST> -p <DB_PORT> -U <DB_USER> -d <DB_NAME> \
 | B branch | Businesses with 2 or more public salons, and salon + stylist pairs where the stylist's home branch is another branch or none | Q3: switch or no switch for E0 |
 | C photos | Photos tagged with a stylist, by kind and file type, how many the app could show | Q9, Q10 (how many rings light up) |
 | D stories | Live stories, and whether any can be tied to a stylist | background for Q10 |
-| E day off | With Q7's own rule (4 roster weeks, only days the home salon is open): how many stylists get no day off, one, several; how many have too little roster to tell | Q7: the final yes |
+| E day off | With Q7's own rule (4 roster weeks, only days the home salon is open in its live published hours): how many stylists get no day off, one, several; how many have too little roster to tell. It also prints when the live hours were last published | Q7: the final yes |
 | F price | Whether any salon uses a price by stylist | the note in 2.2 |
 | G services | Stylists who can do no service (their menu would be empty), and the spread | how many profiles open with `service_groups: []` |
 
@@ -702,6 +702,39 @@ exactly as before.
 
 (The first log check said "no call" because it read the wrong file. E0's
 commit message `28514e7` repeats that; the line above is the right one.)
+
+**After the deploy (Rafa, 2026-09-30): `day_off` works as designed.**
+
+| What | Live |
+|---|---|
+| Stylists with a `day_off` | 1 of 7: one stylist at Romoni Studio, "Friday, Saturday" |
+| The other 6 | `null` |
+| The code's answer and section E's, stylist by stylist (`scripts/sql/expert_profile_day_off_check.sql`) | the same for all 7 |
+| Newest shift written | 2026-09-18, so no roster changed on the day |
+
+The morning's run of section E had counted 3 stylists with a steady day off,
+and the merge message (`622ca19`) says "about 3 of the 7". That number was
+wrong for the rule. The two extra are two stylists at Look Change who work
+Monday to Saturday and never on Sunday. Look Change's live published hours
+close on Sunday, and **a day the salon is closed is not a day off** (Q7). So
+by the rule they have none, and `null` is the right answer.
+
+Checked where section E reads the weekly hours: from the live published
+version (`storefront.live_version_id`, then `storefront_version.snapshot`,
+`HOURS.weekly`), the very row the app reads (`snapshot.read_snapshot`). So the
+source was never different. Run now, section E and the code agree. What the
+morning's run saw that made it count Sunday is not known: either the copy of
+the file on the server was the first draft, which did not look at opening
+hours at all, or Look Change published its hours again later that day.
+Section E now prints its rule and when the live hours were last published, so
+either case shows in its output.
+
+The question is closed. Nothing to fix in the code.
+
+**One stylist's day off in detail.** `scripts/sql/expert_profile_day_off_check.sql`,
+read only, run the same way. For every listed stylist: each roster week with
+the weekdays that have a shift, how many of those shifts the code counts, the
+salon's open days, and the day off the code gives next to section E's.
 
 **booking-api switches.** The line that reads them, printing only the two:
 
