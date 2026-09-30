@@ -31,6 +31,10 @@ E7: day_off, worked out from the roster by one rule (roster.py), on the
 profile and in every stylist row (the Stylists tab, the Expert step, the
 service detail's experts).
 
+E8: the fields that are empty for now, the contract's key order, and the
+OpenAPI shape and example checked against what the view really answers. (The
+FE doc's own check is in test_favourite.py, beside the real heart.)
+
 The querysets are built and inspected, never run: the platform's tables are
 unmanaged, so they do not exist in the test database. The views are called
 with their selectors mocked.
@@ -61,6 +65,7 @@ from apps.salons import (
     service_detail_views,
     views,
 )
+from apps.salons.expert_profile_serializers import EXAMPLE
 from apps.salons.expert_profile_views import NO_SALON, NO_STYLIST, SalonExpertProfileView
 from apps.salons.service_detail_serializers import (
     EXAMPLE as SERVICE_DETAIL_EXAMPLE,
@@ -390,14 +395,15 @@ class Seams:
             expert_profile_views, "is_favourite_stylist", return_value=favourite,
         ))
 
-    def call(self, path=None, *, salon=True, found=True, favourite=False,
-             services=(), covered=(), salon_page=None, media=(), day_off=None,
-             **headers):
+    READS = ("salon", "found", "person", "services", "covered", "categories",
+             "salon_page", "media", "day_off")
+
+    def call(self, path=None, *, favourite=False, **kwargs):
+        """GET the profile. Any of READS goes to the mocks; the rest are headers."""
+        reads = {name: kwargs.pop(name) for name in self.READS if name in kwargs}
         with ExitStack() as stack:
-            self.seams(stack, salon=salon, found=found, favourite=favourite,
-                       services=services, covered=covered, salon_page=salon_page,
-                       media=media, day_off=day_off)
-            return self.client.get(path or url(), **headers)
+            self.seams(stack, favourite=favourite, **reads)
+            return self.client.get(path or url(), **kwargs)
 
 
 class RouteTests(Seams, SimpleTestCase):
@@ -623,15 +629,6 @@ class OpenApiTests(Seams, SimpleTestCase):
     def test_the_answers_are_200_401_and_404(self):
         self.assertEqual(set(self.operation()["responses"]), {"200", "401", "404"})
 
-    def test_the_200_has_exactly_the_fields_the_view_answers(self):
-        content = self.operation()["responses"]["200"]["content"]["application/json"]
-        self.assertEqual(list(content["schema"]["properties"]), list(self.call().json()))
-
-    def test_the_200_example_has_the_answer_s_keys(self):
-        content = self.operation()["responses"]["200"]["content"]["application/json"]
-        example = content["examples"]["AStylistOfThisSalon"]["value"]
-        self.assertEqual(list(example), list(self.call().json()))
-
     def test_the_404_example_is_the_real_body(self):
         example = self.operation()["responses"]["404"]["content"]["application/json"]
         real = self.call(found=False).json()
@@ -688,10 +685,14 @@ class CoreFieldsTests(SimpleTestCase):
             "name": "Liam Johnson",
             "title": "Senior Barber",
             "role": "Barber and Grooming Expert",
+            "bio": None,               # E8
             "avatar_url": None,
             "rating": None,
             "review_count": 0,
+            "years_experience": None,  # E8
+            "price_level": None,       # E8
             "day_off": None,           # E7
+            "is_network_member": False,  # E8
         })
 
     def test_the_ids_are_strings(self):
@@ -726,8 +727,8 @@ class CoreFieldsTests(SimpleTestCase):
         # own steps, years_experience and day_off): not sent from here.
         self.assertEqual(
             list(self.fields()),
-            ["id", "salon_id", "name", "title", "role", "avatar_url", "rating", "review_count",
-             "day_off"],
+            ["id", "salon_id", "name", "title", "role", "bio", "avatar_url", "rating",
+             "review_count", "years_experience", "price_level", "day_off", "is_network_member"],
         )
 
 
@@ -741,10 +742,14 @@ class PersonFieldsTests(Seams, SimpleTestCase):
             "name": "Liam Johnson",
             "title": "Senior Barber",
             "role": "Barber and Grooming Expert",
+            "bio": None,               # E8
             "avatar_url": None,
             "rating": None,
             "review_count": 0,
+            "years_experience": None,  # E8
+            "price_level": None,       # E8
             "day_off": None,           # E7
+            "is_network_member": False,  # E8
             "is_favorite": False,      # E3b
             "has_story": False,        # E6
             "media": [],               # E6
@@ -1396,28 +1401,6 @@ class ServiceGroupsMatchTheTabTests(RealSkillRules, SimpleTestCase):
         )
 
 
-class ServiceGroupsOpenApiTests(Seams, SimpleTestCase):
-    """The 200's shape names the groups and their rows."""
-
-    def shape(self):
-        schema = SchemaGenerator().get_schema(request=None, public=True)
-        operation = schema["paths"]["/api/v1/salon/{salon_id}/stylist/{stylist_id}"]["get"]
-        content = operation["responses"]["200"]["content"]["application/json"]
-        return content["schema"]["properties"]["service_groups"], content["examples"]
-
-    def test_a_group_and_a_row_have_exactly_the_answer_s_keys(self):
-        groups, _ = self.shape()
-        (one,) = self.call(services=MENU, covered=[TRIM]).json()["service_groups"]
-        self.assertEqual(list(groups["items"]["properties"]), list(one))
-        rows = groups["items"]["properties"]["services"]
-        self.assertEqual(list(rows["items"]["properties"]), list(one["services"][0]))
-
-    def test_the_example_has_a_group(self):
-        _, examples = self.shape()
-        (one,) = examples["AStylistOfThisSalon"]["value"]["service_groups"][:1]
-        self.assertEqual(list(one), ["id", "name", "services"])
-
-
 # ---------------------------------------------------------------------------
 # E5: the salon block. A salon row as `salon_profile` gives one, its
 # published snapshot, and a clock.
@@ -1739,32 +1722,6 @@ class SalonBlockMatchesTheSalonPageTests(SimpleTestCase):
         self.assertEqual(pages["closed by hand"]["hours_today"], "Closed")
 
 
-class SalonBlockOpenApiTests(Seams, SimpleTestCase):
-    """The 200's shape names the salon block."""
-
-    def shape(self):
-        schema = SchemaGenerator().get_schema(request=None, public=True)
-        operation = schema["paths"]["/api/v1/salon/{salon_id}/stylist/{stylist_id}"]["get"]
-        content = operation["responses"]["200"]["content"]["application/json"]
-        return content["schema"]["properties"]["salon"], content["examples"]
-
-    def test_the_block_has_exactly_the_answer_s_keys(self):
-        block, _ = self.shape()
-        self.assertEqual(list(block["properties"]), list(self.call().json()["salon"]))
-
-    def test_what_can_be_null_says_so(self):
-        block, _ = self.shape()
-        for key in ("is_open", "hours_today", "latitude", "longitude"):
-            with self.subTest(key=key):
-                self.assertIs(block["properties"][key]["nullable"], True)
-
-    def test_the_example_has_the_block(self):
-        _, examples = self.shape()
-        self.assertEqual(
-            list(examples["AStylistOfThisSalon"]["value"]["salon"]), list(SALON_BLOCK),
-        )
-
-
 # ---------------------------------------------------------------------------
 # E6: media, media_count, has_story
 # ---------------------------------------------------------------------------
@@ -1964,48 +1921,12 @@ class MediaFieldTests(Seams, SimpleTestCase):
         body = self.call(media=[shot(1, "video/mp4"), shot(2)]).json()
         self.assertEqual((body["media"], body["media_count"]), ([tile(2)], 1))
 
-    def test_the_answer_s_keys_so_far_in_the_contract_s_order(self):
-        self.assertEqual(list(self.call().json()), [
-            "id", "salon_id", "name", "title", "role", "avatar_url", "rating",
-            "review_count", "day_off", "is_favorite", "has_story", "media",
-            "media_count", "salon", "service_groups",
-        ])
+    def test_the_answer_s_keys_in_the_contract_s_order(self):
+        self.assertEqual(list(self.call().json()), CONTRACT_KEYS)
 
     def test_a_404_never_reads_the_photos(self):
         self.call(found=False)
         self.media_lookup.assert_not_called()
-
-
-class MediaOpenApiTests(Seams, SimpleTestCase):
-    """The 200's shape names the media fields."""
-
-    def shape(self):
-        schema = SchemaGenerator().get_schema(request=None, public=True)
-        operation = schema["paths"]["/api/v1/salon/{salon_id}/stylist/{stylist_id}"]["get"]
-        content = operation["responses"]["200"]["content"]["application/json"]
-        return content["schema"]["properties"], content["examples"]["AStylistOfThisSalon"]["value"]
-
-    def test_an_item_has_exactly_the_answer_s_keys(self):
-        properties, _ = self.shape()
-        (item,) = self.call(media=[shot(1)]).json()["media"]
-        self.assertEqual(list(properties["media"]["items"]["properties"]), list(item))
-
-    def test_type_is_image_or_video(self):
-        properties, _ = self.shape()
-        self.assertEqual(
-            properties["media"]["items"]["properties"]["type"]["enum"], ["image", "video"],
-        )
-
-    def test_the_count_and_the_flag(self):
-        properties, _ = self.shape()
-        self.assertEqual(properties["media_count"]["type"], "integer")
-        self.assertEqual(properties["has_story"]["type"], "boolean")
-
-    def test_the_example_is_consistent(self):
-        _, example = self.shape()
-        self.assertEqual(list(example["media"][0]), ["id", "type", "url", "thumbnail_url"])
-        self.assertGreaterEqual(example["media_count"], len(example["media"]))
-        self.assertIs(example["has_story"], example["media_count"] > 0)
 
 
 # ---------------------------------------------------------------------------
@@ -2475,12 +2396,9 @@ class DayOffDocumentedTests(Seams, SimpleTestCase):
 
     def test_the_profile_s_shape_has_a_nullable_text(self):
         schema = SchemaGenerator().get_schema(request=None, public=True)
-        operation = schema["paths"]["/api/v1/salon/{salon_id}/stylist/{stylist_id}"]["get"]
-        content = operation["responses"]["200"]["content"]["application/json"]
-        self.assertEqual(
-            content["schema"]["properties"]["day_off"], {"type": "string", "nullable": True},
-        )
-        self.assertIn("day_off", content["examples"]["AStylistOfThisSalon"]["value"])
+        day_off = schema["components"]["schemas"]["SalonExpertProfileResponse"]["properties"]["day_off"]
+        self.assertEqual((day_off["type"], day_off["nullable"]), ("string", True))
+        self.assertIn("roster", day_off["description"])
 
     def test_the_service_detail_s_expert_row_says_where_it_comes_from(self):
         help_text = SalonServiceDetailExpertSerializer().fields["day_off"].help_text
@@ -2490,3 +2408,250 @@ class DayOffDocumentedTests(Seams, SimpleTestCase):
     def test_the_service_detail_s_example_shows_one(self):
         shown = [expert["day_off"] for expert in SERVICE_DETAIL_EXAMPLE["experts"]]
         self.assertEqual(shown, [None, "Tuesday"])
+
+
+# ---------------------------------------------------------------------------
+# E8: empty for now, the contract's key order
+# ---------------------------------------------------------------------------
+
+# The contract's own example (docs/expert-profile-fe-contract.md, section 2),
+# key by key, in its order.
+CONTRACT_KEYS = [
+    "id", "salon_id", "name", "title", "role", "bio", "avatar_url", "rating",
+    "review_count", "years_experience", "price_level", "day_off",
+    "is_network_member", "is_favorite", "has_story", "media", "media_count",
+    "salon", "service_groups",
+]
+CONTRACT_MEDIA_KEYS = ["id", "type", "url", "thumbnail_url"]
+CONTRACT_SALON_KEYS = ["id", "name", "is_open", "hours_today", "latitude", "longitude"]
+CONTRACT_GROUP_KEYS = ["id", "name", "services"]
+CONTRACT_SERVICE_KEYS = ["id", "name", "description", "price", "duration_min", "duration_max"]
+
+
+class EmptyForNowTests(Seams, SimpleTestCase):
+    """No data for these yet; the contract allows each empty (audit section 5)."""
+
+    def test_bio_years_and_price_level_are_null(self):
+        body = self.call().json()
+        for key in ("bio", "years_experience", "price_level"):
+            with self.subTest(key=key):
+                self.assertIn(key, body)
+                self.assertIsNone(body[key])
+
+    def test_is_network_member_is_false_never_null(self):
+        self.assertIs(self.call().json()["is_network_member"], False)
+
+    def test_they_are_empty_whatever_else_the_stylist_has(self):
+        body = self.call(
+            day_off="Tuesday", favourite=True, media=[shot(1)], services=MENU, covered=[TRIM],
+        ).json()
+        self.assertEqual(
+            (body["bio"], body["years_experience"], body["price_level"], body["is_network_member"]),
+            (None, None, None, False),
+        )
+
+    def test_years_experience_is_the_list_row_s_own(self):
+        # Null in the list today. The day the list learns it, this follows.
+        row = views._stylist_row(stylist())
+        self.assertIsNone(row["years_experience"])
+        row["years_experience"] = 15
+        salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT, branch_id=BRANCH)
+        self.assertEqual(expert_profile.core_fields(salon, row)["years_experience"], 15)
+
+
+class ContractShapeTests(Seams, SimpleTestCase):
+    """The answer has the contract's keys, in its order, at every level."""
+
+    def full(self):
+        return self.call(
+            day_off="Tuesday", media=[shot(1)], services=MENU, covered=[TRIM],
+        ).json()
+
+    def test_the_nineteen_keys_in_order(self):
+        self.assertEqual(len(CONTRACT_KEYS), 19)
+        self.assertEqual(list(self.full()), CONTRACT_KEYS)
+        # The same with nothing to show.
+        self.assertEqual(list(self.call().json()), CONTRACT_KEYS)
+
+    def test_a_media_item(self):
+        self.assertEqual(list(self.full()["media"][0]), CONTRACT_MEDIA_KEYS)
+
+    def test_the_salon(self):
+        self.assertEqual(list(self.full()["salon"]), CONTRACT_SALON_KEYS)
+
+    def test_a_group_and_its_rows(self):
+        (one,) = self.full()["service_groups"]
+        self.assertEqual(list(one), CONTRACT_GROUP_KEYS)
+        self.assertEqual(list(one["services"][0]), CONTRACT_SERVICE_KEYS)
+
+
+# ---------------------------------------------------------------------------
+# E8: the example and the OpenAPI shape, against what the view answers
+# ---------------------------------------------------------------------------
+
+def example_rows():
+    """
+    The rows EXAMPLE was answered from: the seeded salon's Liam Johnson, its
+    menu and categories, what he can do, his day off, and seven gallery photos
+    tagged with him. So a test can ask the view again.
+    """
+    haircut, cuts, beard = (uuid.UUID(f"55555555-5555-5555-5555-55555555555{n}") for n in (1, 2, 3))
+
+    def category(category_id, name, parent):
+        return {"id": category_id, "name_en": name, "slug": None, "icon": "scissors",
+                "parent_id": parent, "sort_order": 0}
+
+    def service(last, name, category_id, price_minor, minutes, branch_price_minor=None):
+        return types.SimpleNamespace(
+            id=uuid.UUID(f"66666666-6666-6666-6666-66666666666{last}"), tenant_id=TENANT,
+            name=name, description=f"{name} at Iron Razor.", price_minor=price_minor,
+            branch_price_minor=branch_price_minor, duration_minutes=minutes,
+            category_0_id=category_id,
+        )
+
+    # The tab's order: by name.
+    shave = service(2, "Hot Towel Shave", beard, 26000, 35)
+    fade = service(1, "Modern Fade", cuts, 21500, 25)
+    scalp = service(3, "Scalp Treatment", None, 18000, 20, branch_price_minor=15000)
+    gents = service(0, "The Gentleman's Cut", cuts, 19900, 30)
+
+    host = (f"https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/{TENANT}"
+            f"/storefronts/{SALON}/media")
+    # Newest first, as the selector reads them.
+    photos = ["kids-cut", "taper", "crew-cut", "classic-side-part", "hot-towel-shave",
+              "beard-line-up", "skin-fade"]
+    return dict(
+        person=stylist(),      # Liam Johnson, Senior Barber
+        salon_page={
+            "id": str(SALON),
+            "name": "The Iron Razor Barbershop",
+            "is_open": True,
+            "hours_today": "10:00 AM - 10:00 PM",
+            "location": {
+                "address": "Shop 4, Al Wasl Road, Jumeirah 1, Dubai",
+                "latitude": 25.2213,
+                "longitude": 55.2621,
+                "map_url": "https://maps.google.com/?q=25.2213,55.2621",
+            },
+        },
+        day_off="Tuesday",
+        media=[
+            {"id": uuid.UUID(f"8e2b1f10-0000-4000-8000-{7 - n:012d}"),
+             "url": f"{host}/{name}.jpg", "mime_type": "image/jpeg"}
+            for n, name in enumerate(photos)
+        ],
+        services=[shave, fade, scalp, gents],
+        covered=[shave, gents],
+        categories={
+            haircut: category(haircut, "Haircut and Styling", None),
+            cuts: category(cuts, "Precision Cuts", haircut),
+            beard: category(beard, "Beard Care", haircut),
+        },
+    )
+
+
+class ExampleIsRealTests(Seams, SimpleTestCase):
+    """
+    EXAMPLE (the OpenAPI example and docs/EXPERT_PROFILE_API.md's) was taken
+    from the running server. Asked again from the same rows, the view must
+    answer it exactly, or the documents have drifted from the code.
+    """
+
+    def test_the_view_answers_the_example(self):
+        response = self.call(**example_rows())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), EXAMPLE)
+
+    def test_in_the_same_key_order_at_every_level(self):
+        body = self.call(**example_rows()).json()
+        self.assertEqual(list(body), list(EXAMPLE))
+        self.assertEqual(list(body["media"][0]), list(EXAMPLE["media"][0]))
+        self.assertEqual(list(body["salon"]), list(EXAMPLE["salon"]))
+        self.assertEqual(list(body["service_groups"][0]), list(EXAMPLE["service_groups"][0]))
+
+    def test_the_example_has_the_contract_s_keys_at_every_level(self):
+        self.assertEqual(list(EXAMPLE), CONTRACT_KEYS)
+        self.assertEqual(list(EXAMPLE["media"][0]), CONTRACT_MEDIA_KEYS)
+        self.assertEqual(list(EXAMPLE["salon"]), CONTRACT_SALON_KEYS)
+        self.assertEqual(list(EXAMPLE["service_groups"][0]), CONTRACT_GROUP_KEYS)
+        self.assertEqual(
+            list(EXAMPLE["service_groups"][0]["services"][0]), CONTRACT_SERVICE_KEYS,
+        )
+
+    def test_the_example_shows_the_things_worth_showing(self):
+        # Five of seven photos, a day off, two groups: not an empty answer.
+        self.assertEqual((len(EXAMPLE["media"]), EXAMPLE["media_count"]), (5, 7))
+        self.assertEqual(EXAMPLE["day_off"], "Tuesday")
+        self.assertEqual(len(EXAMPLE["service_groups"]), 2)
+        self.assertIs(EXAMPLE["is_favorite"], False)       # asked as a guest
+
+
+class ShapeOpenApiTests(Seams, SimpleTestCase):
+    """The route's OpenAPI shape describes exactly what the view answers."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.schema = SchemaGenerator().get_schema(request=None, public=True)
+
+    def component(self, name):
+        return self.schema["components"]["schemas"][name]
+
+    def content(self):
+        operation = self.schema["paths"]["/api/v1/salon/{salon_id}/stylist/{stylist_id}"]["get"]
+        return operation["responses"]["200"]["content"]["application/json"]
+
+    def test_the_200_is_the_response_shape_with_the_example(self):
+        content = self.content()
+        self.assertEqual(content["schema"]["$ref"], "#/components/schemas/SalonExpertProfileResponse")
+        self.assertEqual(content["examples"]["AStylistOfThisSalon"]["value"], EXAMPLE)
+
+    def test_the_shape_has_exactly_the_fields_the_view_answers(self):
+        answer = self.call(**example_rows()).json()
+        self.assertEqual(list(self.component("SalonExpertProfileResponse")["properties"]), list(answer))
+        self.assertEqual(list(self.component("SalonExpertProfileResponse")["properties"]), CONTRACT_KEYS)
+
+    def test_the_nested_shapes_have_exactly_the_example_s_fields(self):
+        group = EXAMPLE["service_groups"][0]
+        for name, sample in (("SalonExpertProfileMedia", EXAMPLE["media"][0]),
+                             ("SalonExpertProfileSalon", EXAMPLE["salon"]),
+                             ("SalonExpertProfileServiceGroup", group),
+                             ("SalonExpertProfileService", group["services"][0])):
+            with self.subTest(name=name):
+                self.assertEqual(list(self.component(name)["properties"]), list(sample))
+
+    def test_a_service_row_is_the_services_tab_s_row(self):
+        self.assertEqual(
+            list(self.component("SalonExpertProfileService")["properties"]),
+            list(menu.service_row(TRIM)),
+        )
+
+    def test_what_can_be_null_says_so_and_nothing_else_does(self):
+        def nullable(component):
+            return {name for name, field in self.component(component)["properties"].items()
+                    if field.get("nullable")}
+        self.assertEqual(
+            nullable("SalonExpertProfileResponse"),
+            {"name", "title", "role", "bio", "avatar_url", "rating", "years_experience",
+             "price_level", "day_off"},
+        )
+        self.assertEqual(
+            nullable("SalonExpertProfileSalon"),
+            {"name", "is_open", "hours_today", "latitude", "longitude"},
+        )
+        self.assertEqual(nullable("SalonExpertProfileMedia"), {"thumbnail_url"})
+        self.assertEqual(nullable("SalonExpertProfileService"), {"description"})
+
+    def test_media_type_is_image_or_video(self):
+        # drf-spectacular files a choice under its own component.
+        kind = self.component("SalonExpertProfileMedia")["properties"]["type"]
+        (ref,) = [part["$ref"] for part in kind["allOf"]]
+        self.assertEqual(self.component(ref.rsplit("/", 1)[1])["enum"], ["image", "video"])
+
+    def test_the_types_of_the_answer(self):
+        properties = self.component("SalonExpertProfileResponse")["properties"]
+        self.assertEqual(properties["review_count"]["type"], "integer")
+        self.assertEqual(properties["media_count"]["type"], "integer")
+        for flag in ("is_network_member", "is_favorite", "has_story"):
+            with self.subTest(flag=flag):
+                self.assertEqual(properties[flag]["type"], "boolean")

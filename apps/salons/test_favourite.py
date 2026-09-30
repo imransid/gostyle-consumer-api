@@ -14,14 +14,21 @@ E3b: the stylist heart, `{"stylist_id": "..."}` on the same route, saved in
 its own table (favourite_stylist), and `is_favorite` on the expert profile.
 Whether a stylist is one the app can show is read from the platform's tables,
 which the test database does not have, so that one lookup is mocked.
+
+E8: docs/EXPERT_PROFILE_API.md, the app team's guide. Every JSON block in it
+is asked again from the code here, beside the real heart.
 """
 
 import importlib
+import json
+import re
 import types
+import unittest
 import uuid
 from contextlib import ExitStack
 from unittest import mock
 
+from django.conf import settings
 from django.db import IntegrityError, migrations, transaction
 from django.db.models.query import QuerySet
 from django.test import SimpleTestCase, TestCase
@@ -31,7 +38,8 @@ from rest_framework.test import APIClient
 from apps.accounts.models import ConsumerAccount, Favourite, FavouriteStylist
 from apps.accounts.services import tokens_for
 from apps.salons import views
-from apps.salons.test_expert_profile import mock_platform_reads
+from apps.salons.expert_profile_serializers import EXAMPLE
+from apps.salons.test_expert_profile import example_rows, mock_platform_reads
 
 URL = "/api/v1/favourite"
 
@@ -588,3 +596,121 @@ class HeartOpenApiTests(SimpleTestCase):
             ["category", "is_open_now", "is_top_rated", "page", "page_size", "search"],
         )
         self.assertRegex(self.listing["summary"], r"My saved salons")
+
+
+# ---------------------------------------------------------------------------
+# E8: the app team's guide says only what the code answers
+# ---------------------------------------------------------------------------
+
+FE_DOC = settings.BASE_DIR / "docs" / "EXPERT_PROFILE_API.md"
+
+
+@unittest.skipUnless(FE_DOC.exists(), "docs/ is not in the Docker image")
+class ExpertProfileFeDocTests(StylistHeartTestCase):
+    """
+    docs/EXPERT_PROFILE_API.md promises every example is a real answer. Each
+    JSON block on the page, in the page's order, is asked again here: the
+    profile from the example's rows, the heart from the real table.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        text = FE_DOC.read_text(encoding="utf-8")
+        cls.blocks = [json.loads(b) for b in re.findall(r"```json\n(.*?)\n```", text, re.S)]
+
+    def profile(self, **reads):
+        with ExitStack() as stack:
+            mock_platform_reads(stack, **{**example_rows(), **reads})
+            return self.client.get(f"/api/v1/salon/{SALON}/stylist/{STYLIST}")
+
+    def real_answers(self):
+        """What the code answers for each block of the page, in its order."""
+        answers = []
+
+        # Section 2: the full 200, asked as a guest.
+        self.sign_out()
+        answers.append(self.profile().json())
+
+        # Section 4: the heart. The request block is sent as it is printed.
+        self.sign_in(self.customer)
+        request = self.blocks[1]
+        answers.append(request)
+        answers.append(self.tap(request).json())                         # the first tap
+        answers.append(self.tap(request).json())                         # the next tap
+        answers.append(self.tap(salon_id=str(SALON), stylist_id=str(STYLIST)).json())
+        answers.append(self.tap(stylist_id="not-a-uuid").json())
+        self.showable.return_value = False
+        answers.append(self.tap(request).json())                         # no longer available
+        self.showable.return_value = True
+        self.sign_out()
+        answers.append(self.tap(request).json())                         # signed out
+
+        # Section 5: the profile's errors.
+        answers.append(self.profile(found=False).json())
+        answers.append(self.profile(salon=False).json())
+        self.client.credentials(HTTP_AUTHORIZATION="Bearer not.a.token")
+        answers.append(self.profile().json())
+        self.sign_out()
+
+        # Section 9: the stylist's row of GET /salon/:id/stylists.
+        rows = example_rows()
+        answers.append(views._stylist_row(rows["person"], day_off=rows["day_off"]))
+        return answers
+
+    def test_every_json_block_is_what_the_code_answers(self):
+        answers = self.real_answers()
+        self.assertEqual(len(self.blocks), len(answers))
+        for number, (block, answer) in enumerate(zip(self.blocks, answers), start=1):
+            with self.subTest(block=number):
+                self.assertEqual(block, answer)
+
+    def test_the_full_example_is_the_openapi_example(self):
+        self.assertEqual(self.blocks[0], EXAMPLE)
+        self.assertEqual(list(self.blocks[0]), list(EXAMPLE))
+
+    def test_the_heart_request_is_the_example_s_stylist(self):
+        self.assertEqual(self.blocks[1], {"stylist_id": EXAMPLE["id"]})
+
+    def test_the_statuses_the_page_names(self):
+        self.sign_in(self.customer)
+        request = self.blocks[1]
+        self.assertEqual(self.tap(request).status_code, 200)
+        self.assertEqual(self.tap(salon_id=str(SALON), stylist_id=str(STYLIST)).status_code, 422)
+        self.assertEqual(self.tap(stylist_id="not-a-uuid").status_code, 422)
+        self.tap(request)                                                # unsaved again
+        self.showable.return_value = False
+        self.assertEqual(self.tap(request).status_code, 404)
+        self.sign_out()
+        self.assertEqual(self.tap(request).status_code, 401)
+        self.assertEqual(self.profile(found=False).status_code, 404)
+        self.assertEqual(self.profile(salon=False).status_code, 404)
+        self.assertEqual(self.profile().status_code, 200)                # no token: public
+
+    def test_after_a_save_the_profile_says_is_favorite_true(self):
+        self.tap(self.blocks[1])
+        self.assertIs(self.profile().json()["is_favorite"], True)
+
+    def test_every_document_the_page_names_exists(self):
+        text = FE_DOC.read_text(encoding="utf-8")
+        named = set(re.findall(r"`([A-Za-z0-9_-]+\.md)`", text))
+        self.assertEqual(
+            named, {"expert-profile-fe-contract.md", "BOOKING_NEAREST_AVAILABLE_API.md"},
+        )
+        for name in named:
+            with self.subTest(name=name):
+                self.assertTrue((FE_DOC.parent / name).exists())
+
+    def test_the_page_says_its_ids_are_test_data(self):
+        text = " ".join(FE_DOC.read_text(encoding="utf-8").split())
+        self.assertIn(
+            "The ids in the examples come from our test data, so they do not exist on "
+            "the live server: take real ids from `GET /salon/:id/stylists`.",
+            text,
+        )
+
+    def test_the_page_has_no_em_dash(self):
+        text = FE_DOC.read_text(encoding="utf-8")
+        self.assertNotIn("\u2014", text)
+        self.assertNotIn("\u2013", text)
+

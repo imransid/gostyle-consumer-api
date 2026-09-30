@@ -6,7 +6,8 @@ The app team's Expert Profile screen (docs/expert-profile-fe-contract.md):
 One stylist, read at one salon: everything the screen draws, in one call.
 Built step by step (docs/EXPERT_PROFILE_AUDIT.md, section 8): the route, the
 404s and auth in E1, the fields in E2 to E8. This module reads;
-expert_profile.py (pure) writes the fields.
+expert_profile.py (pure) writes the fields, in the contract's order. The app
+team's guide is docs/EXPERT_PROFILE_API.md.
 
 PUBLIC, like every other /salon/<id>/... route (Rafa, Q1): a guest can open a
 salon and its stylists, so the profile opens too. A token is accepted, not
@@ -36,6 +37,7 @@ from rest_framework.views import APIView
 
 from . import menu
 from .expert_profile import core_fields, media, salon_block, service_groups
+from .expert_profile_serializers import EXAMPLE, SalonExpertProfileResponseSerializer
 from .params import path_uuid
 from .selectors import (
     is_favourite_stylist,
@@ -55,81 +57,6 @@ from .views import _OUR_ENVELOPE, _stylist_row, days_off_for, salon_profile_data
 # contract's, word for word.
 NO_SALON = "This salon is not available."
 NO_STYLIST = "This stylist is no longer at this salon."
-
-# One row of service_groups: a row of GET /salon/<id>/services.
-_SERVICE_ROW = {
-    "type": "object",
-    "properties": {
-        "id": {"type": "string", "format": "uuid"},
-        "name": {"type": "string"},
-        "description": {"type": "string", "nullable": True},
-        "price": {"type": "number"},
-        "duration_min": {"type": "integer"},
-        "duration_max": {"type": "integer"},
-    },
-}
-
-# The 200 so far: the person (E2), the heart (E3b), the services (E4), the
-# salon (E5), the media (E6) and the day off (E7). E8 replaces this with the
-# full shape.
-_ANSWER_SO_FAR = {
-    "type": "object",
-    "properties": {
-        "id": {"type": "string", "format": "uuid"},
-        "salon_id": {"type": "string", "format": "uuid"},
-        "name": {"type": "string", "nullable": True},
-        "title": {"type": "string", "nullable": True},
-        "role": {"type": "string", "nullable": True},
-        "avatar_url": {"type": "string", "nullable": True},
-        "rating": {"type": "number", "nullable": True},
-        "review_count": {"type": "integer"},
-        "day_off": {"type": "string", "nullable": True},
-        "is_favorite": {"type": "boolean"},
-        "has_story": {"type": "boolean"},
-        "media": {
-            "type": "array",
-            "maxItems": 5,
-            "items": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "format": "uuid"},
-                    "type": {"type": "string", "enum": ["image", "video"]},
-                    "url": {"type": "string"},
-                    "thumbnail_url": {"type": "string", "nullable": True},
-                },
-            },
-        },
-        "media_count": {"type": "integer"},
-        "salon": {
-            "type": "object",
-            "properties": {
-                "id": {"type": "string", "format": "uuid"},
-                "name": {"type": "string", "nullable": True},
-                "is_open": {"type": "boolean", "nullable": True},
-                "hours_today": {"type": "string", "nullable": True},
-                "latitude": {"type": "number", "nullable": True},
-                "longitude": {"type": "number", "nullable": True},
-            },
-        },
-        "service_groups": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string"},
-                    "name": {"type": "string"},
-                    "services": {"type": "array", "items": _SERVICE_ROW},
-                },
-            },
-        },
-    },
-    "required": [
-        "id", "salon_id", "name", "title", "role", "avatar_url", "rating", "review_count",
-        "day_off", "is_favorite", "has_story", "media", "media_count", "salon",
-        "service_groups",
-    ],
-}
-
 
 @extend_schema(
     summary="One stylist of a salon, for the expert profile screen",
@@ -153,81 +80,12 @@ _ANSWER_SO_FAR = {
     ],
     responses={
         200: OpenApiResponse(
-            response=_ANSWER_SO_FAR,
+            response=SalonExpertProfileResponseSerializer,
             description=(
-                "The stylist, at this salon: the same name, title, role and "
-                "avatar as in GET /salon/{salon_id}/stylists. No stylist "
-                "reviews exist yet, so `rating` is null and `review_count` "
-                "is 0. `day_off` is worked out from the roster: the weekday "
-                "or weekdays the stylist never works (\"Tuesday\", \"Friday, "
-                "Saturday\"), or null when it cannot be told; the same text "
-                "as in the stylists list. `is_favorite` is the caller's own heart on this "
-                "stylist (POST /favourite with `stylist_id`): send the token "
-                "to get it, a guest always gets false. `service_groups` is "
-                "only what this stylist can do, in the groups, order, rows "
-                "and prices of GET /salon/{salon_id}/services; a group's "
-                "`id` is that route's group id (a UUID, or `other`). `salon` "
-                "says what GET /salon/{salon_id} says: the same name, "
-                "`is_open` (null when the salon published no hours) and pin "
-                "(null when it has none). `hours_today` is null on a day the "
-                "salon does not open. `media` is this salon's photos tagged "
-                "with the stylist, newest first, at most 5; `media_count` "
-                "counts them all; `has_story` is true when there is at least "
-                "one. Every item is an `image` today (the salons cannot "
-                "upload video yet), so `thumbnail_url` is null. The rest of "
-                "the screen's fields are being added."
+                "Everything the screen draws. docs/EXPERT_PROFILE_API.md has "
+                "every field and rule."
             ),
-            examples=[
-                OpenApiExample(
-                    "A stylist of this salon",
-                    value={
-                        "id": "04e58d74-04db-4088-bd97-e3ff765cc322",
-                        "salon_id": "c6c248ab-f2cd-4f12-a31e-243c6e64b3b5",
-                        "name": "Darius Stone",
-                        "title": "Master Barber",
-                        "role": "Haircut and Styling Expert",
-                        "avatar_url": None,
-                        "rating": None,
-                        "review_count": 0,
-                        "day_off": "Tuesday",
-                        "is_favorite": False,
-                        "has_story": True,
-                        "media": [
-                            {
-                                "id": "8e2b1f10-0000-4000-8000-000000000001",
-                                "type": "image",
-                                "url": "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/t/storefront/s/media/1.jpg",
-                                "thumbnail_url": None,
-                            },
-                        ],
-                        "media_count": 1,
-                        "salon": {
-                            "id": "c6c248ab-f2cd-4f12-a31e-243c6e64b3b5",
-                            "name": "Green Wave Salon",
-                            "is_open": True,
-                            "hours_today": "10:00 AM - 9:00 PM",
-                            "latitude": 25.2213,
-                            "longitude": 55.2621,
-                        },
-                        "service_groups": [
-                            {
-                                "id": "7a1d3c52-0b86-4c0e-9d53-1f2a6b7c8d90",
-                                "name": "Precision Cuts",
-                                "services": [
-                                    {
-                                        "id": "bea5b243-8447-4f41-beff-14777f930ee7",
-                                        "name": "The Gentleman's Cut",
-                                        "description": "A classic haircut, with a wash and a styled finish.",
-                                        "price": 199.0,
-                                        "duration_min": 30,
-                                        "duration_max": 30,
-                                    },
-                                ],
-                            },
-                        ],
-                    },
-                ),
-            ],
+            examples=[OpenApiExample("A stylist of this salon", value=EXAMPLE)],
         ),
         401: OpenApiResponse(response=_OUR_ENVELOPE, description="A bad or expired token."),
         404: OpenApiResponse(
