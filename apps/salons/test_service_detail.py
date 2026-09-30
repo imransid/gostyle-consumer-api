@@ -15,18 +15,26 @@ S4: included, details and preparation, with the stages read once.
 
 S5: experts, the Expert step's own list, compared with GET /salon/:id/stylists.
 
+S6: rating, review_count and products (empty for now), and the OpenAPI shape
+and example checked against what the view really answers.
+
 The selectors are mocked; no database.
 """
 
+import json
+import re
 import types
+import unittest
 import uuid
 from contextlib import ExitStack
 from decimal import Decimal
 from unittest import mock
 
+from django.conf import settings
 from django.db.models import Q
 from django.test import SimpleTestCase
 from django.urls import resolve, reverse
+from drf_spectacular.generators import SchemaGenerator
 from rest_framework.test import APIRequestFactory
 
 from apps.salons import menu, selectors, skills
@@ -40,6 +48,7 @@ from apps.salons.service_detail import (
     photos,
     preparation,
 )
+from apps.salons.service_detail_serializers import EXAMPLE
 from apps.salons.service_detail_views import (
     NO_SALON,
     NO_SERVICE,
@@ -66,14 +75,14 @@ class Seams:
     """
 
     def call(self, path=None, *, salon=True, service=True, photos=([], []),
-             stages=(), experts=(), **headers):
+             stages=(), experts=(), categories=None, **headers):
         found_salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT) if salon else None
         if service is True:
             service = service_row()
         answers = {
             "salon_profile": found_salon,
             "service_for_salon": service or None,
-            "salon_categories": CATEGORIES,
+            "salon_categories": CATEGORIES if categories is None else categories,
             "service_photo_urls": photos,
             "service_stages": list(stages),
             "stylist_rows": list(experts),
@@ -379,6 +388,8 @@ class CoreFieldsTests(Seams, SimpleTestCase):
             "duration_min": 45,
             "duration_max": 45,
             "category": {"id": str(PARENT), "label": "Haircut & Styling"},
+            "rating": None,
+            "review_count": 0,
             "is_active": True,
             "hero_url": None,
             "gallery": [],
@@ -389,6 +400,7 @@ class CoreFieldsTests(Seams, SimpleTestCase):
                 {"label": "Suitable for", "value": "Everyone", "icon": "scissors"},
             ],
             "preparation": [],
+            "products": [],
             "experts": [],
         })
 
@@ -935,3 +947,124 @@ class ExpertsMatchTheStylistsRouteTests(SimpleTestCase):
     def test_no_second_stage_read(self):
         _, _, second_read = self.both()
         second_read.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# S6: the empty fields, the example, the OpenAPI shape
+# ---------------------------------------------------------------------------
+
+class EmptyForNowTests(Seams, SimpleTestCase):
+    """No data for these yet; the contract allows each empty."""
+
+    def test_rating_null_review_count_0_products_empty(self):
+        body = self.call(stages=[stage("Cut")], experts=[{"id": "x"}]).json()
+        self.assertIsNone(body["rating"])
+        self.assertEqual(body["review_count"], 0)
+        self.assertEqual(body["products"], [])
+
+
+def example_rows():
+    """The rows EXAMPLE was answered from (the seeded salon, plus photos,
+    stages and care text), so a test can ask the view again."""
+    host = "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/" + str(TENANT)
+    service_id = uuid.UUID(EXAMPLE["id"])
+    category = uuid.UUID(EXAMPLE["category"]["id"])
+    row = service_row(
+        id=service_id,
+        name="The Gentleman's Cut",
+        description="A classic cut tailored to you, with a wash, a scalp massage and a styled finish.",
+        price_minor=19900,
+        duration_minutes=30,
+        category_0_id=category,
+        audience="MALE",
+        requires_consultation=True,
+        pre_care_instructions="- Arrive with clean, dry hair.",
+        post_care_instructions="1. Ask your stylist which products suit your hair.",
+    )
+    categories = {category: {"id": category, "name_en": "Haircut and Styling",
+                             "slug": None, "icon": None, "parent_id": None, "sort_order": 0}}
+    own = [f"{host}/services/{service_id}/media/{n}.jpg" for n in range(1, 7)]
+    linked = [f"{host}/storefronts/{SALON}/gallery/fade-side.jpg"]
+    stages = [stage(name) for name in ("The Gentleman's Cut", "Consultation", "Wash",
+                                       "Scalp massage", "Hair cut", "Styling")]
+    return dict(service=row, categories=categories, photos=(own, linked),
+                stages=stages, experts=EXAMPLE["experts"])
+
+
+class ExampleIsRealTests(Seams, SimpleTestCase):
+    """
+    EXAMPLE (the OpenAPI example and docs/SERVICE_DETAIL_API.md's) was taken
+    from the running server. Asked again from the same rows, the view must
+    answer it exactly, or the documents have drifted from the code.
+    """
+
+    def test_the_view_answers_the_example(self):
+        rows = example_rows()
+        response = self.call(url(service=rows["service"].id), **rows)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), EXAMPLE)
+
+
+class OpenApiTests(Seams, SimpleTestCase):
+    """The route's OpenAPI entry describes what the view answers."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.schema = SchemaGenerator().get_schema(request=None, public=True)
+
+    def component(self, name):
+        return self.schema["components"]["schemas"][name]
+
+    def operation(self):
+        return self.schema["paths"]["/api/v1/salon/{salon_id}/service/{service_id}"]["get"]
+
+    def test_the_200_is_the_response_shape_with_the_example(self):
+        content = self.operation()["responses"]["200"]["content"]["application/json"]
+        self.assertEqual(content["schema"]["$ref"],
+                         "#/components/schemas/SalonServiceDetailResponse")
+        self.assertEqual(content["examples"]["ABookableService"]["value"], EXAMPLE)
+
+    def test_the_shape_has_exactly_the_fields_the_view_answers(self):
+        answer = self.call(stages=[stage("Cut")]).json()
+        self.assertEqual(list(self.component("SalonServiceDetailResponse")["properties"]),
+                         list(answer))
+
+    def test_the_nested_shapes_have_exactly_the_example_s_fields(self):
+        for name, sample in (("SalonServiceDetailCategory", EXAMPLE["category"]),
+                             ("SalonServiceDetailRow", EXAMPLE["details"][0]),
+                             ("SalonServiceDetailExpert", EXAMPLE["experts"][0])):
+            with self.subTest(name=name):
+                self.assertEqual(set(self.component(name)["properties"]), set(sample))
+
+    def test_the_product_shape_is_the_shop_tab_s_card(self):
+        self.assertEqual(set(self.component("SalonServiceDetailProduct")["properties"]),
+                         {"id", "variant_id", "name", "price", "image_url"})
+
+    def test_the_404_example_is_the_real_body(self):
+        example = self.operation()["responses"]["404"]["content"]["application/json"]
+        real = self.call(service=False).json()
+        self.assertEqual(example["examples"]["NoSuchService"]["value"], real)
+
+
+FE_DOC = settings.BASE_DIR / "docs" / "SERVICE_DETAIL_API.md"
+
+
+@unittest.skipUnless(FE_DOC.exists(), "docs/ is not in the Docker image")
+class FeDocTests(Seams, SimpleTestCase):
+    """docs/SERVICE_DETAIL_API.md promises every example is a real answer."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        text = FE_DOC.read_text(encoding="utf-8")
+        cls.blocks = [json.loads(b) for b in re.findall(r"```json\n(.*?)\n```", text, re.S)]
+
+    def test_the_full_example_is_the_real_answer(self):
+        self.assertEqual(self.blocks[0], EXAMPLE)
+
+    def test_the_404_bodies_are_the_real_ones(self):
+        no_service = self.call(service=False).json()
+        no_salon = self.call(salon=False).json()
+        self.assertIn(no_service, self.blocks)
+        self.assertIn(no_salon, self.blocks)

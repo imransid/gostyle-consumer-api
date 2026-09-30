@@ -22,7 +22,12 @@ import re
 import uuid
 
 from drf_spectacular.types import OpenApiTypes
-from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
+from drf_spectacular.utils import (
+    OpenApiExample,
+    OpenApiParameter,
+    OpenApiResponse,
+    extend_schema,
+)
 from rest_framework.exceptions import NotFound
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -35,7 +40,8 @@ from .selectors import (
     service_photo_urls,
     service_stages,
 )
-from .service_detail import content, core_fields, photos
+from .service_detail import content, core_fields, photos, products
+from .service_detail_serializers import EXAMPLE, SalonServiceDetailResponseSerializer
 from .views import _OUR_ENVELOPE, stylist_rows
 
 # Written for the customer: the app shows `detail` on its empty state.
@@ -78,17 +84,12 @@ def path_uuid(value):
     ],
     responses={
         200: OpenApiResponse(
+            response=SalonServiceDetailResponseSerializer,
             description=(
-                "The service: id, salon_id, name, description, price (before "
-                "VAT, the Services tab's number), duration_min, duration_max, "
-                "category ({id, label}, the tab's chip), is_active, hero_url, "
-                "gallery (at most 5), gallery_count, included (the stage "
-                "names), details (the Key Details rows), preparation (the "
-                "care bullets) and experts (exactly GET /salon/{salon_id}/"
-                "stylists?service_ids={service_id}: same list, order and "
-                "shape; [] when the service is pulled or has no stages). "
-                "More fields are added in S6."
+                "Everything the screen draws. docs/SERVICE_DETAIL_API.md has "
+                "every field and rule."
             ),
+            examples=[OpenApiExample("A bookable service", value=EXAMPLE)],
         ),
         401: OpenApiResponse(response=_OUR_ENVELOPE, description="A bad or expired token."),
         404: OpenApiResponse(
@@ -98,6 +99,18 @@ def path_uuid(value):
                 "on sale, or an id that is not a UUID. `detail` is a sentence "
                 "for the customer."
             ),
+            examples=[
+                OpenApiExample(
+                    "No such service",
+                    value={
+                        "detail": NO_SERVICE,
+                        "code": "not_found",
+                        "errors": [
+                            {"field": None, "code": "not_found", "message": NO_SERVICE}
+                        ],
+                    },
+                ),
+            ],
         ),
     },
 )
@@ -124,6 +137,7 @@ class SalonServiceDetailView(APIView):
         # Read once: the names here, the skills and levels for the experts.
         stages = service_stages(service.id)
         body.update(content(service, stages))
+        body["products"] = products()
 
         # Who can do it: the Expert step's own list (GET /salon/<id>/stylists
         # ?service_ids=<id>), the same code, so the same people in the same

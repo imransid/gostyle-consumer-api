@@ -29,7 +29,8 @@ _TYPED_BULLET = re.compile(r"^(?:[-*\u2022]|\d{1,3}[.)])(?:\s+|$)")
 def core_fields(salon, service, categories):
     """
     id, salon_id, name, description, price, duration_min, duration_max,
-    category and is_active: the same figures the Services tab shows.
+    category and is_active: the same figures the Services tab shows. Plus
+    rating and review_count, empty until per-service reviews exist.
 
     `categories` is `selectors.salon_categories` for the salon's tenant.
     """
@@ -49,6 +50,11 @@ def core_fields(salon, service, categories):
         # The tab's chip, without its icon: the contract's { id, label }.
         # No category (or a deleted one) is the tab's "other", never null.
         "category": {"id": chip["id"], "label": chip["label"]},
+        # No data yet: reviews belong to a salon (storefront_review) and
+        # nothing links one to a service. null is the contract's "nobody has
+        # rated it", 0 its "No reviews yet".
+        "rating": None,
+        "review_count": 0,
         # The tab's three rules. False still answers 200: the app hides Book.
         "is_active": is_on_menu(service),
     }
@@ -185,3 +191,16 @@ def duration_text(minutes):
 
 def _row(label, value, icon):
     return {"label": label, "value": value, "icon": icon}
+
+
+def products():
+    """
+    "Products Used": [] for now, which hides the block.
+
+    No data yet: nothing links a service to the retail products a customer
+    can buy. `service_stage.products` is free text, and the platform's
+    `pos_service_consumable` is a back-bar costing recipe that is never shown
+    to a customer (audit, Q11). When a real link exists, the rows will come
+    from `selectors.salon_products`, as on the Shop tab.
+    """
+    return []
