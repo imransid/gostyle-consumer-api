@@ -20,7 +20,7 @@ from django.db.models.fields.json import KeyTextTransform, KeyTransform
 from apps.platform_data.models import StorefrontStory, StorefrontVersion
 
 from django.db.models import Value, BooleanField
-from apps.accounts.models import Favourite
+from apps.accounts.models import Favourite, FavouriteStylist
 
 
 from apps.platform_data.models import (
@@ -250,6 +250,52 @@ def salon_packages(storefront):
     )
 
 
+def _live_login():
+    """
+    A stylist's login account, as a subquery on the staff row: the
+    `user_account` of that row, in the same tenant, not deleted.
+
+    The platform's ListStylists drops anyone without one, so booking-api
+    cannot book them; we do not show them either. The account's `status` is
+    not looked at, because the platform's list does not look at it.
+    """
+    return UserAccount.objects.filter(
+        id=OuterRef("user_id"),
+        tenant_id=OuterRef("tenant_id"),
+        deleted_at__isnull=True,
+    )
+
+
+def showable_stylists():
+    """
+    Every stylist the app can show, at whichever salon is theirs: the rules
+    of `salon_stylists` without the salon.
+
+    Employed (ACTIVE), joined (onboarding ACTIVE, so an invite never accepted
+    is out), not deleted, with a home branch and a live login account.
+    `salon_stylists` is these rules plus one salon, so the two cannot drift.
+    """
+    return StaffProfile.objects.filter(
+        # A stylist with no home branch belongs to no salon: the platform
+        # cannot roster them and booking-api refuses them.
+        branch_id__isnull=False,
+        employment_status="ACTIVE",
+        onboarding_state="ACTIVE",
+        deleted_at__isnull=True,
+    ).filter(Exists(_live_login()))
+
+
+def stylist_is_showable(staff_id):
+    """
+    True when this id is a stylist the app can show at some salon.
+
+    For saving a heart on a stylist (POST /favourite): the customer is not at
+    a salon there, so there is no salon to check against. A heart on anyone
+    else (an id nobody has, a stylist who left) could never be seen again.
+    """
+    return showable_stylists().filter(id=staff_id).exists()
+
+
 def salon_stylists(storefront, branch_id=None):
     """
     The stylists of ONE salon: who the app may show there, and book there.
@@ -276,24 +322,17 @@ def salon_stylists(storefront, branch_id=None):
     NOT behind BRANCH_AVAILABILITY_ENABLED: that flag is about which SERVICES
     a branch sells, and it is still off.
     """
-    user = UserAccount.objects.filter(
-        id=OuterRef("user_id"),
-        tenant_id=OuterRef("tenant_id"),
-        deleted_at__isnull=True,
-    )
+    user = _live_login()
 
     return (
-        StaffProfile.objects.filter(
+        # `branch_id=None` alone would read as IS NULL and list exactly the
+        # stylists with no home branch. showable_stylists already says IS NOT
+        # NULL, so a salon with no branch finds nobody.
+        showable_stylists()
+        .filter(
             tenant_id=storefront.tenant_id,
             branch_id=branch_id or storefront.branch_id,
-            # Said out loud: `branch_id=None` alone would read as IS NULL and
-            # list exactly the stylists with no home branch.
-            branch_id__isnull=False,
-            employment_status="ACTIVE",
-            onboarding_state="ACTIVE",
-            deleted_at__isnull=True,
         )
-        .filter(Exists(user))
         .annotate(
             first_name=Subquery(user.values("first_name")[:1], output_field=TextField()),
             last_name=Subquery(user.values("last_name")[:1], output_field=TextField()),
@@ -851,6 +890,19 @@ def salon_profile(storefront_id, user=None):
     )
 
     return with_is_favorite(qs, user).filter(id=storefront_id).first()
+def is_favourite_stylist(user, staff_id):
+    """
+    Has this customer saved this stylist: the heart on the expert profile.
+
+    False for a guest, with no query. The table is our own
+    (favourite_stylist), so this is one small read beside the platform's rows,
+    not a subquery inside them.
+    """
+    if user is None or not user.is_authenticated:
+        return False
+    return FavouriteStylist.objects.filter(account=user, staff_id=staff_id).exists()
+
+
 def with_is_favorite(qs, user):
     if user is None or not user.is_authenticated:
         return qs.annotate(

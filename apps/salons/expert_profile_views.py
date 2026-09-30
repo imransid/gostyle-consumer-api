@@ -36,7 +36,7 @@ from rest_framework.views import APIView
 
 from .expert_profile import core_fields
 from .params import path_uuid
-from .selectors import salon_profile, stylist_for_salon
+from .selectors import is_favourite_stylist, salon_profile, stylist_for_salon
 from .views import _OUR_ENVELOPE, _stylist_row
 
 # Written for the customer: the app shows `detail` on its empty state. The
@@ -45,7 +45,8 @@ from .views import _OUR_ENVELOPE, _stylist_row
 NO_SALON = "This salon is not available."
 NO_STYLIST = "This stylist is no longer at this salon."
 
-# The 200 so far: the person (E2). E8 replaces this with the full shape.
+# The 200 so far: the person (E2) and the heart (E3b). E8 replaces this with
+# the full shape.
 _ANSWER_SO_FAR = {
     "type": "object",
     "properties": {
@@ -57,9 +58,11 @@ _ANSWER_SO_FAR = {
         "avatar_url": {"type": "string", "nullable": True},
         "rating": {"type": "number", "nullable": True},
         "review_count": {"type": "integer"},
+        "is_favorite": {"type": "boolean"},
     },
     "required": [
         "id", "salon_id", "name", "title", "role", "avatar_url", "rating", "review_count",
+        "is_favorite",
     ],
 }
 
@@ -91,7 +94,10 @@ _ANSWER_SO_FAR = {
                 "The stylist, at this salon: the same name, title, role and "
                 "avatar as in GET /salon/{salon_id}/stylists. No stylist "
                 "reviews exist yet, so `rating` is null and `review_count` "
-                "is 0. The rest of the screen's fields are being added."
+                "is 0. `is_favorite` is the caller's own heart on this "
+                "stylist (POST /favourite with `stylist_id`): send the token "
+                "to get it, a guest always gets false. The rest of the "
+                "screen's fields are being added."
             ),
             examples=[
                 OpenApiExample(
@@ -105,6 +111,7 @@ _ANSWER_SO_FAR = {
                         "avatar_url": None,
                         "rating": None,
                         "review_count": 0,
+                        "is_favorite": False,
                     },
                 ),
             ],
@@ -149,4 +156,9 @@ class SalonExpertProfileView(APIView):
 
         # The person, from the Expert step's own row code: the same name,
         # title, role and avatar as GET /salon/<id>/stylists gives this stylist.
-        return Response(core_fields(salon, _stylist_row(stylist)))
+        body = core_fields(salon, _stylist_row(stylist))
+
+        # The caller's own heart on this stylist: read with their token when
+        # they sent one, false for a guest (the contract's section 3).
+        body["is_favorite"] = is_favourite_stylist(request.user, stylist.id)
+        return Response(body)

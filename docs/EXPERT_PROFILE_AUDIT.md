@@ -242,7 +242,8 @@ import from each other.
 |---|---|
 | salon | 1 |
 | the salon's snapshot (name, hours, pin) | 1 |
-| the stylist row (with `is_favorite` as a subquery when signed in) | 1 |
+| the stylist row | 1 |
+| `is_favorite`, our own table (only when signed in) | 1 |
 | menu services | 1 |
 | categories | 1 |
 | stages of the menu | 1 |
@@ -250,7 +251,7 @@ import from each other.
 | the stylist's skills | 1 |
 | the stylist's photos | 1 |
 | shifts for `day_off` | 1 |
-| **Total** | **about 11** |
+| **Total** | **about 11 for a guest, 12 signed in** |
 
 No query per row. For comparison: the service detail is 10, the Services tab 3.
 
@@ -451,12 +452,12 @@ doc (E8).
 |---|---|
 | Storage | A **new model and table** in our own schema: `FavouriteStylist` (`consumer.favourite_stylist`): `account` (FK, cascade), `staff_id` (plain UUID), `created_at`, unique on `(account, staff_id)`, index `(account, -created_at)`. One migration, `accounts/0012`, only a `CreateModel`. |
 | Why not a new column on `favourite` | `storefront_id` is NOT NULL and the unique rule is on it. Changing both is a riskier migration, and after a rollback the old code would read stylist rows as salons. A new table is additive: old code never sees it. |
-| Request | `{"stylist_id": "..."}`. Exactly one of `salon_id` and `stylist_id` (their §5). Both or neither: 422. |
+| Request | `{"stylist_id": "..."}`. Exactly one of `salon_id` and `stylist_id` (their §5). Both: 422, no field, code `one_id_only`, "Send salon_id or stylist_id, not both.". Neither: today's answer (422 on `salon_id`, "This field is required."). |
 | Answer | The same: `{"is_favorite": true}` or `{"is_favorite": false}`, 200. |
 | Signed out | 401, already the case for the route. |
 | Bad id | 422 `invalid`, for `stylist_id` and for `salon_id` (F3). |
-| Does the stylist exist | Checked on **save** only (one query by primary key): unknown id = 404. Never on unsave, so a heart on a stylist who left can still be removed. The salon heart keeps skipping this check. |
-| `is_favorite` on the profile | One `Exists` on the stylist row when signed in, `false` for a guest. |
+| Does the stylist exist | Checked on **save** only (one query): a stylist the app cannot show at any salon = 404 "This stylist is no longer available.". The rule is `salon_stylists` without the salon (`selectors.showable_stylists`: employed, joined, not deleted, a home branch, a live login), and `salon_stylists` is now built on it. Never on unsave, so a heart on a stylist who left can still be removed. The salon heart keeps skipping this check. |
+| `is_favorite` on the profile | `false` for a guest, with no query. Signed in: one small read of our own table (`selectors.is_favourite_stylist`). **Changed in E3b from "one `Exists` on the stylist row":** as its own read it is tested end to end on the real test database (the platform's tables are not in it), at the cost of one query for a signed in customer. |
 | A list of saved stylists | Not there, and the contract does not ask. `GET /favourite` stays salons only. |
 | Deploy | Migrations run when the container starts. The table is new, so a rollback to the old image is safe. |
 
@@ -628,7 +629,7 @@ and managed, so its tests use the real test database. `urls.py` and
 | E1 | **Built, reviewed by Rafa (2026-09-30).** Route `salon/<str:salon_id>/stylist/<str:stylist_id>`, view skeleton, 404s, `AllowAny`. `path_uuid` moved to `params.py`. `FLOW` entry in `config/openapi_flow.py` | `urls.py`, new `expert_profile_views.py`, `selectors.py` (new `stylist_for_salon`), `params.py` | non-UUID in each position = JSON 404; unknown salon "This salon is not available."; another tenant's stylist, another salon's stylist, INVITED, INACTIVE, ARCHIVED and deleted = 404 "This stylist is no longer at this salon."; no token 200; bad token 401; `test_openapi_flow` green; service detail tests green after the `path_uuid` move |
 | E2 | **Built, reviewed by Rafa (2026-09-30).** The person: `id`, `salon_id`, `name`, `title`, `role`, `avatar_url`, `rating: null`, `review_count: 0` | new pure `apps/salons/expert_profile.py`, view | `name`, `title`, `role`, `avatar_url` equal to that stylist's Expert step row on the same mocks; `null` name, title, role, avatar; `review_count` is `0` here while the list row keeps `null` |
 | E3a | **Built, reviewed by Rafa (2026-09-30).** **F3, F4:** the salon heart answers 422 for a bad id and never 500 on a double tap. Two extras, accepted by Rafa: a number as `salon_id` is 422 (it used to save as "the UUID numbered 123"), and a body that is not a JSON object is 422 (was 500). Today's answers pinned first | `views.py` (`FavouriteListView.post`) | save, unsave, missing id 422 (today's), bad id 422 (new), unique clash answers `true`, no token 401 |
-| E3b | Stylist heart (their §5): model `FavouriteStylist`, migration `accounts/0012`, `stylist_id` on `POST /favourite`, `is_favorite` on the profile | `accounts/models.py`, migration, `views.py`, `selectors.py` | save then unsave; both ids 422; neither 422; bad id 422; unknown stylist 404 on save, not on unsave; no token 401; the salon heart unchanged; two customers do not see each other's heart; `is_favorite` true, false, guest `false`; `makemigrations --check` clean |
+| E3b | **Built, reviewed by Rafa (2026-09-30).** Stylist heart (their §5): model `FavouriteStylist`, migration `accounts/0012`, `stylist_id` on `POST /favourite`, `is_favorite` on the profile | `accounts/models.py`, migration, `views.py`, `selectors.py` | save then unsave; both ids 422; neither 422; bad id 422; unknown stylist 404 on save, not on unsave; no token 401; the salon heart unchanged; two customers do not see each other's heart; `is_favorite` true, false, guest `false`; `makemigrations --check` clean |
 | E4 | `service_groups`: the tab's grouping moves to `menu.service_groups` (tab pinned first); the profile sends the covered services only, groups as `{id, name, services}` | `menu.py`, `views.py` (tab), `expert_profile.py`, view | tab answer unchanged after the move; only covered services; each row equal to the tab's row for that service (same keys, same branch price, 0 means 0); group order as the tab; no `category_id`; no empty group; a no-stage service absent; a stylist with no skills `[]`; agrees with `/stylists?service_ids=` for every menu service |
 | E5 | `salon`: `{id, name, is_open, hours_today, latitude, longitude}` from the salon profile's helpers | `expert_profile.py`, view | equal to `GET /salon/{id}` for `name`, `is_open` and the pin on the same mocks; open day "10:00 AM - 9:00 PM"; closed weekday `null`; closed by hand `null`; no hours published: `is_open` and `hours_today` `null`; overnight hours; `MAP` pin wins over the branch pin; no pin `null`, `null` |
 | E6 | `media` as `{id, type, url, thumbnail_url}`, `media_count`, `has_story` (Q9, Q10) | `selectors.py` (new `stylist_media_rows`), `expert_profile.py` | newest first, `id` breaks a tie; cap 5 with `media_count` 7; deleted, private, unapproved left out; another salon's and another tenant's left out; a `staff_id` that is not this stylist left out; an image: `type` `image`, `thumbnail_url` `null`; a video left out and not counted; unknown file type left out; none: `[]`, `0`, `has_story: false`; one photo: `has_story: true` |

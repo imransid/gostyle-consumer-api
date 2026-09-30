@@ -88,10 +88,10 @@ FLOW = (
     ),
     (
         "7. Favourites",
-        "The heart on a salon.",
+        "The heart, on a salon or on a stylist.",
         (
             ("GET", "/api/v1/favourite", "My saved salons"),
-            ("POST", "/api/v1/favourite", "Save or unsave a salon (the heart)"),
+            ("POST", "/api/v1/favourite", "Save or unsave a salon or a stylist (the heart)"),
         ),
     ),
     (

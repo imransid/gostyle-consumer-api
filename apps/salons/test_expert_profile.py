@@ -15,6 +15,9 @@ E2: the person (id, salon_id, name, title, role, avatar_url, rating,
 review_count), built from the stylist's own row of GET /salon/<id>/stylists
 and compared with that route on the same rows.
 
+E3b: is_favorite, and which stylists a heart may be saved on. The heart
+itself, and is_favorite read from the real table, are in test_favourite.py.
+
 The querysets are built and inspected, never run: the platform's tables are
 unmanaged, so they do not exist in the test database. The views are called
 with their selectors mocked.
@@ -284,17 +287,18 @@ def url(salon=SALON, stylist=HERE):
 class Seams:
     """
     The view with every selector it reads mocked. A test passes only what it
-    cares about. Each mock is kept on self (salon_lookup, stylist_lookup) for
-    call checks.
+    cares about. Each mock is kept on self (salon_lookup, stylist_lookup,
+    favourite_lookup) for call checks.
     """
 
-    def seams(self, stack, *, salon=True, found=True):
+    def seams(self, stack, *, salon=True, found=True, favourite=False):
         found_salon = (
             types.SimpleNamespace(id=SALON, tenant_id=TENANT, branch_id=BRANCH) if salon else None
         )
         answers = {
             "salon_profile": found_salon,
             "stylist_for_salon": stylist() if found else None,
+            "is_favourite_stylist": favourite,
         }
         mocks = {
             name: stack.enter_context(mock.patch.object(
@@ -304,10 +308,11 @@ class Seams:
         }
         self.salon_lookup = mocks["salon_profile"]
         self.stylist_lookup = mocks["stylist_for_salon"]
+        self.favourite_lookup = mocks["is_favourite_stylist"]
 
-    def call(self, path=None, *, salon=True, found=True, **headers):
+    def call(self, path=None, *, salon=True, found=True, favourite=False, **headers):
         with ExitStack() as stack:
-            self.seams(stack, salon=salon, found=found)
+            self.seams(stack, salon=salon, found=found, favourite=favourite)
             return self.client.get(path or url(), **headers)
 
 
@@ -653,6 +658,7 @@ class PersonFieldsTests(Seams, SimpleTestCase):
             "avatar_url": None,
             "rating": None,
             "review_count": 0,
+            "is_favorite": False,      # E3b
         })
 
     def test_salon_id_is_the_salon_s_id_whatever_case_the_path_used(self):
@@ -732,3 +738,117 @@ class PersonMatchesTheStylistsRouteTests(SimpleTestCase):
         _, profile = self.both(uuid.UUID(int=99))
         self.assertEqual(profile.status_code, 404)
         self.assertEqual(profile.json()["detail"], NO_STYLIST)
+
+
+# ---------------------------------------------------------------------------
+# E3b: is_favorite, and who a heart may be saved on
+# ---------------------------------------------------------------------------
+
+class IsFavoriteFieldTests(Seams, SimpleTestCase):
+    """The route answers the heart the selector reads."""
+
+    def test_false_when_the_selector_says_so(self):
+        self.assertIs(self.call().json()["is_favorite"], False)
+
+    def test_true_when_the_selector_says_so(self):
+        self.assertIs(self.call(favourite=True).json()["is_favorite"], True)
+
+    def test_the_selector_is_asked_about_this_caller_and_this_stylist(self):
+        self.call()
+        (user, staff_id), _ = self.favourite_lookup.call_args
+        self.assertEqual(staff_id, HERE)
+        # No token: the caller is a guest.
+        self.assertFalse(user.is_authenticated)
+
+    def test_a_signed_in_caller_is_the_one_asked_about(self):
+        customer = types.SimpleNamespace(is_authenticated=True)
+        request = APIRequestFactory().get(url())
+        force_authenticate(request, user=customer)
+        with ExitStack() as stack:
+            self.seams(stack, favourite=True)
+            response = SalonExpertProfileView.as_view()(
+                request, salon_id=str(SALON), stylist_id=str(HERE),
+            )
+        self.assertIs(response.data["is_favorite"], True)
+        self.assertIs(self.favourite_lookup.call_args.args[0], customer)
+
+    def test_a_404_never_asks(self):
+        self.call(found=False)
+        self.favourite_lookup.assert_not_called()
+
+
+class IsFavouriteStylistTests(SimpleTestCase):
+    """`selectors.is_favourite_stylist` for a guest: false, and no query."""
+
+    def test_no_user_and_a_guest_are_false_without_the_table(self):
+        # SimpleTestCase refuses any database access, so a query would fail.
+        guest = types.SimpleNamespace(is_authenticated=False)
+        self.assertIs(selectors.is_favourite_stylist(None, HERE), False)
+        self.assertIs(selectors.is_favourite_stylist(guest, HERE), False)
+
+    def test_a_signed_in_customer_is_looked_up_by_account_and_stylist(self):
+        customer = types.SimpleNamespace(is_authenticated=True)
+        with mock.patch.object(selectors, "FavouriteStylist") as table:
+            table.objects.filter.return_value.exists.return_value = True
+            answer = selectors.is_favourite_stylist(customer, HERE)
+        table.objects.filter.assert_called_once_with(account=customer, staff_id=HERE)
+        self.assertIs(answer, True)
+
+
+class ShowableStylistsTests(SimpleTestCase):
+    """
+    `selectors.showable_stylists`: a stylist the app can show at SOME salon.
+    The salon_stylists rules without the salon. A heart may be saved on these
+    (`stylist_is_showable`), and `salon_stylists` is built on them.
+    """
+
+    RULES = {
+        ("employment_status", "exact", "ACTIVE"),
+        ("onboarding_state", "exact", "ACTIVE"),
+        ("deleted_at", "isnull", True),
+        ("branch_id", "isnull", False),
+    }
+    LOGIN = {
+        ("id", "exact", ("outer", "user_id")),
+        ("tenant_id", "exact", ("outer", "tenant_id")),
+        ("deleted_at", "isnull", True),
+    }
+
+    def test_employed_joined_not_deleted_with_a_home_branch(self):
+        self.assertEqual(conditions(selectors.showable_stylists().query), self.RULES)
+
+    def test_with_a_live_login(self):
+        self.assertEqual(conditions(login_check(selectors.showable_stylists())), self.LOGIN)
+
+    def test_no_salon_in_the_rule(self):
+        columns = {column for column, _, _ in conditions(selectors.showable_stylists().query)}
+        self.assertNotIn("tenant_id", columns)
+        self.assertNotIn(("branch_id", "exact"), {
+            (column, lookup) for column, lookup, _ in conditions(selectors.showable_stylists().query)
+        })
+
+    def test_a_salon_s_list_is_those_rules_plus_the_salon(self):
+        salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT, branch_id=BRANCH)
+        listed = selectors.salon_stylists(salon)
+        self.assertEqual(
+            conditions(listed.query),
+            self.RULES | {("tenant_id", "exact", TENANT), ("branch_id", "exact", BRANCH)},
+        )
+        self.assertEqual(conditions(login_check(listed)), self.LOGIN)
+
+    def query(self, found):
+        """`stylist_is_showable`'s real query, caught where it would run."""
+        with mock.patch.object(QuerySet, "exists", autospec=True, return_value=found) as exists:
+            answer = selectors.stylist_is_showable(HERE)
+        (queryset,), _ = exists.call_args
+        return answer, queryset
+
+    def test_one_stylist_is_checked_by_id_against_the_same_rules(self):
+        answer, queryset = self.query(True)
+        self.assertIs(answer, True)
+        self.assertEqual(conditions(queryset.query), self.RULES | {("id", "exact", HERE)})
+        self.assertEqual(conditions(login_check(queryset)), self.LOGIN)
+
+    def test_nobody_found_is_false(self):
+        answer, _ = self.query(False)
+        self.assertIs(answer, False)

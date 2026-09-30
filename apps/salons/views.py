@@ -17,6 +17,7 @@ from drf_spectacular.utils import (
 from rest_framework.exceptions import (
     APIException,
     ErrorDetail,
+    NotFound,
     UnsupportedMediaType,
     ValidationError,
 )
@@ -48,7 +49,7 @@ from .booking_api import (
 )
 
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from apps.accounts.models import Favourite
+from apps.accounts.models import Favourite, FavouriteStylist
 
 from . import slots, timezones
 from .hours import resolve as resolve_hours
@@ -78,6 +79,7 @@ from .selectors import (
     services_by_ids,
     service_timing_rows,
     shift_rows,
+    stylist_is_showable,
     stylist_service_coverage,
     tenant_for_salon,
     with_distance,
@@ -950,6 +952,11 @@ class DiscoverStoryListView(ListAPIView):
 
 
 
+# Saving a heart on a stylist the app cannot show. Written for the customer:
+# the app shows `detail`.
+NO_STYLIST_TO_SAVE = "This stylist is no longer available."
+
+
 @extend_schema_view(
     get=extend_schema(
         parameters=[
@@ -966,18 +973,79 @@ class DiscoverStoryListView(ListAPIView):
         parameters=[],
         request={
             "application/json": {
-                "type": "object",
-                "properties": {"salon_id": {"type": "string", "format": "uuid"}},
-                "required": ["salon_id"],
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "title": "A salon",
+                        "properties": {"salon_id": {"type": "string", "format": "uuid"}},
+                        "required": ["salon_id"],
+                    },
+                    {
+                        "type": "object",
+                        "title": "A stylist",
+                        "properties": {"stylist_id": {"type": "string", "format": "uuid"}},
+                        "required": ["stylist_id"],
+                    },
+                ]
             }
         },
-        responses={200: None},
+        examples=[
+            OpenApiExample(
+                "The heart on a salon",
+                value={"salon_id": "c6c248ab-f2cd-4f12-a31e-243c6e64b3b5"},
+                request_only=True,
+            ),
+            OpenApiExample(
+                "The heart on a stylist",
+                value={"stylist_id": "04e58d74-04db-4088-bd97-e3ff765cc322"},
+                request_only=True,
+            ),
+        ],
+        responses={
+            200: OpenApiResponse(
+                response={
+                    "type": "object",
+                    "properties": {"is_favorite": {"type": "boolean"}},
+                    "required": ["is_favorite"],
+                },
+                description="Which way the heart went: true = saved now, false = unsaved now.",
+            ),
+            401: OpenApiResponse(response=_OUR_ENVELOPE, description="No token, or a bad one."),
+            404: OpenApiResponse(
+                response=_OUR_ENVELOPE,
+                description=(
+                    "Saving a stylist the app cannot show (one who left, or an "
+                    "id nobody has). Never on unsave, and never for a salon."
+                ),
+                examples=[
+                    OpenApiExample(
+                        "The stylist is gone",
+                        value={
+                            "detail": NO_STYLIST_TO_SAVE,
+                            "code": "not_found",
+                            "errors": [
+                                {"field": None, "code": "not_found", "message": NO_STYLIST_TO_SAVE}
+                            ],
+                        },
+                    ),
+                ],
+            ),
+            422: OpenApiResponse(
+                response=_OUR_ENVELOPE,
+                description=(
+                    "No id (`salon_id`: This field is required.), an id that "
+                    "is not a UUID (`invalid`, on the field that was sent), or "
+                    "both ids at once (`one_id_only`)."
+                ),
+            ),
+        },
     ),
 )
 class FavouriteListView(ListAPIView):
     """
     GET  /api/v1/favourite  the customer's saved salons, paginated
     POST /api/v1/favourite  the heart, a toggle, body {"salon_id": "..."}
+                            or {"stylist_id": "..."}
 
     NOT inheriting SalonDiscoveryListView, although it started that way and
     the filtering below is close to a copy of it. Inheriting also inherits
@@ -1057,20 +1125,37 @@ class FavouriteListView(ListAPIView):
 
     def post(self, request, *args, **kwargs):
         """
-        Tap the heart. Already saved means remove, otherwise add.
+        Tap the heart, on a salon or on a stylist. Already saved means
+        remove, otherwise add.
 
         A TOGGLE rather than separate add and delete endpoints, because that
         is what the heart button is. The response says which way it went, so
         the app sets the icon from the answer instead of guessing.
 
-        The salon is not checked for existence: that is one extra query on
-        every tap to catch an id the app got from this same API.
+        Send exactly one id: `salon_id` for a salon, `stylist_id` for a
+        stylist. Both at once is a 422 (`one_id_only`). An id that is not a
+        UUID is a 422 (`invalid`) on that field.
 
-        A `salon_id` that is not a UUID is a 422 (`invalid`) on that field.
+        The salon is not checked for existence: that is one extra query on
+        every tap to catch an id the app got from this same API. A stylist IS
+        checked, when saving only: one the app cannot show answers 404.
         """
         # A body that is not a JSON object (a list, a bare string) has no id.
         body = request.data if isinstance(request.data, dict) else {}
         salon_id = body.get("salon_id")
+        stylist_id = body.get("stylist_id")
+
+        if salon_id and stylist_id:
+            # No field to blame: it is the pair that is wrong.
+            raise ValidationError({
+                "non_field_errors": [
+                    ErrorDetail("Send salon_id or stylist_id, not both.", code="one_id_only")
+                ]
+            })
+        if stylist_id:
+            return self._stylist_heart(request.user, stylist_id)
+
+        # Neither id answers as it always has: `salon_id` is required.
         if not salon_id:
             raise ValidationError({"salon_id": ["This field is required."]})
 
@@ -1094,6 +1179,33 @@ class FavouriteListView(ListAPIView):
         # double tap. Whichever tap wrote the row, the salon is saved now, and
         # that is the answer.
         Favourite.objects.get_or_create(account=request.user, storefront_id=storefront_id)
+        return Response({"is_favorite": True})
+
+    @staticmethod
+    def _stylist_heart(account, stylist_id):
+        """The same toggle, on a stylist: its own table (favourite_stylist)."""
+        staff_id = body_uuid(stylist_id)
+        if staff_id is None:
+            raise _invalid(ParamError("stylist_id", "Must be a valid UUID."))
+
+        # Unsave first, and without a look at the stylist: a heart on someone
+        # who has left since must still come off.
+        deleted, _ = FavouriteStylist.objects.filter(
+            account=account,
+            staff_id=staff_id,
+        ).delete()
+
+        if deleted:
+            return Response({"is_favorite": False})
+
+        # Unlike a salon, a stylist IS looked up before saving. The customer
+        # is not at a salon here, so it is "a stylist the app can show at
+        # some salon": a heart on anyone else could never be seen again.
+        if not stylist_is_showable(staff_id):
+            raise NotFound(NO_STYLIST_TO_SAVE)
+
+        # get_or_create for the same reason as above: a double tap.
+        FavouriteStylist.objects.get_or_create(account=account, staff_id=staff_id)
         return Response({"is_favorite": True})
 
 
