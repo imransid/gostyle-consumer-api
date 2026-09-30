@@ -306,7 +306,8 @@ salon is trained for (only the fields that matter here):
 
 ## 4. Errors
 
-Same envelope as the other routes (`AUTH_GUIDE.md`).
+Same envelope as every other route: `detail` (a sentence), `code` (what kind
+of error), and `errors`, a list of `{ field, code, message }`.
 
 | Case                                                          | Status | `code`              | `detail` |
 | ------------------------------------------------------------- | ------ | ------------------- | -------- |

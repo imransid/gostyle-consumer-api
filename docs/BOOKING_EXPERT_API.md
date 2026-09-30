@@ -153,7 +153,10 @@ The rules, in full:
 ## 4. Errors
 
 Errors are for bad input only. A request whose ids are all valid never fails,
-however few stylists come back. Same envelope as `AUTH_GUIDE.md`.
+however few stylists come back.
+
+Same envelope as every other route: `detail` (a sentence), `code` (what kind
+of error), and `errors`, a list of `{ field, code, message }`.
 
 ```json
 {
