@@ -271,6 +271,27 @@ def path_uuid(value):
     return uuid.UUID(value)
 
 
+def body_uuid(value):
+    """
+    An id from a JSON BODY as a UUID, or None when it is not one.
+
+    Text only, in any spelling a UUID column itself reads (with dashes or
+    without, in braces, as a URN), so an id that saved before still saves. A
+    number is not an id: left to the column, 123 is read as "the UUID numbered
+    123" and saved.
+
+    For a view to check BEFORE the id reaches a query: a UUID column given
+    text it cannot read raises Django's own ValidationError, which the API's
+    error handler does not know, so the customer gets a 500.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        return uuid.UUID(value)
+    except ValueError:
+        return None
+
+
 def _uuid(params, name):
     value = params.get(name)
     if not value or not value.strip():

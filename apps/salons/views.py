@@ -29,6 +29,7 @@ from .snapshot import field as snap_field
 from .params import (
     MAX_SERVICE_IDS,
     ParamError,
+    body_uuid,
     parse_discovery,
     parse_map,
     parse_nearest_available,
@@ -1064,20 +1065,35 @@ class FavouriteListView(ListAPIView):
 
         The salon is not checked for existence: that is one extra query on
         every tap to catch an id the app got from this same API.
+
+        A `salon_id` that is not a UUID is a 422 (`invalid`) on that field.
         """
-        salon_id = request.data.get("salon_id")
+        # A body that is not a JSON object (a list, a bare string) has no id.
+        body = request.data if isinstance(request.data, dict) else {}
+        salon_id = body.get("salon_id")
         if not salon_id:
             raise ValidationError({"salon_id": ["This field is required."]})
 
+        # Checked here, before the query. Left to the table's UUID column,
+        # text it cannot read raised Django's own ValidationError, which the
+        # error handler does not know: a 500 for a typo.
+        storefront_id = body_uuid(salon_id)
+        if storefront_id is None:
+            raise _invalid(ParamError("salon_id", "Must be a valid UUID."))
+
         deleted, _ = Favourite.objects.filter(
             account=request.user,
-            storefront_id=salon_id,
+            storefront_id=storefront_id,
         ).delete()
 
         if deleted:
             return Response({"is_favorite": False})
 
-        Favourite.objects.create(account=request.user, storefront_id=salon_id)
+        # get_or_create, not create. Two taps at once both find nothing to
+        # delete, and the slower one's create hit the unique rule: a 500 on a
+        # double tap. Whichever tap wrote the row, the salon is saved now, and
+        # that is the answer.
+        Favourite.objects.get_or_create(account=request.user, storefront_id=storefront_id)
         return Response({"is_favorite": True})
 
 
