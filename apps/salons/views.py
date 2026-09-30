@@ -54,7 +54,7 @@ from apps.accounts.models import Favourite, FavouriteStylist
 from . import slots, timezones
 from .hours import resolve as resolve_hours
 from .hours import weekly_row as hours_row
-from .menu import category_chip, service_price
+from .menu import service_groups, service_row
 from .money import major
 from .selectors import (
     booking_route,
@@ -346,65 +346,19 @@ class SalonServicesView(APIView):
         if salon is None:
             raise Http404("Salon not found")
 
+        # The grouping and the rows live in menu.py, shared with the Expert
+        # Profile screen (its service_groups are these groups, narrowed to
+        # one stylist), so the two screens show one menu.
         categories = salon_categories(salon.tenant_id)
-        services = salon_services(salon)
-
-        # category_0_id, not category_id: the service table has a legacy text
-        # column already named `category`, so inspectdb renamed the real
-        # foreign key rather than colliding with it.
-        #
-        # A category that is not in `categories` (deleted) files the service
-        # under None, with the services that have no category: both are
-        # "Other", and two groups with the same id "other" would draw twice.
-        grouped = {}
-        for svc in services:
-            cat_id = svc.category_0_id if svc.category_0_id in categories else None
-            grouped.setdefault(cat_id, []).append(svc)
-
-        chips = {}
-        groups = []
-
-        for cat_id, svcs in grouped.items():
-            cat = categories.get(cat_id)
-            # A service with no category, or one pointing at a deleted row,
-            # still has to appear: dropping it would silently hide a bookable
-            # service from the menu.
-            if cat is None:
-                cat = {"id": None, "name_en": "Other", "icon": None, "parent_id": None}
-
-            # The parent, as a chip. Shared with the Service Detail screen
-            # (menu.category_chip), so both name the same chip.
-            chip = category_chip(categories, cat_id)
-            chips[chip["id"]] = chip
-
-            groups.append({
-                "id": str(cat["id"]) if cat["id"] else "other",
-                "category_id": chip["id"],
-                "name": cat["name_en"],
-                "services": [self._service(s) for s in svcs],
-            })
+        chips, groups = service_groups(salon_services(salon), categories)
 
         return Response({
-            "service_categories": [{"id": "all", "label": "All"}] + list(chips.values()),
+            "service_categories": [{"id": "all", "label": "All"}] + chips,
             "service_groups": groups,
         })
 
-    @staticmethod
-    def _service(svc) -> dict:
-        # duration_min and duration_max are the SAME number. A real range needs
-        # service_variant rows with differing durations; until the app reads
-        # those, sending one value twice is honest and lets the app collapse
-        # "20 - 20 mins" to "20 mins" itself.
-        return {
-            "id": str(svc.id),
-            "name": svc.name,
-            "description": svc.description,
-            # Shared with the Service Detail screen (menu.service_price): the
-            # two must show the same number.
-            "price": service_price(svc),
-            "duration_min": svc.duration_minutes,
-            "duration_max": svc.duration_minutes,
-        }
+    # The tab's row, still reachable under its old name.
+    _service = staticmethod(service_row)
 
 def stylist_rows(salon, service_ids=None, stages=None):
     """

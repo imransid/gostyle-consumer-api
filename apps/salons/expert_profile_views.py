@@ -34,9 +34,18 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .expert_profile import core_fields
+from . import menu
+from .expert_profile import core_fields, service_groups
 from .params import path_uuid
-from .selectors import is_favourite_stylist, salon_profile, stylist_for_salon
+from .selectors import (
+    is_favourite_stylist,
+    salon_categories,
+    salon_profile,
+    salon_services,
+    service_stage_rows,
+    stylist_for_salon,
+    stylist_service_coverage,
+)
 from .views import _OUR_ENVELOPE, _stylist_row
 
 # Written for the customer: the app shows `detail` on its empty state. The
@@ -45,8 +54,21 @@ from .views import _OUR_ENVELOPE, _stylist_row
 NO_SALON = "This salon is not available."
 NO_STYLIST = "This stylist is no longer at this salon."
 
-# The 200 so far: the person (E2) and the heart (E3b). E8 replaces this with
-# the full shape.
+# One row of service_groups: a row of GET /salon/<id>/services.
+_SERVICE_ROW = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string", "format": "uuid"},
+        "name": {"type": "string"},
+        "description": {"type": "string", "nullable": True},
+        "price": {"type": "number"},
+        "duration_min": {"type": "integer"},
+        "duration_max": {"type": "integer"},
+    },
+}
+
+# The 200 so far: the person (E2), the heart (E3b) and the services (E4). E8
+# replaces this with the full shape.
 _ANSWER_SO_FAR = {
     "type": "object",
     "properties": {
@@ -59,10 +81,21 @@ _ANSWER_SO_FAR = {
         "rating": {"type": "number", "nullable": True},
         "review_count": {"type": "integer"},
         "is_favorite": {"type": "boolean"},
+        "service_groups": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "services": {"type": "array", "items": _SERVICE_ROW},
+                },
+            },
+        },
     },
     "required": [
         "id", "salon_id", "name", "title", "role", "avatar_url", "rating", "review_count",
-        "is_favorite",
+        "is_favorite", "service_groups",
     ],
 }
 
@@ -96,8 +129,11 @@ _ANSWER_SO_FAR = {
                 "reviews exist yet, so `rating` is null and `review_count` "
                 "is 0. `is_favorite` is the caller's own heart on this "
                 "stylist (POST /favourite with `stylist_id`): send the token "
-                "to get it, a guest always gets false. The rest of the "
-                "screen's fields are being added."
+                "to get it, a guest always gets false. `service_groups` is "
+                "only what this stylist can do, in the groups, order, rows "
+                "and prices of GET /salon/{salon_id}/services; a group's "
+                "`id` is that route's group id (a UUID, or `other`). The "
+                "rest of the screen's fields are being added."
             ),
             examples=[
                 OpenApiExample(
@@ -112,6 +148,22 @@ _ANSWER_SO_FAR = {
                         "rating": None,
                         "review_count": 0,
                         "is_favorite": False,
+                        "service_groups": [
+                            {
+                                "id": "7a1d3c52-0b86-4c0e-9d53-1f2a6b7c8d90",
+                                "name": "Precision Cuts",
+                                "services": [
+                                    {
+                                        "id": "bea5b243-8447-4f41-beff-14777f930ee7",
+                                        "name": "The Gentleman's Cut",
+                                        "description": "A classic haircut, with a wash and a styled finish.",
+                                        "price": 199.0,
+                                        "duration_min": 30,
+                                        "duration_max": 30,
+                                    },
+                                ],
+                            },
+                        ],
                     },
                 ),
             ],
@@ -161,4 +213,30 @@ class SalonExpertProfileView(APIView):
         # The caller's own heart on this stylist: read with their token when
         # they sent one, false for a guest (the contract's section 3).
         body["is_favorite"] = is_favourite_stylist(request.user, stylist.id)
+        body["service_groups"] = self._service_groups(salon, stylist)
         return Response(body)
+
+    @staticmethod
+    def _service_groups(salon, stylist):
+        """What this stylist does, grouped as the Services tab."""
+        services = list(salon_services(salon))
+        if not services:
+            return []
+
+        # The Expert step's own question (GET /salon/<id>/stylists
+        # ?service_ids=), asked the other way round: not "who can do this
+        # service" but "which services can this one do". The same code, fed
+        # the whole menu and its stages read once, so a service is here
+        # exactly when this stylist is in that route's list for it. A service
+        # with no stages is in nobody's list (that route's 422).
+        ids = [service.id for service in services]
+        covered = stylist_service_coverage(
+            salon, ids, [stylist.id], stages=service_stage_rows(ids),
+        ).get(stylist.id)
+        if not covered:
+            return []
+
+        # The whole menu as the tab groups it, then narrowed: the tab's
+        # groups, order, rows and branch prices.
+        _, groups = menu.service_groups(services, salon_categories(salon.tenant_id))
+        return service_groups(groups, covered)

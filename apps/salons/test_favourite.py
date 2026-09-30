@@ -30,7 +30,8 @@ from rest_framework.test import APIClient
 
 from apps.accounts.models import ConsumerAccount, Favourite, FavouriteStylist
 from apps.accounts.services import tokens_for
-from apps.salons import expert_profile_views, views
+from apps.salons import views
+from apps.salons.test_expert_profile import mock_platform_reads
 
 URL = "/api/v1/favourite"
 
@@ -487,21 +488,18 @@ class FavouriteStylistTableTests(TestCase):
 class ProfileIsFavoriteTests(StylistHeartTestCase):
     """
     `is_favorite` on GET /salon/<id>/stylist/<id>: the customer's own heart,
-    read from the real table with a real token. The salon and the stylist are
-    platform rows, so those two reads are mocked.
+    read from the real table with a real token. The salon, the stylist and
+    the menu are platform rows, so those reads are mocked.
     """
 
     def profile(self, stylist_id=STYLIST):
-        salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT, branch_id=BRANCH)
         person = types.SimpleNamespace(
             id=stylist_id, tenant_id=TENANT, branch_id=BRANCH, first_name="Liam",
             last_name="Johnson", position="Senior Barber", job_title=None, avatar_url=None,
         )
         with ExitStack() as stack:
-            stack.enter_context(mock.patch.object(
-                expert_profile_views, "salon_profile", return_value=salon))
-            stack.enter_context(mock.patch.object(
-                expert_profile_views, "stylist_for_salon", return_value=person))
+            # Every platform read mocked; the favourite table is the real one.
+            mock_platform_reads(stack, person=person)
             response = self.client.get(f"/api/v1/salon/{SALON}/stylist/{stylist_id}")
         self.assertEqual(response.status_code, 200)
         return response.json()
