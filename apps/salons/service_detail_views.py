@@ -5,7 +5,8 @@ The app team's Service Detail screen (docs/service-detail-fe-contract.md):
 
 Everything the screen draws, in one call. Built step by step
 (docs/SERVICE_DETAIL_AUDIT.md, section 7): the route, the 404s and auth in S1,
-the fields in S2 to S6.
+the fields in S2 to S6. This module reads; service_detail.py (pure) writes
+the fields.
 
 PUBLIC, like every other /salon/<id>/... route (Rafa, Q4): a guest can open a
 salon, its services and its stylists, so the detail opens too. A token is
@@ -27,7 +28,8 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .selectors import salon_profile, service_for_salon
+from .selectors import salon_categories, salon_profile, service_for_salon
+from .service_detail import core_fields
 from .views import _OUR_ENVELOPE
 
 # Written for the customer: the app shows `detail` on its empty state.
@@ -69,7 +71,14 @@ def path_uuid(value):
         ),
     ],
     responses={
-        200: OpenApiResponse(description="The service. Fields are added in S2 to S6."),
+        200: OpenApiResponse(
+            description=(
+                "The service: id, salon_id, name, description, price (before "
+                "VAT, the Services tab's number), duration_min, duration_max, "
+                "category ({id, label}, the tab's chip) and is_active. More "
+                "fields are added in S3 to S6."
+            ),
+        ),
         401: OpenApiResponse(response=_OUR_ENVELOPE, description="A bad or expired token."),
         404: OpenApiResponse(
             response=_OUR_ENVELOPE,
@@ -97,7 +106,5 @@ class SalonServiceDetailView(APIView):
         if service is None:
             raise NotFound(NO_SERVICE)
 
-        return Response({
-            "id": str(service.id),
-            "salon_id": str(salon.id),
-        })
+        categories = salon_categories(salon.tenant_id)
+        return Response(core_fields(salon, service, categories))

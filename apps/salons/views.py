@@ -52,6 +52,7 @@ from apps.accounts.models import Favourite
 from . import slots, timezones
 from .hours import resolve as resolve_hours
 from .hours import weekly_row as hours_row
+from .menu import category_chip, service_price
 from .money import major
 from .selectors import (
     booking_route,
@@ -363,18 +364,14 @@ class SalonServicesView(APIView):
             if cat is None:
                 cat = {"id": None, "name_en": "Other", "icon": None, "parent_id": None}
 
-            parent = categories.get(cat["parent_id"]) if cat["parent_id"] else None
-            chip = parent or cat
-
-            chips[chip["id"]] = {
-                "id": str(chip["id"]) if chip["id"] else "other",
-                "label": chip["name_en"],
-                "icon": chip.get("icon"),
-            }
+            # The parent, as a chip. Shared with the Service Detail screen
+            # (menu.category_chip), so both name the same chip.
+            chip = category_chip(categories, cat_id)
+            chips[chip["id"]] = chip
 
             groups.append({
                 "id": str(cat["id"]) if cat["id"] else "other",
-                "category_id": str(chip["id"]) if chip["id"] else "other",
+                "category_id": chip["id"],
                 "name": cat["name_en"],
                 "services": [self._service(s) for s in svcs],
             })
@@ -390,12 +387,13 @@ class SalonServicesView(APIView):
         # service_variant rows with differing durations; until the app reads
         # those, sending one value twice is honest and lets the app collapse
         # "20 - 20 mins" to "20 mins" itself.
-        price_minor = getattr(svc, "branch_price_minor", None) or svc.price_minor
         return {
             "id": str(svc.id),
             "name": svc.name,
             "description": svc.description,
-            "price": major(price_minor),
+            # Shared with the Service Detail screen (menu.service_price): the
+            # two must show the same number.
+            "price": service_price(svc),
             "duration_min": svc.duration_minutes,
             "duration_max": svc.duration_minutes,
         }
