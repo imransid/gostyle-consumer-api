@@ -36,7 +36,7 @@ from .selectors import (
     service_stages,
 )
 from .service_detail import content, core_fields, photos
-from .views import _OUR_ENVELOPE
+from .views import _OUR_ENVELOPE, stylist_rows
 
 # Written for the customer: the app shows `detail` on its empty state.
 NO_SALON = "This salon is not available."
@@ -83,8 +83,11 @@ def path_uuid(value):
                 "VAT, the Services tab's number), duration_min, duration_max, "
                 "category ({id, label}, the tab's chip), is_active, hero_url, "
                 "gallery (at most 5), gallery_count, included (the stage "
-                "names), details (the Key Details rows) and preparation (the "
-                "care bullets). More fields are added in S5 and S6."
+                "names), details (the Key Details rows), preparation (the "
+                "care bullets) and experts (exactly GET /salon/{salon_id}/"
+                "stylists?service_ids={service_id}: same list, order and "
+                "shape; [] when the service is pulled or has no stages). "
+                "More fields are added in S6."
             ),
         ),
         401: OpenApiResponse(response=_OUR_ENVELOPE, description="A bad or expired token."),
@@ -121,4 +124,16 @@ class SalonServiceDetailView(APIView):
         # Read once: the names here, the skills and levels for the experts.
         stages = service_stages(service.id)
         body.update(content(service, stages))
+
+        # Who can do it: the Expert step's own list (GET /salon/<id>/stylists
+        # ?service_ids=<id>), the same code, so the same people in the same
+        # order and shape, fed the stages read above (no second stage read).
+        # [] rather than that route's 422s: a pulled service cannot be booked
+        # (unknown_service there), and one with no stages has no skill to
+        # match (service_without_skill there). The screen still opens.
+        body["experts"] = (
+            stylist_rows(salon, [service.id], stages=stages)
+            if body["is_active"] and stages
+            else []
+        )
         return Response(body)

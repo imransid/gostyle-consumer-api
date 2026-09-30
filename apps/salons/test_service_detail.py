@@ -13,6 +13,8 @@ S3: hero_url, gallery (at most 5) and gallery_count.
 
 S4: included, details and preparation, with the stages read once.
 
+S5: experts, the Expert step's own list, compared with GET /salon/:id/stylists.
+
 The selectors are mocked; no database.
 """
 
@@ -60,11 +62,11 @@ class Seams:
     The view with every selector it reads mocked. A test passes only what it
     cares about; the rest are harmless defaults. Each mock is kept on self
     (salon_lookup, service_lookup, categories_lookup, photos_lookup,
-    stages_lookup) for call checks.
+    stages_lookup, experts_lookup) for call checks.
     """
 
     def call(self, path=None, *, salon=True, service=True, photos=([], []),
-             stages=(), **headers):
+             stages=(), experts=(), **headers):
         found_salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT) if salon else None
         if service is True:
             service = service_row()
@@ -74,6 +76,7 @@ class Seams:
             "salon_categories": CATEGORIES,
             "service_photo_urls": photos,
             "service_stages": list(stages),
+            "stylist_rows": list(experts),
         }
         with ExitStack() as stack:
             mocks = {
@@ -87,6 +90,7 @@ class Seams:
             self.categories_lookup = mocks["salon_categories"]
             self.photos_lookup = mocks["service_photo_urls"]
             self.stages_lookup = mocks["service_stages"]
+            self.experts_lookup = mocks["stylist_rows"]
             return self.client.get(path or url(), **headers)
 
 
@@ -385,6 +389,7 @@ class CoreFieldsTests(Seams, SimpleTestCase):
                 {"label": "Suitable for", "value": "Everyone", "icon": "scissors"},
             ],
             "preparation": [],
+            "experts": [],
         })
 
     def test_categories_are_read_for_the_salon_s_tenant(self):
@@ -796,3 +801,137 @@ class ContentFieldsTests(Seams, SimpleTestCase):
     def test_nothing_to_say_hides_the_blocks(self):
         body = self.call(stages=[]).json()
         self.assertEqual((body["included"], body["preparation"]), ([], []))
+
+
+# ---------------------------------------------------------------------------
+# S5: experts
+# ---------------------------------------------------------------------------
+
+class ExpertsTests(Seams, SimpleTestCase):
+    """experts in the answer: who is asked, and when nobody is."""
+
+    STAGES = [stage("Cut", level=2)]
+    DARIUS = {"id": str(uuid.uuid4()), "name": "Darius Stone"}
+
+    def test_from_stylist_rows_with_the_stages_already_read(self):
+        body = self.call(stages=self.STAGES, experts=[self.DARIUS]).json()
+        self.assertEqual(body["experts"], [self.DARIUS])
+        (salon, service_ids), kwargs = self.experts_lookup.call_args
+        self.assertEqual((salon.id, service_ids), (SALON, [SERVICE]))
+        self.assertIs(kwargs["stages"], self.stages_lookup.return_value)
+        self.stages_lookup.assert_called_once_with(SERVICE)
+
+    def test_a_pulled_service_has_no_experts_and_asks_nobody(self):
+        for change in ({"status": "HIDDEN"}, {"status": "ARCHIVED"},
+                       {"deleted_at": "2026-09-01T00:00:00Z"},
+                       {"online_booking_enabled": False}):
+            with self.subTest(**change):
+                response = self.call(service=service_row(**change),
+                                     stages=self.STAGES, experts=[self.DARIUS])
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["experts"], [])
+                self.experts_lookup.assert_not_called()
+
+    def test_a_service_with_no_stages_has_no_experts_and_asks_nobody(self):
+        # The stylists route answers 422 service_without_skill here; the
+        # screen still opens.
+        response = self.call(stages=[], experts=[self.DARIUS])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["experts"], [])
+        self.experts_lookup.assert_not_called()
+
+    def test_nobody_qualified_is_an_empty_list_not_an_error(self):
+        response = self.call(stages=self.STAGES, experts=[])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["experts"], [])
+
+
+class ExpertsMatchTheStylistsRouteTests(SimpleTestCase):
+    """
+    The contract's rule (§3): experts is the same list as
+    GET /salon/:id/stylists?service_ids={id}, in the same order and shape.
+
+    Both routes run for real down to the skill rules; only the rows at the
+    edges are mocked, and they are the SAME rows for both: the salon, the
+    stages, the staff, how each stage skill resolves, who holds what.
+    """
+
+    CUT, COLOUR = uuid.uuid4(), uuid.uuid4()
+    STAGES = [stage("Cut", skill=CUT, level=2), stage("Colour", skill=COLOUR, level=3)]
+
+    @staticmethod
+    def stylist(name, first, last, position=None, job_title=None, avatar=None):
+        return types.SimpleNamespace(
+            id=uuid.UUID(int=name), tenant_id=TENANT, branch_id=uuid.uuid4(),
+            first_name=first, last_name=last, position=position,
+            job_title=job_title, avatar_url=avatar,
+        )
+
+    def setUp(self):
+        self.zara = self.stylist(1, "Zara", "Khan", "Senior Stylist", "Colour Expert", "https://x/z.png")
+        self.adam = self.stylist(2, "Adam", "Lee", None, "Barber")
+        self.noname = self.stylist(3, None, None)
+        self.cut_only = self.stylist(4, "Cara", "Cut", "Stylist")
+        self.staff = [self.zara, self.adam, self.noname, self.cut_only]
+        self.held = [
+            {"staff_member_id": s.id, "skill_id": skill, "level": level}
+            for s, skill, level in [
+                (self.zara, self.CUT, "MASTER"), (self.zara, self.COLOUR, "SENIOR"),
+                (self.adam, self.CUT, "JUNIOR"), (self.adam, self.COLOUR, "MASTER"),
+                (self.noname, self.CUT, "SENIOR"), (self.noname, self.COLOUR, "SENIOR"),
+                (self.cut_only, self.CUT, "MASTER"),
+            ]
+        ]
+
+    def both(self):
+        salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT, branch_id=uuid.uuid4())
+        with ExitStack() as stack:
+            def patch(target, **kw):
+                return stack.enter_context(mock.patch(target, **kw))
+            # The stylists route's own reads.
+            patch("apps.salons.views.salon_profile", return_value=salon)
+            patch("apps.salons.views.salon_service_ids", return_value={SERVICE})
+            patch("apps.salons.views.service_stage_rows", return_value=self.STAGES)
+            # The detail's own reads.
+            patch("apps.salons.service_detail_views.salon_profile", return_value=salon)
+            patch("apps.salons.service_detail_views.service_for_salon", return_value=service_row())
+            patch("apps.salons.service_detail_views.salon_categories", return_value=CATEGORIES)
+            patch("apps.salons.service_detail_views.service_photo_urls", return_value=([], []))
+            patch("apps.salons.service_detail_views.service_stages", return_value=self.STAGES)
+            # Shared by both, through stylist_rows.
+            patch("apps.salons.views.salon_stylists", return_value=self.staff)
+            patch("apps.salons.selectors.skill_bridge",
+                  return_value={self.CUT: self.CUT, self.COLOUR: self.COLOUR})
+            patch("apps.salons.selectors.staff_skill_rows", return_value=self.held)
+            # stylist_service_coverage reads stages itself only when given none.
+            second_read = patch("apps.salons.selectors.service_stage_rows")
+
+            stylists = self.client.get(f"/api/v1/salon/{SALON}/stylists?service_ids={SERVICE}")
+            detail = self.client.get(url())
+        self.assertEqual((stylists.status_code, detail.status_code), (200, 200))
+        return stylists.json()["stylists"], detail.json()["experts"], second_read
+
+    def test_the_same_list_in_the_same_order_and_shape(self):
+        stylists, experts, _ = self.both()
+        self.assertEqual(experts, stylists)
+
+    def test_the_list_is_the_qualified_ones_by_name(self):
+        # Not a trivial match: the cut-only stylist is left out, and the
+        # order is the route's (rating, all null, then name), not the input.
+        _, experts, _ = self.both()
+        self.assertEqual([e["name"] for e in experts], [None, "Adam Lee", "Zara Khan"])
+
+    def test_each_expert_has_the_contract_s_keys(self):
+        _, experts, _ = self.both()
+        zara = next(e for e in experts if e["name"] == "Zara Khan")
+        self.assertLessEqual(
+            {"id", "name", "title", "role", "rating", "review_count", "avatar_url"}, set(zara)
+        )
+        self.assertEqual(
+            (zara["title"], zara["role"], zara["avatar_url"]),
+            ("Senior Stylist", "Colour Expert", "https://x/z.png"),
+        )
+
+    def test_no_second_stage_read(self):
+        _, _, second_read = self.both()
+        second_read.assert_not_called()
