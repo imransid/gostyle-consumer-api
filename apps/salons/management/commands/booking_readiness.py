@@ -11,9 +11,11 @@ the answer is "nobody" or "never".
 The booking flow needs four things to line up, and each one is somewhere
 different in the platform:
 
-    services  → stages → catalog_skill      Service Builder
+    services  → stages → skill              Service Builder
     stylists  → skill  → staff_skill_…      Staff → Skills
-    catalog_skill.code == skill.code        the bridge between those two
+    catalog_skill.code == skill.code        the bridge, for stages built
+                                            before 2026-09-18 on a
+                                            platform-wide catalog_skill
     stylists  → shift  → shift_roster       Staff Operations → Shifts
 
 Three of the four can be perfectly good while the fourth is empty, and the API
@@ -110,10 +112,12 @@ class Command(BaseCommand):
         bridge = skill_bridge(salon.tenant_id, {row["skill_id"] for row in stages})
         bridged = sum(1 for target in bridge.values() if target is not None)
         self.line(
-            "skills matched by code", f"{bridged}/{len(bridge)}",
+            "stage skills resolved", f"{bridged}/{len(bridge)}",
             self.how_many(bridged, len(bridge)),
-            "A required catalog_skill has no tenant skill with the same "
-            "`code`. Staff → Skills: add it, and make the code match.",
+            "A stage needs a skill nobody here can hold: a retired skill, "
+            "another salon's skill, or an old catalog skill with no salon "
+            "skill of the same `code`. Service Builder → Stages: pick a live "
+            "skill, or Staff → Skills: add one with that code.",
         )
 
         # ── Does anyone hold them? ──

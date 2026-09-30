@@ -57,10 +57,10 @@ from apps.platform_data.models import (
     StaffSkillAssignment,
 )
 from .skills import (
-    bridge as bridge_skills,
     coverage as skill_coverage,
     held_levels as held_skill_levels,
     requirements as skill_requirements,
+    resolve as resolve_skills,
 )
 
 from .geo import EARTH_RADIUS_KM, bounding_box, radius_box
@@ -1135,23 +1135,33 @@ def service_stage_rows(service_ids):
     )
 
 
-def skill_bridge(tenant_id, catalog_skill_ids):
-    """catalog_skill id → this tenant's skill id (or None), keyed by code."""
-    if not catalog_skill_ids:
+def skill_bridge(tenant_id, stage_skill_ids):
+    """
+    A stage's skill id → this tenant's skill id, or None when nothing can
+    satisfy it. Every id comes back as a key. The rules are `skills.resolve`.
+
+    A stage's skill id is one of the salon's own skills now, or an old
+    catalog_skill id, so both tables are read, as the platform does.
+    """
+    if not stage_skill_ids:
         return {}
 
+    stage_skill_ids = list(stage_skill_ids)
+
     catalog_rows = CatalogSkill.objects.filter(
-        id__in=list(catalog_skill_ids)
+        id__in=stage_skill_ids
     ).values("id", "code")
 
     # Whole catalogue rather than a code-filtered query: a tenant holds a few
     # dozen skills, and the bridge needs every code to match against anyway.
+    # RETIRED skills are read too, like the platform does: a stage built on a
+    # skill that was retired later must still count as a requirement (one
+    # nobody can meet), not vanish.
     tenant_rows = Skill.objects.filter(
         tenant_id=tenant_id,
-        deleted_at__isnull=True,
-    ).values("id", "code")
+    ).values("id", "code", "deleted_at")
 
-    return bridge_skills(list(catalog_rows), list(tenant_rows))
+    return resolve_skills(stage_skill_ids, list(tenant_rows), list(catalog_rows))
 
 
 def staff_skill_rows(tenant_id, staff_ids):
@@ -1171,7 +1181,7 @@ def stylist_service_coverage(storefront, service_ids, staff_ids, stages=None):
     """
     staff id → the requested services that person can perform alone.
 
-    Four small queries — stages, catalog codes, tenant codes, assignments —
+    Four small queries (stages, catalog codes, tenant skills, assignments),
     and then the matching happens in `skills.py`. Doing it in SQL would mean
     expressing the code bridge and the two level scales as a join, and the
     only readable place for either is Python.
@@ -1182,10 +1192,10 @@ def stylist_service_coverage(storefront, service_ids, staff_ids, stages=None):
     if stages is None:
         stages = service_stage_rows(service_ids)
 
-    catalog_to_tenant = skill_bridge(
+    resolved = skill_bridge(
         storefront.tenant_id, {row["skill_id"] for row in stages}
     )
-    required = skill_requirements(stages, catalog_to_tenant)
+    required = skill_requirements(stages, resolved)
     held = held_skill_levels(staff_skill_rows(storefront.tenant_id, staff_ids))
 
     return skill_coverage(list(service_ids), required, held)
