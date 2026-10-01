@@ -172,6 +172,25 @@ def live_manual_state():
         output_field=TextField(),
     )
 
+def product_detail(product_id):
+    """One sellable retail product with all its live variants, or None."""
+    product = Product.objects.filter(
+        id=product_id,
+        status="ACTIVE",
+        type="RETAIL",
+        deleted_at__isnull=True,
+    ).first()
+    if product is None:
+        return None
+
+    variants = list(
+        ProductVariant.objects.filter(
+            product_id=product.id,
+            deleted_at__isnull=True,
+        ).order_by("position", "id")
+    )
+    return product, variants
+
 
 def salon_products(storefront):
     default_variant = ProductVariant.objects.filter(

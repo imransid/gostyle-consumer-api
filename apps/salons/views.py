@@ -85,6 +85,7 @@ from .selectors import (
     tenant_for_salon,
     with_distance,
     with_published_card_fields,
+    product_detail,
 )
 from .serializers import (
     FavouriteSerializer,
@@ -795,6 +796,44 @@ class SalonPackagesView(APIView):
             })
 
         return Response({"my_packages": [], "bundles": bundles})
+
+
+class ProductDetailView(APIView):
+    """GET /api/v1/products/<uuid>"""
+    permission_classes = [AllowAny]
+
+    def get(self, request, product_id):
+        found = product_detail(product_id)
+        if found is None:
+            raise Http404("Product not found")
+        p, variants = found
+
+        return Response({
+            "product": {
+                "id": str(p.id),
+                "name": p.name,
+                "unit": p.unit,
+                "type": p.type,
+                "status": p.status,
+                "image_url": p.image_url,
+                "category_id": str(p.category_id) if p.category_id else None,
+                "brand_id": str(p.brand_id) if p.brand_id else None,
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+                "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+                "variants": [
+                    {
+                        "id": str(v.id),
+                        "name": v.name,
+                        "sku": v.sku,
+                        "barcode": v.barcode,
+                        "price": major(v.sale_price_minor),
+                        "currency": v.currency,
+                        "position": v.position,
+                    }
+                    for v in variants
+                ],
+            }
+        })
 
 
 class SalonProductsView(APIView):

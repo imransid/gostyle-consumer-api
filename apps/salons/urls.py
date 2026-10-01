@@ -26,10 +26,12 @@ from .views import (
     SalonStylistsView,
     StylistListView,
     ServiceListView,
-    BookingDetailView
+    BookingDetailView,
+    ProductDetailView,
 )
 
 urlpatterns = [
+    path("products/<uuid:product_id>", ProductDetailView.as_view(), name="product-detail"), 
     path("salons/", SalonListView.as_view()),
     path("discover", SalonDiscoveryListView.as_view(), name="salon-discover"),
     path("discover/map", DiscoverMapView.as_view(), name="salon-discover-map"),
