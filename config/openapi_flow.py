@@ -157,9 +157,19 @@ FLOW = (
         "14. Product",
         "Get product details.",
         (
-            ("GET", "/api/v1/products/uuid", "Gone: get product details."),
+            ("GET", "/api/v1/products/{product_id}", "Get product details"),
         ),
     ),
+    (
+        "15. Notifications",
+        "Choose which alerts the customer receives. Push is the master "
+        "switch: turning it off keeps the other choices as they were.",
+        (
+            ("GET", "/api/v1/notifications/preferences", "Get notification preferences"),
+            ("PATCH", "/api/v1/notifications/preferences", "Change some notification preferences"),
+        ),
+    ),
+
 )
 
 
