@@ -153,6 +153,13 @@ FLOW = (
             ("GET", "/api/v1/salons/", "Gone: use section 4"),
         ),
     ),
+    (
+        "14. Product",
+        "Get product details.",
+        (
+            ("GET", "/api/v1/products/uuid", "Gone: get product details."),
+        ),
+    ),
 )
 
 

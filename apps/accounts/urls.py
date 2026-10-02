@@ -1,6 +1,8 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 
+from .notification_views import NotificationPreferencesView
+
 from .views import (
     LoginView,
     LogoutView,
@@ -17,6 +19,7 @@ from .views import (
 )
 
 urlpatterns = [
+    path("notifications/preferences", NotificationPreferencesView.as_view(), name="notification-preferences"),
     path("auth/otp/request", OtpRequestView.as_view()),
     # Resend is the same operation as request: issue a fresh code.
     path("auth/otp/resend", OtpReSendView.as_view()),

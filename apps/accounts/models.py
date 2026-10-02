@@ -276,3 +276,48 @@ class FavouriteStylist(models.Model):
         indexes = [
             models.Index(fields=["account", "-created_at"]),
         ]
+
+
+
+
+class NotificationPreference(models.Model):
+    """
+    A customer's notification settings. One row per account.
+
+    ONE-TO-ONE with ConsumerAccount, so a customer can never have two sets.
+    The row is created lazily with the defaults the first time it is read
+    (see for_account), so no backfill is needed for existing accounts.
+
+    `push` is the master switch for push delivery. Turning it off does not
+    touch the six individual preferences: they keep their values so that
+    turning push back on restores what the customer had chosen.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    account = models.OneToOneField(
+        ConsumerAccount,
+        on_delete=models.CASCADE,
+        related_name="notification_preference",
+    )
+
+    booking_confirmation = models.BooleanField(default=True)
+    appointment_reminder = models.BooleanField(default=True)
+    booking_changes = models.BooleanField(default=True)
+    special_offers = models.BooleanField(default=False)
+    new_salons = models.BooleanField(default=False)
+    loyalty = models.BooleanField(default=True)
+    push = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "notification_preference"
+
+    @classmethod
+    def for_account(cls, account):
+        """The account's preferences, created with the defaults on first use."""
+        # get_or_create already survives two first requests at once: it catches
+        # the unique-constraint error and re-reads. No extra try/except needed.
+        prefs, _ = cls.objects.get_or_create(account=account)
+        return prefs
