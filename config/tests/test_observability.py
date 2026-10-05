@@ -45,6 +45,8 @@ def make_record(**kwargs):
 class JsonFormatterTests(SimpleTestCase):
     def setUp(self):
         self.formatter = JsonFormatter()
+        token = request_id_var.set("")
+        self.addCleanup(request_id_var.reset, token)
 
     def test_emits_the_core_fields(self):
         payload = json.loads(self.formatter.format(make_record()))
@@ -151,6 +153,10 @@ class JsonFormatterTests(SimpleTestCase):
 
 
 class RequestIDFilterTests(SimpleTestCase):
+    def setUp(self):
+        token = request_id_var.set("")
+        self.addCleanup(request_id_var.reset, token)
+
     def test_sets_a_placeholder_so_the_plain_format_never_breaks(self):
         record = make_record()
 
