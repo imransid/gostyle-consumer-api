@@ -86,6 +86,11 @@ services:
       AWS_REGION: ${AWS_REGION:-}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+
+      # Push notification service, a Compose container on gostyle-net as push-app.
+      # The key lives in stack.env, never in git.
+      PUSH_API_URL: ${PUSH_API_URL:-http://push-app:3351}
+      PUSH_API_KEY: ${PUSH_API_KEY:-}
     ports:
       # Platform API is on 3849. Sit next to it.
       - "3850:8000"
