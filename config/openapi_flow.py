@@ -32,6 +32,8 @@ FLOW = (
             ("POST", "/api/v1/auth/otp/verify", "Confirm the code"),
             ("POST", "/api/v1/auth/token/refresh", "Get a new access token"),
             ("POST", "/api/v1/auth/logout", "Log out"),
+            ("POST", "/api/v1/me/device-tokens", "Register this phone for push notifications"),
+            ("DELETE", "/api/v1/me/device-tokens", "Stop push notifications on this phone"),
         ),
     ),
     (
