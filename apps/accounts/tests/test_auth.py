@@ -180,31 +180,31 @@ class RegistrationTests(AuthTestCase):
         self.anonymous()
 
         second = self.register()
-        self.assertEqual(second.status_code, 400)
+        self.assertEqual(second.status_code, 422)
         self.assertEqual(ConsumerAccount.objects.filter(phone=self.phone).count(), 1)
 
     def test_register_rejects_an_invalid_destination(self):
         resp = self.register(destination="not-a-number")
-        self.assertEqual(resp.status_code, 400)
-        self.assertIn("destination", resp.data)
+        self.assertEqual(resp.status_code, 422)
+        self.assertIn("destination", [e["field"] for e in resp.data["errors"]])
         self.assertEqual(ConsumerAccount.objects.count(), 0)
 
     def test_register_rejects_a_weak_password(self):
         resp = self.register(password="weak", confirm_password="weak")
-        self.assertEqual(resp.status_code, 400)
-        self.assertIn("password", resp.data)
+        self.assertEqual(resp.status_code, 422)
+        self.assertIn("password", [e["field"] for e in resp.data["errors"]])
         self.assertEqual(ConsumerAccount.objects.count(), 0)
 
     def test_register_rejects_mismatched_passwords(self):
         resp = self.register(confirm_password="Different!1")
-        self.assertEqual(resp.status_code, 400)
-        self.assertIn("confirm_password", resp.data)
+        self.assertEqual(resp.status_code, 422)
+        self.assertIn("confirm_password", [e["field"] for e in resp.data["errors"]])
         self.assertEqual(ConsumerAccount.objects.count(), 0)
 
     def test_register_requires_gender(self):
         payload_without_gender = self.register(gender=None)
-        self.assertEqual(payload_without_gender.status_code, 400)
-        self.assertIn("gender", payload_without_gender.data)
+        self.assertEqual(payload_without_gender.status_code, 422)
+        self.assertIn("gender", [e["field"] for e in payload_without_gender.data["errors"]])
 
 
 class VerificationTests(AuthTestCase):
@@ -243,7 +243,7 @@ class VerificationTests(AuthTestCase):
         self.register_and_authenticate("email", self.email)
 
         resp = self.request_otp("phone", self.phone)
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 422)
         self.assertEqual(OtpCode.objects.count(), 0)
 
     def test_resend_alias_issues_a_code(self):
@@ -266,7 +266,7 @@ class VerificationTests(AuthTestCase):
         self.register_and_authenticate()
 
         resp = self.request_otp(destination="not-a-number")
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 422)
         self.assertEqual(OtpCode.objects.count(), 0)
 
 
@@ -304,7 +304,7 @@ class OtpDestinationSecurityTests(AuthTestCase):
 
         # Rejected: the lookup used the attacker's own contact, which has no
         # live code at all.
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 422)
 
         victim_code.refresh_from_db()
         self.assertIsNone(victim_code.consumed_at)
@@ -334,7 +334,7 @@ class OtpCodeLifecycleTests(AuthTestCase):
         otp = self.force_code(self.phone)
 
         resp = self.submit_code("000000")
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 422)
 
         # Assert on the committed value, not the stale in-memory object.
         otp.refresh_from_db()
@@ -346,7 +346,7 @@ class OtpCodeLifecycleTests(AuthTestCase):
         otp.refresh_from_db()
         self.assertEqual(otp.attempts, OtpCode.MAX_ATTEMPTS)
         self.assertFalse(otp.is_usable)
-        self.assertEqual(self.submit_code("000000").status_code, 400)
+        self.assertEqual(self.submit_code("000000").status_code, 422)
 
     def test_the_right_code_is_refused_once_attempts_are_exhausted(self):
         self.register_and_authenticate()
@@ -357,7 +357,7 @@ class OtpCodeLifecycleTests(AuthTestCase):
             self.submit_code("000000")
 
         # Locked, not merely wrong.
-        self.assertEqual(self.submit_code(CODE).status_code, 400)
+        self.assertEqual(self.submit_code(CODE).status_code, 422)
         self.assertFalse(
             ConsumerAccount.objects.get(phone=self.phone).account_verified
         )
@@ -367,7 +367,7 @@ class OtpCodeLifecycleTests(AuthTestCase):
         self.verify_own_contact()
 
         # The same code again: it was consumed, so nothing is live.
-        self.assertEqual(self.submit_code(CODE).status_code, 400)
+        self.assertEqual(self.submit_code(CODE).status_code, 422)
 
     def test_an_expired_code_is_refused(self):
         self.register_and_authenticate()
@@ -376,7 +376,7 @@ class OtpCodeLifecycleTests(AuthTestCase):
         otp.expires_at = timezone.now() - timedelta(seconds=1)
         otp.save(update_fields=["expires_at"])
 
-        self.assertEqual(self.submit_code(CODE).status_code, 400)
+        self.assertEqual(self.submit_code(CODE).status_code, 422)
         self.assertFalse(
             ConsumerAccount.objects.get(phone=self.phone).account_verified
         )
@@ -395,7 +395,7 @@ class OtpCodeLifecycleTests(AuthTestCase):
 
     def test_verify_without_a_live_code_fails(self):
         self.register_and_authenticate()
-        self.assertEqual(self.submit_code(CODE).status_code, 400)
+        self.assertEqual(self.submit_code(CODE).status_code, 422)
 
 
 class RateLimitTests(AuthTestCase):
@@ -415,7 +415,7 @@ class LoginTests(AuthTestCase):
         self.anonymous()
 
         resp = self.login()
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 422)
 
     def test_login_succeeds_after_verification(self):
         self.register_and_authenticate()
@@ -436,8 +436,8 @@ class LoginTests(AuthTestCase):
         wrong = self.login(password="Wr0ng!Pass")
         unknown = self.login(destination=self.other_phone)
 
-        self.assertEqual(wrong.status_code, 400)
-        self.assertEqual(unknown.status_code, 400)
+        self.assertEqual(wrong.status_code, 422)
+        self.assertEqual(unknown.status_code, 422)
         self.assertEqual(wrong.data, unknown.data)
 
     def login(self, destination=None, password=PASSWORD):
