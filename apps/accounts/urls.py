@@ -1,6 +1,6 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
-
+from .device_token_views import DeviceTokensView
 from .notification_views import NotificationPreferencesView
 
 from .views import (
@@ -34,4 +34,5 @@ urlpatterns = [
     path("auth/password/verify", PasswordVerifyView.as_view()),
     path("auth/password/reset", PasswordResetView.as_view()),
     path("user/lookup", UserLookupView.as_view()),
+    path("me/device-tokens", DeviceTokensView.as_view(), name="device-tokens"),
 ]

@@ -186,6 +186,11 @@ BOOKING_API_URL = env("BOOKING_API_URL", default="http://gostyle-booking_api:385
 # gunicorn worker open. Creating a booking is one transaction over there.
 BOOKING_API_TIMEOUT = env.int("BOOKING_API_TIMEOUT", default=10)
 
+
+PUSH_API_URL = env("PUSH_API_URL", default="http://push-app:3351")
+PUSH_API_KEY = env("PUSH_API_KEY", default="")
+PUSH_API_TIMEOUT = env.int("PUSH_API_TIMEOUT", default=3)
+
 # Group bookings through booking-api's mobile route, POST
 # /v1/mobile-booking/group (docs/GROUP_BOOKING_PLAN.md): one call, the party
 # saved to pay at the salon, products allowed, read back by group id, shown
