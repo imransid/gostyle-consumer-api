@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package gostyle.consumer.v1;
+
+// How to reach a customer, for the services that send them messages.
+//
+// Served by gostyle-customer-api beside ConsumerAuth, on the same :50051.
+// The caller presents the shared internal key as gRPC metadata
+// `x-internal-key`; without it the call is refused (UNAUTHENTICATED),
+// because the answer is a person's email address.
+service ConsumerDirectory {
+  rpc GetConsumerContact (GetConsumerContactRequest) returns (ConsumerContact);
+}
+
+message GetConsumerContactRequest {
+  string consumer_id = 1;
+}
+
+message ConsumerContact {
+  // False when there is no active account with this id. An ordinary answer,
+  // not an error, the same as VerifyConsumer's valid=false.
+  bool found = 1;
+  string consumer_id = 2;
+  // Empty when the customer registered without one.
+  string email = 3;
+  bool email_verified = 4;
+  // Empty when none is held.
+  string full_name = 5;
+  string language = 6;
+  // NotificationPreference.appointment_reminder, default true.
+  bool appointment_reminder = 7;
+  // NotificationPreference.push, the master switch, default true.
+  bool push_enabled = 8;
+}

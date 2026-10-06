@@ -4,8 +4,8 @@ from concurrent import futures
 import grpc
 from django.core.management.base import BaseCommand
 
-from apps.grpc_gen import auth_pb2_grpc
-from apps.grpc_gen.servicer import ConsumerAuthServicer
+from apps.grpc_gen import auth_pb2_grpc, consumer_directory_pb2_grpc
+from apps.grpc_gen.servicer import ConsumerAuthServicer, ConsumerDirectoryServicer
 
 
 class Command(BaseCommand):
@@ -24,6 +24,11 @@ class Command(BaseCommand):
 
         auth_pb2_grpc.add_ConsumerAuthServicer_to_server(
             ConsumerAuthServicer(), server
+        )
+        # Contact details for booking-api's reminders. Refuses every caller
+        # until INTERNAL_GRPC_KEY is set (servicer.py).
+        consumer_directory_pb2_grpc.add_ConsumerDirectoryServicer_to_server(
+            ConsumerDirectoryServicer(), server
         )
 
         # INSECURE is correct here: this listens only on the internal Docker

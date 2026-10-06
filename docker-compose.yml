@@ -134,6 +134,9 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       DB_SCHEMA: consumer
       REDIS_URL: redis://redis:6379/0
+      # ConsumerDirectory (booking-api's reminder emails) refuses every call
+      # until this is set, to the same value as booking-api's.
+      INTERNAL_GRPC_KEY: ${INTERNAL_GRPC_KEY:-}
     networks:
       - gostyle-net
     deploy:

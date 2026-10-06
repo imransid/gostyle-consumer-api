@@ -191,6 +191,12 @@ PUSH_API_URL = env("PUSH_API_URL", default="http://push-app:3351")
 PUSH_API_KEY = env("PUSH_API_KEY", default="")
 PUSH_API_TIMEOUT = env.int("PUSH_API_TIMEOUT", default=3)
 
+# The key internal services present to ConsumerDirectory on the gRPC server
+# (metadata x-internal-key). booking-api sends the same value, under the same
+# name, when it looks up a customer's email for a reminder. EMPTY REFUSES
+# EVERY CALL: the answer is a person's email address.
+INTERNAL_GRPC_KEY = env("INTERNAL_GRPC_KEY", default="")
+
 # Group bookings through booking-api's mobile route, POST
 # /v1/mobile-booking/group (docs/GROUP_BOOKING_PLAN.md): one call, the party
 # saved to pay at the salon, products allowed, read back by group id, shown
