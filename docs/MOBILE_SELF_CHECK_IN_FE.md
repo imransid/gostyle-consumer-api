@@ -18,7 +18,7 @@ OFF today.** Until it is on, both routes answer `404`. See §10.
 2. **Auth:** `Authorization: Bearer <app login token>` on every call. The customer is always the signed-in user.
 3. **No body.** "I am here" sends nothing but the token.
 4. **Keys are `camelCase` here**, not `snake_case`. These answers are booking-api's own, passed through as they came, like the single cancel and reschedule answers.
-5. **The server decides.** The app shows the button by the rule in §3, but the server is the judge. Every refusal has a `code` to switch on (§8). Never show a refusal as a crash.
+5. **Buttons come from the server.** Show "I am here" only when the row's `can_check_in` is `true` (§3), as with `can_cancel` and `can_reschedule`. Never work the rule out in the app. Every refusal has a `code` to switch on (§8). Never show a refusal as a crash.
 6. **The pass QR is unchanged** (§9).
 
 ---
@@ -37,7 +37,7 @@ session row's id. **Not a `GROUP` row** (§9).
 
 ## 2. The flow
 
-1. The customer opens an upcoming booking, from 30 minutes before its start.
+1. The customer opens an upcoming booking whose row has `can_check_in: true` (from 30 minutes before its start).
 2. They tap **"I am here"**: `POST /booking/{id}/check-in`. Answer: `WAITING`.
 3. The app shows "The salon knows you are here", and reads the answer every 10 seconds while the screen is open (§7).
 4. The desk answers.
@@ -49,18 +49,29 @@ session row's id. **Not a `GROUP` row** (§9).
 
 ## 3. When to show "I am here"
 
-Show it on a My Bookings row (or the booking screen) when **all** of these are true:
+**Show it only when the My Bookings row's `can_check_in` is `true`.** The
+server works it out (docs/BOOKING_LIST_API.md §5), the same way it does
+`can_cancel` and `can_reschedule`. For reference only, never to compute in the
+app, it is `true` when:
 
+- the switch `SELF_CHECK_IN_V1` is on;
+- `booking_type` is `SINGLE` or `ROUTINE` (never `GROUP`);
 - `status` is `CONFIRMED_BY_SALON`;
-- `booking_type` is `SINGLE` or `ROUTINE`;
-- now is between **30 minutes before `start_time`** and the booking's **end time**;
-- `GET /booking/{id}/check-in` does not already say `REJECTED`.
+- now is between 30 minutes before `start_time` and `end_time`.
 
-The server checks every one of these again. If the app's clock or the row is
-out of date, the answer is a `409` with a `code` (§8), and the app shows that
-message instead.
+The field is a snapshot from when the list was loaded. **Refresh My Bookings
+when the screen comes back to the foreground**, so a booking that was 40
+minutes away gets its button once the window opens.
 
-Hide it once the request is `APPROVED`, or the booking is `CHECKED_IN`.
+**The row cannot know one thing:** whether the desk already said no for this
+booking. So on the booking screen, also `GET /booking/{id}/check-in` once (§6):
+if it says `REJECTED`, hide the button even though `can_check_in` is `true`.
+A tap in that case answers `409 BOOKING_CHECKIN_REJECTED` anyway (§8).
+
+The server checks everything again on the tap. If the list is out of date,
+the answer is a `409` with a `code` (§8), and the app shows that message.
+
+Once the request is `APPROVED`, the booking is `CHECKED_IN` and the next list load has `can_check_in: false`.
 
 ---
 
@@ -84,6 +95,11 @@ export interface CheckInRequest {
 
 export interface CheckInAnswer {
   request: CheckInRequest | null;  // null: never raised
+}
+
+// The My Bookings row (GET /bookings) gains one field (§3).
+export interface MyBookingsRowCheckIn {
+  can_check_in: boolean;  // snake_case: this one is customer-api's own field
 }
 
 // booking-api's refusal shape (§8, shape B).
@@ -184,8 +200,9 @@ Two shapes, as on the single cancel and reschedule:
 ## 10. Rollout: `SELF_CHECK_IN_V1`
 
 The switch exists twice, on customer-api and on booking-api, and both must be
-on. Until then both routes answer `404`. The app can ship the button early, as
-long as it hides the button on a `404` (§8).
+on. Until then both routes answer `404`. The app can ship the button early:
+while customer-api's switch is off, `can_check_in` is `false` on every row, so
+the button never shows.
 
 ---
 
@@ -196,6 +213,8 @@ long as it hides the button on a `404` (§8).
 - [ ] The desk approves: within 10 seconds the screen says checked in, and the booking is `CHECKED_IN`.
 - [ ] The desk rejects: the screen says speak to the desk; tapping again gives `409 BOOKING_CHECKIN_REJECTED`.
 - [ ] Nobody answers until the end time: `EXPIRED`; the booking is not shown as a no-show.
-- [ ] A `GROUP` row shows no button.
+- [ ] A `GROUP` row has `can_check_in: false` and shows no button.
+- [ ] A row 40 minutes away: `can_check_in: false`. Bring the app back to the foreground 10 minutes later: the list reloads and it is `true`.
+- [ ] After a rejection: `can_check_in` may still be `true`, and the booking screen hides the button because `GET` says `REJECTED`.
 - [ ] Airplane mode on tap: an error message, no crash; tapping again later works (`200` if it went through).
-- [ ] Switch off: `404`, no button.
+- [ ] Switch off: `can_check_in` is `false` on every row, no button, and the route answers `404`.
