@@ -2371,8 +2371,9 @@ def _can_still_move(row, card, now):
     THE SERVER DECIDES, NOT THE CALLER (§3). Two questions, and both have to
     be answered no before either is offered:
 
-      * Is the booking still live? A COMPLETED, CANCELLED or NO_SHOW booking
-        cannot be cancelled again, whatever the window says.
+      * Is the booking still the customer's to change? A COMPLETED,
+        CANCELLED or NO_SHOW booking cannot be cancelled again, and a
+        CHECKED_IN one is the salon's now, whatever the window says.
       * Is the salon's cancellation window still open? `cancel_window_hours`
         is the one number the salon actually publishes, so both answers read
         it rather than one of them inventing a second rule.
@@ -2383,7 +2384,7 @@ def _can_still_move(row, card, now):
     that has not filled the field in that they may never cancel, which is a
     refusal the salon never made.
     """
-    if row.get("status") not in LIVE_BOOKING_STATUSES:
+    if row.get("status") not in CUSTOMER_CHANGEABLE_STATUSES:
         return False
 
     start = _parse_iso(row.get("start_time"))
@@ -2452,9 +2453,14 @@ def _salon_card(card, *, full):
     }
 
 
-# The three the contract calls live (§2). Anything else is history, and
-# history does not offer a cancel button.
-LIVE_BOOKING_STATUSES = frozenset({"BOOKED", "CONFIRMED_BY_SALON", "CHECKED_IN"})
+# The statuses a customer may still cancel or move from the app. The contract
+# calls three statuses live (§2), and CHECKED_IN is not one of these:
+# booking-api lets only the salon cancel a checked-in visit (a single
+# booking's cancel answers 403, a party's 409 cannot_cancel, and a party's row
+# carries the booker's own status) and moves none (409). The app's CHECKED_IN
+# also covers a visit already in service, which nobody can cancel. Anything
+# else is history, and history does not offer a button either.
+CUSTOMER_CHANGEABLE_STATUSES = frozenset({"BOOKED", "CONFIRMED_BY_SALON"})
 
 # The Upcoming and Archive row types whose cancel button follows the salon's
 # window: the ones this service can cancel by the row's own id. GROUP always

@@ -222,9 +222,15 @@ The Recurring tab is not covered by this table (see "The Recurring rows").
 "The salon's window" reads `storefront_policy.cancel_window_hours`, and
 requires two answers:
 
-* the booking is still live — `BOOKED`, `CONFIRMED_BY_SALON` or `CHECKED_IN`.
-  A `COMPLETED` or `CANCELLED` booking cannot be cancelled again, whatever the
-  window says, and offering the button is a request the salon will refuse;
+* the booking is still the customer's to change: `BOOKED` or
+  `CONFIRMED_BY_SALON`. A `COMPLETED` or `CANCELLED` booking cannot be
+  cancelled again, whatever the window says, and offering the button is a
+  request the salon will refuse. A `CHECKED_IN` booking is the salon's now:
+  booking-api lets only the salon cancel a checked-in visit (a single
+  booking's cancel answers 403, a party's 409 `cannot_cancel`; a party's row
+  carries the booker's own status) and moves none. The app's `CHECKED_IN`
+  also covers a visit already in service. So a `CHECKED_IN` row has
+  `can_cancel` and `can_reschedule` both `false`, for every type;
 * the window is still open — `now < start_time - cancel_window_hours`, compared
   against the salon's clock, which is the offset carried in `start_time`. A
   customer abroad sees the same answer as one standing outside.

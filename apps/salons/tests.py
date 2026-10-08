@@ -2332,6 +2332,40 @@ class BookingListViewTests(SimpleTestCase):
                 self.assertIs(answer["can_cancel"], True)
                 self.assertIs(answer["can_reschedule"], True)
 
+    # ------------------------------------------------------------ checked in
+
+    def test_a_checked_in_booking_offers_neither_button(self):
+        # booking-api lets only the salon cancel a checked-in visit (a single
+        # booking: 403; a party, whose row carries the booker's own status:
+        # 409 cannot_cancel) and moves none, so true would be a button that
+        # fails. Window open, and a salon with no window at all: BOOKED and
+        # CONFIRMED_BY_SALON show the window did say yes.
+        bare = {**self.CARD, "cancel_window_hours": None}
+        cases = (
+            # switch, booking_type, (can_cancel, can_reschedule) before check-in
+            (False, "GROUP", (True, False)),
+            (True, "GROUP", (True, False)),
+            (True, "SINGLE", (True, True)),
+        )
+        for single_actions, kind, before in cases:
+            with override_settings(SINGLE_BOOKING_ACTIONS_V1=single_actions):
+                for shelf in ("upcoming", "archive"):
+                    for card in (self.CARD, bare):
+                        for status_word, expected in (
+                            ("BOOKED", before),
+                            ("CONFIRMED_BY_SALON", before),
+                            ("CHECKED_IN", (False, False)),
+                        ):
+                            with self.subTest(single_actions=single_actions, booking_type=kind,
+                                              shelf=shelf, window=card["cancel_window_hours"],
+                                              status=status_word):
+                                upstream = (200, self.page([self.row(booking_type=kind, status=status_word)]))
+                                answer = self.get(
+                                    f"filter={shelf}", upstream=upstream, cards={"marina-walk": card},
+                                ).data["results"][0]
+                                self.assertIs(answer["can_cancel"], expected[0])
+                                self.assertIs(answer["can_reschedule"], expected[1])
+
     # ------------------------------------------------------------ pagination
 
     def test_next_carries_every_parameter_the_caller_sent(self):
