@@ -15,7 +15,7 @@ from unittest import mock
 from django.test import SimpleTestCase, override_settings
 from rest_framework.test import APIRequestFactory, force_authenticate
 
-from apps.salons import single_views
+from apps.salons import booking_api, single_views
 from apps.salons.booking_api import BookingApiUnavailable
 from apps.salons.group_views import GroupBookingCancelView
 from apps.salons.test_group_booking import BRANCH, GROUP_ID, RANA, USER_ID, Customer
@@ -179,7 +179,32 @@ class SingleCancelTests(Seams, SimpleTestCase):
         _, s = self.cancel(headers={"HTTP_X_TENANT_ID": "tenant-1"})
         call = s["apps.salons.single_views.list_bookings"].call_args
         self.assertEqual(call.args[0], "filter=upcoming&page=1&pageSize=50")
-        self.assertEqual(call.kwargs, {"authorization": "Bearer customer-token", "tenant_id": "tenant-1"})
+        self.assertEqual(call.kwargs, {"authorization": "Bearer customer-token", "tenant_id": "tenant-1",
+                                       "timeout": 3})
+
+    def test_a_lookup_that_times_out_goes_on_to_the_group_cancel(self):
+        # Through the real client: the lookup waits SINGLE_LOOKUP_TIMEOUT,
+        # not BOOKING_API_TIMEOUT, and a timeout is "not single".
+        urlopen = mock.Mock(side_effect=TimeoutError("timed out"))
+        cancelled = mock.Mock(return_value=(200, dict(ANSWER, status="CANCELLED")))
+        response, s = self.cancel(GROUP_ID, **{
+            "apps.salons.single_views.list_bookings": booking_api.list_bookings,
+            "apps.salons.booking_api.urllib.request.urlopen": urlopen,
+            "apps.salons.group_views.cancel_group_booking": cancelled,
+        })
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["status"], "CANCELLED")
+        urlopen.assert_called_once()
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 3)
+        cancelled.assert_called_once()
+        s["apps.salons.single_views.cancel_booking"].assert_not_called()
+
+        with override_settings(SINGLE_LOOKUP_TIMEOUT=1):
+            self.cancel(GROUP_ID, **{
+                "apps.salons.single_views.list_bookings": booking_api.list_bookings,
+                "apps.salons.booking_api.urllib.request.urlopen": urlopen,
+            })
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 1)
 
     def test_only_the_first_page_is_read(self):
         # The id is on page 2: not looked for, so not a single cancel. It
@@ -321,6 +346,16 @@ class FlagOffTests(Seams, SimpleTestCase):
         source = Path("config/settings/base.py").read_text()
         self.assertIn(
             'SINGLE_BOOKING_ACTIONS_V1 = env.bool("SINGLE_BOOKING_ACTIONS_V1", default=False)', source)
+
+
+class LookupTimeoutDefaultTests(SimpleTestCase):
+
+    def test_the_lookup_timeout_defaults_to_3_seconds(self):
+        self.assertIn("SINGLE_LOOKUP_TIMEOUT=3", Path(".env.example").read_text())
+        self.assertIn("SINGLE_LOOKUP_TIMEOUT: ${SINGLE_LOOKUP_TIMEOUT:-3}",
+                      Path("docker-compose.yml").read_text())
+        source = Path("config/settings/base.py").read_text()
+        self.assertIn('SINGLE_LOOKUP_TIMEOUT = env.int("SINGLE_LOOKUP_TIMEOUT", default=3)', source)
 
 
 class CancelReasonTests(SimpleTestCase):

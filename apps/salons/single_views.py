@@ -23,10 +23,13 @@ booking-api, the same rows the app drew the Cancel button from:
     is on Upcoming. Anything not there is not a single cancel.
 
 THE LOOKUP NEVER BREAKS A PARTY'S CANCEL. Before the flag, a group cancel did
-not depend on the list at all. So a list that fails, refuses or is
-unreachable is "not a single booking", and the group cancel answers as
-before. Only the first page is read: a customer with more live bookings than
-one page holds is not a real case, and round trips before every cancel are.
+not depend on the list at all. So a list that fails, refuses, is
+unreachable or is slow is "not a single booking", and the group cancel
+answers as before. It waits SINGLE_LOOKUP_TIMEOUT (3 seconds), not
+BOOKING_API_TIMEOUT, so with booking-api down a cancel does not wait two
+full timeouts before its 503. Only the first page is read: a customer with
+more live bookings than one page holds is not a real case, and round trips
+before every cancel are.
 
 booking-api owns the booking and decides the refund. This module finds the
 type, builds the body, and passes booking-api's answer back as it came.
@@ -34,6 +37,7 @@ type, builds the body, and passes booking-api's answer back as it came.
 import logging
 import urllib.parse
 
+from django.conf import settings
 from rest_framework.exceptions import UnsupportedMediaType
 from rest_framework.response import Response
 
@@ -92,13 +96,16 @@ def single_cancel_response(request, booking_id):
 def upcoming_row(booking_id, authorization, *, tenant_id=None):
     """
     The caller's own row with this id on the first page of their Upcoming
-    shelf, or None: not there, or the list failed, refused or could not be
-    reached. Never an error of its own, so a party's cancel never depends
-    on it.
+    shelf, or None: not there, or the list failed, refused, could not be
+    reached or took longer than SINGLE_LOOKUP_TIMEOUT. Never an error of its
+    own, so a party's cancel never depends on it.
     """
     query = urllib.parse.urlencode({"filter": "upcoming", "page": 1, "pageSize": LOOKUP_PAGE_SIZE})
     try:
-        code, body = list_bookings(query, authorization=authorization, tenant_id=tenant_id)
+        code, body = list_bookings(
+            query, authorization=authorization, tenant_id=tenant_id,
+            timeout=settings.SINGLE_LOOKUP_TIMEOUT,
+        )
     except BookingApiUnavailable:
         logger.warning("single cancel: the Upcoming lookup could not reach booking-api")
         return None

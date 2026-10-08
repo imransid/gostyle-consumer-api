@@ -94,7 +94,7 @@ def read_booking(booking_id, *, authorization, tenant_id=None):
     return _send("GET", f"/v1/mobile-booking/{booking_id}", headers=headers)
 
 
-def list_bookings(query, *, authorization, tenant_id=None):
+def list_bookings(query, *, authorization, tenant_id=None, timeout=None):
     """
     GET /v1/mobile-booking?<query>, returning (status, parsed body) as given.
 
@@ -107,6 +107,9 @@ def list_bookings(query, *, authorization, tenant_id=None):
     `can_reschedule` — booking-api stores a branch id and cannot resolve any
     of the three (its booking-list.md §9). Each row carries `salon_id`, and
     filling those in is this service's job, in views.BookingListView.
+
+    `timeout` is for the single cancel's lookup (SINGLE_LOOKUP_TIMEOUT), which
+    may give up early; the list itself keeps BOOKING_API_TIMEOUT.
     """
     headers = {"Authorization": authorization}
     if tenant_id:
@@ -116,7 +119,7 @@ def list_bookings(query, *, authorization, tenant_id=None):
     if query:
         path = f"{path}?{query}"
 
-    return _send("GET", path, headers=headers)
+    return _send("GET", path, headers=headers, timeout=timeout)
 
 
 def busy_intervals(
