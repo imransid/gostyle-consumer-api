@@ -36,7 +36,7 @@ not a bare proxy:
 | Field                           | Why it is filled in here                                                                                                                                            |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `salon`                         | A booking stores `branch_id` and nothing else. No proto exposes a branch's name, logo or city to booking-api — but this service reads the platform tables directly.  |
-| `can_cancel` / `can_reschedule` | Both answer the salon's cancellation policy, which the salon publishes into `storefront_policy` here. booking-api cannot see it, and a hardcoded `true` would be a promise nobody can keep. |
+| `can_cancel` / `can_reschedule` | `can_cancel` answers the salon's cancellation policy, which the salon publishes into `storefront_policy` here. booking-api cannot see it, and a hardcoded `true` would be a promise nobody can keep. `can_reschedule` is `false` on these tabs today (§5). |
 
 See booking-api's own `docs/booking-list.md` §9, which records these three as
 the parts it cannot answer.
@@ -190,13 +190,29 @@ put another salon's name on a real booking.
 
 ### `can_cancel` and `can_reschedule`
 
-**A `SINGLE` row always has both `false`.** This service has no route yet to
-cancel or move a single booking, so `true` would be a button that fails. A row
-with no `booking_type`, or a type this service does not know, also gets both
-`false`. Only `GROUP` and `ROUTINE` rows follow the rules below.
+On the Upcoming and Archive tabs, the two fields say what this service can do
+with the row's own `id`:
 
-Both read `storefront_policy.cancel_window_hours`, and both require two
-answers:
+| `booking_type`        | `can_cancel`                | `can_reschedule` |
+| --------------------- | --------------------------- | ---------------- |
+| `GROUP`               | the salon's window, below   | always `false`   |
+| `SINGLE`              | always `false`              | always `false`   |
+| `ROUTINE`             | always `false`              | always `false`   |
+| missing or unknown    | always `false`              | always `false`   |
+
+* **`SINGLE`:** there is no route here yet to cancel or move a single booking,
+  so `true` would be a button that fails.
+* **`ROUTINE`:** the row is one session, and its `id` is that session's booking
+  id. The routine routes take the routine's id and a session id, and the row
+  carries neither. Skip or move a session from its routine, which answers
+  `can_skip` and `can_reschedule` per session.
+* **`GROUP`, `can_reschedule`:** moving a party is not supported.
+* **Missing or unknown type:** an unknown type must not promise a button.
+
+The Recurring tab is not covered by this table (see "The Recurring rows").
+
+`can_cancel` on a `GROUP` row reads `storefront_policy.cancel_window_hours`,
+and requires two answers:
 
 * the booking is still live — `BOOKED`, `CONFIRMED_BY_SALON` or `CHECKED_IN`.
   A `COMPLETED` or `CANCELLED` booking cannot be cancelled again, whatever the
@@ -210,9 +226,9 @@ until the appointment starts. `false` is the cautious-*looking* default and is
 the wrong one: it would tell customers of every salon that has not filled the
 field in that they may never cancel, which is a refusal the salon never made.
 
-They are two fields rather than one because they are two questions. Today one
-window answers both; the day a salon publishes a reschedule rule of its own,
-only one of them changes.
+They are two fields rather than one because they are two questions, and today
+they have different answers. The day this service gets a route to move a
+booking, `can_reschedule` gets a rule of its own.
 
 ---
 
