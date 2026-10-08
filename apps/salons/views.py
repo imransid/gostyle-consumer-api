@@ -2479,8 +2479,8 @@ def _reschedulable_booking_types():
     The Upcoming and Archive row types whose reschedule button follows the
     salon's window, as can_cancel does: SINGLE only, and only while
     SINGLE_BOOKING_ACTIONS_V1 turns on POST /booking/<id>/reschedule
-    (single_views.py). No route here moves a party, or a routine session by
-    the row's id.
+    (single_views.py), which also refuses a booking with two stylists. No
+    route here moves a party, or a routine session by the row's id.
     """
     if settings.SINGLE_BOOKING_ACTIONS_V1:
         return ("SINGLE",)
@@ -2504,9 +2504,11 @@ def _reschedulable_booking_types():
         "SINGLE_BOOKING_ACTIONS_V1 is on (off: `false`); every other row "
         "(ROUTINE, a missing or unknown `booking_type`) has `false`, because "
         "no route here cancels it by its id. `can_reschedule` follows the "
-        "same window for a SINGLE row while SINGLE_BOOKING_ACTIONS_V1 is on "
-        "(off: `false`), and is `false` on every other row: no route here "
-        "moves a party or a routine session by its id. A salon that cannot be "
+        "same window for a SINGLE row with at most one stylist while "
+        "SINGLE_BOOKING_ACTIONS_V1 is on (off: `false`), and is `false` on "
+        "every other row: the move refuses a booking with two stylists, and "
+        "no route here moves a party or a routine session by its id. A salon "
+        "that cannot be "
         "resolved gets `\"salon\": null` rather than an object with holes in "
         "it.\n\n"
         "`counts` carries all three tab badges, so the app does not make "
@@ -2713,6 +2715,9 @@ class BookingListView(APIView):
 
     def _enrich(self, request, body, page, page_size):
         """booking-api's page, plus the parts only this service can answer."""
+        # Imported here, not at the top: single_views imports this module.
+        from .single_views import too_many_stylists
+
         results = body.get("results") or []
         cards = salon_cards_for_refs([row.get("salon_id") for row in results])
         # UTC, aware. Each row's own start carries the SALON's offset, so
@@ -2739,11 +2744,14 @@ class BookingListView(APIView):
                 row.get("booking_type") in cancellable
                 and _can_still_move(row, card, now)
             )
-            # A single booking, with its route on. Never a party, and never
-            # a routine session by its booking id: a session is moved from
-            # its routine, which answers can_reschedule per session.
+            # A single booking, with its route on, and one the route would
+            # move: not one with two stylists, which it refuses. Never a
+            # party, and never a routine session by its booking id: a session
+            # is moved from its routine, which answers can_reschedule per
+            # session.
             row["can_reschedule"] = (
                 row.get("booking_type") in reschedulable
+                and not too_many_stylists(row)
                 and _can_still_move(row, card, now)
             )
 

@@ -199,14 +199,17 @@ cancel on `POST /booking/{id}/cancel` and the single move on
 | `booking_type`     | switch off: `can_cancel` | switch off: `can_reschedule` | switch on: `can_cancel` | switch on: `can_reschedule` |
 | ------------------ | ------------------------ | ---------------------------- | ----------------------- | --------------------------- |
 | `GROUP`            | the salon's window       | always `false`               | the salon's window      | always `false`              |
-| `SINGLE`           | always `false`           | always `false`               | the salon's window      | the salon's window          |
+| `SINGLE`           | always `false`           | always `false`               | the salon's window      | the salon's window, one stylist at most |
 | `ROUTINE`          | always `false`           | always `false`               | always `false`          | always `false`              |
 | missing or unknown | always `false`           | always `false`               | always `false`          | always `false`              |
 
 * **`SINGLE`:** with the switch off there is no route here to cancel or move a
   single booking, so `true` would be a button that fails. With it on,
   `POST /booking/{id}/cancel` cancels it and `POST /booking/{id}/reschedule`
-  moves it, and both buttons follow the same window.
+  moves it, and both buttons follow the same window. A single booking with
+  more than one stylist cannot be moved (the route answers 422
+  `multiple_stylists`), so its `can_reschedule` is `false`; its `can_cancel`
+  still follows the window. The same stylist listed twice is one stylist.
 * **`ROUTINE`:** the row is one session, and its `id` is that session's booking
   id. The routine routes take the routine's id and a session id, and the row
   carries neither. Skip or move a session from its routine, which answers

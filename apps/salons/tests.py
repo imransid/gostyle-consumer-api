@@ -2309,6 +2309,29 @@ class BookingListViewTests(SimpleTestCase):
                 self.assertEqual(buttons(status="COMPLETED"), (False, False))
                 self.assertEqual(buttons(start_time=None), (False, False))
 
+    @override_settings(SINGLE_BOOKING_ACTIONS_V1=True)
+    def test_a_single_row_with_two_stylists_may_be_cancelled_but_not_rescheduled(self):
+        # The move refuses it (422 multiple_stylists), so true would be a
+        # button that fails. A cancel works with any number of stylists.
+        maya = {"id": "maya", "name": "Maya", "avatar_url": None}
+        anya = {"id": "anya", "name": "Anya", "avatar_url": None}
+        for shelf in ("upcoming", "archive"):
+            with self.subTest(shelf):
+                upstream = (200, self.page([self.row(stylists=[maya, anya])]))
+                answer = self.get(f"filter={shelf}", upstream=upstream).data["results"][0]
+                self.assertIs(answer["can_cancel"], True)
+                self.assertIs(answer["can_reschedule"], False)
+
+    @override_settings(SINGLE_BOOKING_ACTIONS_V1=True)
+    def test_the_same_stylist_twice_is_one_stylist_as_the_move_counts_them(self):
+        maya = {"id": "maya", "name": "Maya", "avatar_url": None}
+        for stylists in ([], [maya], [maya, maya]):
+            with self.subTest(stylists=len(stylists)):
+                upstream = (200, self.page([self.row(stylists=stylists)]))
+                answer = self.get(upstream=upstream).data["results"][0]
+                self.assertIs(answer["can_cancel"], True)
+                self.assertIs(answer["can_reschedule"], True)
+
     # ------------------------------------------------------------ pagination
 
     def test_next_carries_every_parameter_the_caller_sent(self):

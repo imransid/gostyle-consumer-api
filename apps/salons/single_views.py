@@ -355,24 +355,37 @@ class SingleBookingRescheduleView(APIView):
         return Response(moved, status=code)
 
 
-def _own_stylist(row):
-    """
-    The booking's one stylist, or None when the row names none. A booking
-    with more than one cannot be moved here: a hold takes one stylist, and
-    booking-api's move puts the whole visit on the first service's line.
-    """
+def stylist_ids(row):
+    """Every stylist a booking row names, once each, in the row's order."""
     ids = []
     for s in row.get("stylists") or []:
         sid = s.get("id") if isinstance(s, dict) else None
         if isinstance(sid, str) and sid and sid not in ids:
             ids.append(sid)
-    if len(ids) > 1:
+    return ids
+
+
+def too_many_stylists(row):
+    """
+    True when a single booking cannot be moved here: it has more than one
+    stylist. A hold takes one stylist, and booking-api's move puts the whole
+    visit on the first service's line. The ONE rule for both answers: this
+    route refuses it (multiple_stylists), and the list's can_reschedule is
+    false for it (views.BookingListView).
+    """
+    return len(stylist_ids(row)) > 1
+
+
+def _own_stylist(row):
+    """The booking's one stylist, or None when the row names none."""
+    if too_many_stylists(row):
         raise _refuse(
             "non_field_errors",
             "This booking has more than one stylist, so it cannot be moved in "
             "the app. Please contact the salon.",
             "multiple_stylists",
         )
+    ids = stylist_ids(row)
     return ids[0] if ids else None
 
 
