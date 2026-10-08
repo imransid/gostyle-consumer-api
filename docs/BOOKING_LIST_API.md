@@ -191,17 +191,21 @@ put another salon's name on a real booking.
 ### `can_cancel` and `can_reschedule`
 
 On the Upcoming and Archive tabs, the two fields say what this service can do
-with the row's own `id`:
+with the row's own `id`. `SINGLE` depends on the switch
+`SINGLE_BOOKING_ACTIONS_V1` (off by default), which also turns on the single
+cancel on `POST /booking/{id}/cancel`:
 
-| `booking_type`        | `can_cancel`                | `can_reschedule` |
-| --------------------- | --------------------------- | ---------------- |
-| `GROUP`               | the salon's window, below   | always `false`   |
-| `SINGLE`              | always `false`              | always `false`   |
-| `ROUTINE`             | always `false`              | always `false`   |
-| missing or unknown    | always `false`              | always `false`   |
+| `booking_type`     | `can_cancel`, switch off | `can_cancel`, switch on | `can_reschedule` |
+| ------------------ | ------------------------ | ----------------------- | ---------------- |
+| `GROUP`            | the salon's window       | the salon's window      | always `false`   |
+| `SINGLE`           | always `false`           | the salon's window      | always `false`   |
+| `ROUTINE`          | always `false`           | always `false`          | always `false`   |
+| missing or unknown | always `false`           | always `false`          | always `false`   |
 
-* **`SINGLE`:** there is no route here yet to cancel or move a single booking,
-  so `true` would be a button that fails.
+* **`SINGLE`:** with the switch off there is no route here to cancel a single
+  booking, so `true` would be a button that fails. With it on,
+  `POST /booking/{id}/cancel` cancels it. No route here moves one yet, so
+  `can_reschedule` stays `false` either way.
 * **`ROUTINE`:** the row is one session, and its `id` is that session's booking
   id. The routine routes take the routine's id and a session id, and the row
   carries neither. Skip or move a session from its routine, which answers
@@ -211,8 +215,8 @@ with the row's own `id`:
 
 The Recurring tab is not covered by this table (see "The Recurring rows").
 
-`can_cancel` on a `GROUP` row reads `storefront_policy.cancel_window_hours`,
-and requires two answers:
+"The salon's window" reads `storefront_policy.cancel_window_hours`, and
+requires two answers:
 
 * the booking is still live — `BOOKED`, `CONFIRMED_BY_SALON` or `CHECKED_IN`.
   A `COMPLETED` or `CANCELLED` booking cannot be cancelled again, whatever the

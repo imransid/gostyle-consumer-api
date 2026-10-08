@@ -94,7 +94,7 @@ def read_booking(booking_id, *, authorization, tenant_id=None):
     return _send("GET", f"/v1/mobile-booking/{booking_id}", headers=headers)
 
 
-def list_bookings(query, *, authorization, tenant_id=None):
+def list_bookings(query, *, authorization, tenant_id=None, timeout=None):
     """
     GET /v1/mobile-booking?<query>, returning (status, parsed body) as given.
 
@@ -107,6 +107,9 @@ def list_bookings(query, *, authorization, tenant_id=None):
     `can_reschedule` — booking-api stores a branch id and cannot resolve any
     of the three (its booking-list.md §9). Each row carries `salon_id`, and
     filling those in is this service's job, in views.BookingListView.
+
+    `timeout` is for the single cancel's lookup (SINGLE_LOOKUP_TIMEOUT), which
+    may give up early; the list itself keeps BOOKING_API_TIMEOUT.
     """
     headers = {"Authorization": authorization}
     if tenant_id:
@@ -116,7 +119,7 @@ def list_bookings(query, *, authorization, tenant_id=None):
     if query:
         path = f"{path}?{query}"
 
-    return _send("GET", path, headers=headers)
+    return _send("GET", path, headers=headers, timeout=timeout)
 
 
 def busy_intervals(
@@ -202,6 +205,26 @@ def patch_booking(booking_id, body, *, authorization, idempotency_key=None, tena
         headers["X-Tenant-Id"] = tenant_id
 
     return _send("PATCH", f"/v1/mobile-booking/{booking_id}", headers=headers, body=body)
+
+
+def cancel_booking(booking_id, body, *, authorization, idempotency_key=None):
+    """
+    POST /v1/bookings/<id>/cancel: a customer calls off their own single
+    booking (SINGLE_BOOKING_ACTIONS_V1). Returns (status, parsed body) as
+    given: the cancel with its refund, or booking-api's refusal (404 for a
+    booking that is not the caller's, never 403).
+
+    `body` is one this service BUILT, never the app's: booking-api answers
+    400 for any key it does not know.
+    """
+    headers = _group_headers(authorization, None)
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    return _send(
+        "POST",
+        f"/v1/bookings/{urllib.parse.quote(str(booking_id), safe='')}/cancel",
+        headers=headers, body=_encode(body),
+    )
 
 
 def get_branch_services(tenant_id, branch_id):
