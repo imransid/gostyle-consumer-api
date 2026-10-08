@@ -2258,24 +2258,29 @@ class BookingListViewTests(SimpleTestCase):
 
     # ------------------------------------------------------ can_reschedule
 
-    def test_no_row_may_be_rescheduled(self):
-        # No route here moves a single booking, a party, or a routine session
-        # by its booking id, whatever SINGLE_BOOKING_ACTIONS_V1 says. Window
-        # open, and a salon with no window at all: can_cancel shows the
-        # window did say yes.
+    def test_only_a_single_row_with_its_route_on_may_be_rescheduled(self):
+        # POST /booking/<id>/reschedule moves a single booking, behind
+        # SINGLE_BOOKING_ACTIONS_V1. No route here moves a party, or a routine
+        # session by its booking id. Window open, and a salon with no window
+        # at all: can_cancel shows the window did say yes.
         missing = self.row()
         del missing["booking_type"]
         rows = [missing] + [
             self.row(booking_type=kind)
-            for kind in ("SINGLE", "GROUP", "ROUTINE", "SERIES")
+            for kind in ("SINGLE", "GROUP", "ROUTINE", "SERIES", None, "single", ["SINGLE"])
         ]
         bare = {**self.CARD, "cancel_window_hours": None}
-        for single_actions, cancellable in ((False, {"GROUP"}), (True, {"GROUP", "SINGLE"})):
+        cases = (
+            (False, {"GROUP"}, set()),
+            (True, {"GROUP", "SINGLE"}, {"SINGLE"}),
+        )
+        for single_actions, cancellable, reschedulable in cases:
             with override_settings(SINGLE_BOOKING_ACTIONS_V1=single_actions):
                 for shelf in ("upcoming", "archive"):
                     for card in (self.CARD, bare):
                         for row in rows:
                             kind = row.get("booking_type", "<missing>")
+                            kind = kind if isinstance(kind, str) or kind is None else repr(kind)
                             with self.subTest(single_actions=single_actions, shelf=shelf,
                                               window=card["cancel_window_hours"], booking_type=kind):
                                 answer = self.get(
@@ -2283,8 +2288,49 @@ class BookingListViewTests(SimpleTestCase):
                                     upstream=(200, self.page([row])),
                                     cards={"marina-walk": card},
                                 ).data["results"][0]
-                                self.assertIs(answer["can_reschedule"], False)
+                                self.assertIs(answer["can_reschedule"], kind in reschedulable)
                                 self.assertIs(answer["can_cancel"], kind in cancellable)
+
+    @override_settings(SINGLE_BOOKING_ACTIONS_V1=True)
+    def test_with_single_actions_on_a_single_row_reschedule_follows_the_window(self):
+        # The same rule as can_cancel, on both tabs.
+        late = {**self.CARD, "cancel_window_hours": 24 * 30}
+        for shelf in ("upcoming", "archive"):
+            with self.subTest(shelf):
+                def buttons(card=self.CARD, **overrides):
+                    upstream = (200, self.page([self.row(booking_type="SINGLE", **overrides)]))
+                    answer = self.get(
+                        f"filter={shelf}", upstream=upstream, cards={"marina-walk": card},
+                    ).data["results"][0]
+                    return answer["can_reschedule"], answer["can_cancel"]
+
+                self.assertEqual(buttons(), (True, True))
+                self.assertEqual(buttons(card=late), (False, False))
+                self.assertEqual(buttons(status="COMPLETED"), (False, False))
+                self.assertEqual(buttons(start_time=None), (False, False))
+
+    @override_settings(SINGLE_BOOKING_ACTIONS_V1=True)
+    def test_a_single_row_with_two_stylists_may_be_cancelled_but_not_rescheduled(self):
+        # The move refuses it (422 multiple_stylists), so true would be a
+        # button that fails. A cancel works with any number of stylists.
+        maya = {"id": "maya", "name": "Maya", "avatar_url": None}
+        anya = {"id": "anya", "name": "Anya", "avatar_url": None}
+        for shelf in ("upcoming", "archive"):
+            with self.subTest(shelf):
+                upstream = (200, self.page([self.row(stylists=[maya, anya])]))
+                answer = self.get(f"filter={shelf}", upstream=upstream).data["results"][0]
+                self.assertIs(answer["can_cancel"], True)
+                self.assertIs(answer["can_reschedule"], False)
+
+    @override_settings(SINGLE_BOOKING_ACTIONS_V1=True)
+    def test_the_same_stylist_twice_is_one_stylist_as_the_move_counts_them(self):
+        maya = {"id": "maya", "name": "Maya", "avatar_url": None}
+        for stylists in ([], [maya], [maya, maya]):
+            with self.subTest(stylists=len(stylists)):
+                upstream = (200, self.page([self.row(stylists=stylists)]))
+                answer = self.get(upstream=upstream).data["results"][0]
+                self.assertIs(answer["can_cancel"], True)
+                self.assertIs(answer["can_reschedule"], True)
 
     # ------------------------------------------------------------ pagination
 

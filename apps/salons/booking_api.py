@@ -108,8 +108,9 @@ def list_bookings(query, *, authorization, tenant_id=None, timeout=None):
     of the three (its booking-list.md §9). Each row carries `salon_id`, and
     filling those in is this service's job, in views.BookingListView.
 
-    `timeout` is for the single cancel's lookup (SINGLE_LOOKUP_TIMEOUT), which
-    may give up early; the list itself keeps BOOKING_API_TIMEOUT.
+    `timeout` is for the single cancel's and reschedule's lookup
+    (SINGLE_LOOKUP_TIMEOUT), which may give up early; the list itself keeps
+    BOOKING_API_TIMEOUT.
     """
     headers = {"Authorization": authorization}
     if tenant_id:
@@ -224,6 +225,54 @@ def cancel_booking(booking_id, body, *, authorization, idempotency_key=None):
         "POST",
         f"/v1/bookings/{urllib.parse.quote(str(booking_id), safe='')}/cancel",
         headers=headers, body=_encode(body),
+    )
+
+
+def place_hold(body, *, authorization, tenant_id=None):
+    """
+    POST /v1/holds: hold one slot for 15 minutes, the first half of a single
+    booking's move (SINGLE_BOOKING_ACTIONS_V1). Returns (status, parsed body)
+    as given: 201 with `holdId`, or booking-api's refusal (400 for a body it
+    will not read, 409 when the slot went, 422 for a stylist it does not know).
+
+    `body` is one this service BUILT. It names the branch itself: a customer
+    token carries none, and without one booking-api falls back to its demo
+    branch.
+    """
+    return _send(
+        "POST", "/v1/holds",
+        headers=_group_headers(authorization, tenant_id), body=_encode(body),
+    )
+
+
+def release_hold(hold_id, *, authorization, tenant_id=None):
+    """
+    DELETE /v1/holds/<id>: give the slot back now, not in 15 minutes.
+    `{released: false}` when it was already gone. Returns (status, parsed
+    body) as given.
+    """
+    headers = {"Authorization": authorization}
+    if tenant_id:
+        headers["X-Tenant-Id"] = str(tenant_id)
+    return _send(
+        "DELETE", f"/v1/holds/{urllib.parse.quote(str(hold_id), safe='')}",
+        headers=headers,
+    )
+
+
+def reschedule_booking(booking_id, body, *, authorization, tenant_id=None):
+    """
+    POST /v1/bookings/<id>/reschedule: move a single booking onto a slot
+    already held (`holdId`, `day`, `reason`). Returns (status, parsed body)
+    as given: 201 with the move, or booking-api's refusal (404 for a booking
+    that is not the caller's, never 403; 410 when the hold has gone).
+
+    `body` is one this service BUILT, never the app's.
+    """
+    return _send(
+        "POST",
+        f"/v1/bookings/{urllib.parse.quote(str(booking_id), safe='')}/reschedule",
+        headers=_group_headers(authorization, tenant_id), body=_encode(body),
     )
 
 

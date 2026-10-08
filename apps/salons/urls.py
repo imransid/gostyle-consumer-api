@@ -6,6 +6,7 @@ from . import (
     routine_views,
     series_views,
     service_detail_views,
+    single_views,
 )
 from .views import (
     BookingCreateView,
@@ -72,6 +73,13 @@ urlpatterns = [
     path("booking/group-availability", group_views.GroupAvailabilityView.as_view(), name="booking-group-availability"),
     path("booking/group", group_views.GroupBookingCreateView.as_view(), name="booking-group"),
     path("booking/<uuid:booking_id>/cancel", group_views.GroupBookingCancelView.as_view(), name="booking-cancel"),
+    # A single booking's move (SINGLE_BOOKING_ACTIONS_V1). Off, it is the 404
+    # this path was before.
+    path(
+        "booking/<uuid:booking_id>/reschedule",
+        single_views.SingleBookingRescheduleView.as_view(),
+        name="booking-reschedule",
+    ),
     # Routines (SERIES_BOOKING_V1). `series` is not a uuid, so booking/<uuid> cannot take it.
     path("booking/series", series_views.SeriesBookingCreateView.as_view(), name="booking-series"),
     path("booking/series/<uuid:series_id>", series_views.SeriesBookingDetailView.as_view(), name="booking-series-detail"),

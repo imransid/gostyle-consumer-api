@@ -2474,6 +2474,19 @@ def _cancellable_booking_types():
     return CANCELLABLE_BOOKING_TYPES
 
 
+def _reschedulable_booking_types():
+    """
+    The Upcoming and Archive row types whose reschedule button follows the
+    salon's window, as can_cancel does: SINGLE only, and only while
+    SINGLE_BOOKING_ACTIONS_V1 turns on POST /booking/<id>/reschedule
+    (single_views.py), which also refuses a booking with two stylists. No
+    route here moves a party, or a routine session by the row's id.
+    """
+    if settings.SINGLE_BOOKING_ACTIONS_V1:
+        return ("SINGLE",)
+    return ()
+
+
 @extend_schema(
     summary="The caller's bookings — upcoming, recurring or archive",
     description=(
@@ -2490,9 +2503,12 @@ def _cancellable_booking_types():
         "window for a GROUP row, and for a SINGLE row while "
         "SINGLE_BOOKING_ACTIONS_V1 is on (off: `false`); every other row "
         "(ROUTINE, a missing or unknown `booking_type`) has `false`, because "
-        "no route here cancels it by its id. `can_reschedule` is always "
-        "`false` on Upcoming and Archive: no route here moves a row by its "
-        "id. A salon that cannot be "
+        "no route here cancels it by its id. `can_reschedule` follows the "
+        "same window for a SINGLE row with at most one stylist while "
+        "SINGLE_BOOKING_ACTIONS_V1 is on (off: `false`), and is `false` on "
+        "every other row: the move refuses a booking with two stylists, and "
+        "no route here moves a party or a routine session by its id. A salon "
+        "that cannot be "
         "resolved gets `\"salon\": null` rather than an object with holes in "
         "it.\n\n"
         "`counts` carries all three tab badges, so the app does not make "
@@ -2699,6 +2715,9 @@ class BookingListView(APIView):
 
     def _enrich(self, request, body, page, page_size):
         """booking-api's page, plus the parts only this service can answer."""
+        # Imported here, not at the top: single_views imports this module.
+        from .single_views import too_many_stylists
+
         results = body.get("results") or []
         cards = salon_cards_for_refs([row.get("salon_id") for row in results])
         # UTC, aware. Each row's own start carries the SALON's offset, so
@@ -2712,23 +2731,29 @@ class BookingListView(APIView):
         routines = request.query_params.get("filter") == "recurring"
         salons = {}
         cancellable = _cancellable_booking_types()
+        reschedulable = _reschedulable_booking_types()
         for i, row in enumerate(results):
             card = cards.get(row.get("salon_id"))
             if routines:
                 results[i] = self._routine_row(row, card, salons)
                 continue
             row["salon"] = _salon_card(card, full=False)
-            # Two questions, and today two different answers. Cancel follows
-            # the salon's window, for the types this service can cancel.
+            # Two questions, one window, and each for the types this service
+            # can act on by the row's id.
             row["can_cancel"] = (
                 row.get("booking_type") in cancellable
                 and _can_still_move(row, card, now)
             )
-            # No route here moves any row of these two tabs: not a single
-            # booking, not a party, not a routine session by its booking id.
-            # A session is moved from its routine, which answers
-            # can_reschedule per session.
-            row["can_reschedule"] = False
+            # A single booking, with its route on, and one the route would
+            # move: not one with two stylists, which it refuses. Never a
+            # party, and never a routine session by its booking id: a session
+            # is moved from its routine, which answers can_reschedule per
+            # session.
+            row["can_reschedule"] = (
+                row.get("booking_type") in reschedulable
+                and not too_many_stylists(row)
+                and _can_still_move(row, card, now)
+            )
 
         count = body.get("count") or 0
         return {

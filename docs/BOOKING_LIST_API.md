@@ -36,7 +36,7 @@ not a bare proxy:
 | Field                           | Why it is filled in here                                                                                                                                            |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `salon`                         | A booking stores `branch_id` and nothing else. No proto exposes a branch's name, logo or city to booking-api — but this service reads the platform tables directly.  |
-| `can_cancel` / `can_reschedule` | `can_cancel` answers the salon's cancellation policy, which the salon publishes into `storefront_policy` here. booking-api cannot see it, and a hardcoded `true` would be a promise nobody can keep. `can_reschedule` is `false` on these tabs today (§5). |
+| `can_cancel` / `can_reschedule` | Both answer the salon's cancellation policy, which the salon publishes into `storefront_policy` here. booking-api cannot see it, and a hardcoded `true` would be a promise nobody can keep. Which row types get each one is in §5. |
 
 See booking-api's own `docs/booking-list.md` §9, which records these three as
 the parts it cannot answer.
@@ -193,19 +193,23 @@ put another salon's name on a real booking.
 On the Upcoming and Archive tabs, the two fields say what this service can do
 with the row's own `id`. `SINGLE` depends on the switch
 `SINGLE_BOOKING_ACTIONS_V1` (off by default), which also turns on the single
-cancel on `POST /booking/{id}/cancel`:
+cancel on `POST /booking/{id}/cancel` and the single move on
+`POST /booking/{id}/reschedule`:
 
-| `booking_type`     | `can_cancel`, switch off | `can_cancel`, switch on | `can_reschedule` |
-| ------------------ | ------------------------ | ----------------------- | ---------------- |
-| `GROUP`            | the salon's window       | the salon's window      | always `false`   |
-| `SINGLE`           | always `false`           | the salon's window      | always `false`   |
-| `ROUTINE`          | always `false`           | always `false`          | always `false`   |
-| missing or unknown | always `false`           | always `false`          | always `false`   |
+| `booking_type`     | switch off: `can_cancel` | switch off: `can_reschedule` | switch on: `can_cancel` | switch on: `can_reschedule` |
+| ------------------ | ------------------------ | ---------------------------- | ----------------------- | --------------------------- |
+| `GROUP`            | the salon's window       | always `false`               | the salon's window      | always `false`              |
+| `SINGLE`           | always `false`           | always `false`               | the salon's window      | the salon's window, one stylist at most |
+| `ROUTINE`          | always `false`           | always `false`               | always `false`          | always `false`              |
+| missing or unknown | always `false`           | always `false`               | always `false`          | always `false`              |
 
-* **`SINGLE`:** with the switch off there is no route here to cancel a single
-  booking, so `true` would be a button that fails. With it on,
-  `POST /booking/{id}/cancel` cancels it. No route here moves one yet, so
-  `can_reschedule` stays `false` either way.
+* **`SINGLE`:** with the switch off there is no route here to cancel or move a
+  single booking, so `true` would be a button that fails. With it on,
+  `POST /booking/{id}/cancel` cancels it and `POST /booking/{id}/reschedule`
+  moves it, and both buttons follow the same window. A single booking with
+  more than one stylist cannot be moved (the route answers 422
+  `multiple_stylists`), so its `can_reschedule` is `false`; its `can_cancel`
+  still follows the window. The same stylist listed twice is one stylist.
 * **`ROUTINE`:** the row is one session, and its `id` is that session's booking
   id. The routine routes take the routine's id and a session id, and the row
   carries neither. Skip or move a session from its routine, which answers
@@ -230,9 +234,9 @@ until the appointment starts. `false` is the cautious-*looking* default and is
 the wrong one: it would tell customers of every salon that has not filled the
 field in that they may never cancel, which is a refusal the salon never made.
 
-They are two fields rather than one because they are two questions, and today
-they have different answers. The day this service gets a route to move a
-booking, `can_reschedule` gets a rule of its own.
+They are two fields rather than one because they are two questions. Today
+they share the window, and they differ by type: a party can be cancelled here
+but not moved.
 
 ---
 
