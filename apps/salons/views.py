@@ -2456,6 +2456,13 @@ def _salon_card(card, *, full):
 # history does not offer a cancel button.
 LIVE_BOOKING_STATUSES = frozenset({"BOOKED", "CONFIRMED_BY_SALON", "CHECKED_IN"})
 
+# The row types whose cancel and reschedule buttons follow the salon's window.
+# SINGLE is not one: this service has no route to cancel or move a single
+# booking yet, so `true` there is a button that fails. A row with no type, or
+# a type this service does not know, offers no button either. A tuple, not a
+# set: `in` compares, so an odd value is simply not a match.
+WINDOW_BOOKING_TYPES = ("GROUP", "ROUTINE")
+
 
 @extend_schema(
     summary="The caller's bookings — upcoming, recurring or archive",
@@ -2469,7 +2476,9 @@ LIVE_BOOKING_STATUSES = frozenset({"BOOKED", "CONFIRMED_BY_SALON", "CHECKED_IN"}
         "here: `salon`, because a booking stores a branch id and booking-api "
         "cannot resolve a name, logo or city; and `can_cancel` / "
         "`can_reschedule`, because the cancellation window is published by "
-        "the salon into this service's tables. A salon that cannot be "
+        "the salon into this service's tables. A SINGLE row, or a row whose "
+        "`booking_type` is missing or unknown, always has both `false`: "
+        "there is no route here to cancel or move one yet. A salon that cannot be "
         "resolved gets `\"salon\": null` rather than an object with holes in "
         "it.\n\n"
         "`counts` carries all three tab badges, so the app does not make "
@@ -2545,8 +2554,8 @@ LIVE_BOOKING_STATUSES = frozenset({"BOOKED", "CONFIRMED_BY_SALON", "CHECKED_IN"}
                                 ],
                                 "total": 216.25,
                                 "due_amount": 0,
-                                "can_cancel": True,
-                                "can_reschedule": True,
+                                "can_cancel": False,
+                                "can_reschedule": False,
                                 "created_at": "2026-09-18T14:02:11+04:00",
                             }
                         ],
@@ -2663,8 +2672,11 @@ class BookingListView(APIView):
             row["salon"] = _salon_card(card, full=False)
             # One window answers both today. They are separate fields because
             # they are separate questions, and the day the salon publishes a
-            # reschedule rule of its own only one of these changes.
-            movable = _can_still_move(row, card, now)
+            # reschedule rule of its own only one of these changes. Only the
+            # types in WINDOW_BOOKING_TYPES ask the window at all.
+            movable = row.get("booking_type") in WINDOW_BOOKING_TYPES and _can_still_move(
+                row, card, now
+            )
             row["can_cancel"] = movable
             row["can_reschedule"] = movable
 

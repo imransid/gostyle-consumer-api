@@ -140,8 +140,8 @@ visit, and a routine answers them per session.
       ],
       "total": 216.25,
       "due_amount": 0,
-      "can_cancel": true,
-      "can_reschedule": true,
+      "can_cancel": false,
+      "can_reschedule": false,
       "created_at": "2026-09-18T14:02:11+04:00"
     }
   ]
@@ -189,6 +189,11 @@ A reference that lands on two storefronts is also dropped, with a warning.
 put another salon's name on a real booking.
 
 ### `can_cancel` and `can_reschedule`
+
+**A `SINGLE` row always has both `false`.** This service has no route yet to
+cancel or move a single booking, so `true` would be a button that fails. A row
+with no `booking_type`, or a type this service does not know, also gets both
+`false`. Only `GROUP` and `ROUTINE` rows follow the rules below.
 
 Both read `storefront_policy.cancel_window_hours`, and both require two
 answers:
