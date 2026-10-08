@@ -2149,25 +2149,34 @@ class BookingListViewTests(SimpleTestCase):
         # The booking is still real and still listed.
         self.assertEqual(row["id"], "bkg-1")
 
+    # ---------------------------------------------------------- can_cancel
+    #
+    # The window tests use GROUP rows: only a GROUP row asks the window (the
+    # one type this service can cancel by the row's id), so on any other row
+    # every `False` below would pass for the wrong reason.
+
+    def group(self, **overrides):
+        return (200, self.page([self.row(booking_type="GROUP", **overrides)]))
+
     def test_a_booking_inside_the_cancellation_window_may_not_be_cancelled(self):
         # Starts 2026-09-20T20:00+04:00 = 16:00Z. A 24h window closes at
         # 2026-09-19T16:00Z, and "now" is a day before that.
-        self.assertTrue(self.get().data["results"][0]["can_cancel"])
+        self.assertTrue(self.get(upstream=self.group()).data["results"][0]["can_cancel"])
 
         late = {**self.CARD, "cancel_window_hours": 24 * 30}
-        row = self.get(cards={"marina-walk": late}).data["results"][0]
+        row = self.get(upstream=self.group(), cards={"marina-walk": late}).data["results"][0]
         self.assertFalse(row["can_cancel"])
-        self.assertFalse(row["can_reschedule"])
 
     def test_a_salon_with_no_published_window_may_still_be_cancelled(self):
         """
         `False` would be the cautious-LOOKING default and is the wrong one:
         it tells customers of every salon that has not filled the field in
-        that they may never cancel — a refusal the salon never made.
+        that they may never cancel, a refusal the salon never made.
         """
         bare = {**self.CARD, "cancel_window_hours": None}
         self.assertTrue(
-            self.get(cards={"marina-walk": bare}).data["results"][0]["can_cancel"]
+            self.get(upstream=self.group(), cards={"marina-walk": bare})
+            .data["results"][0]["can_cancel"]
         )
 
     def test_a_finished_booking_offers_no_cancel_button(self):
@@ -2175,19 +2184,66 @@ class BookingListViewTests(SimpleTestCase):
         # thing, and offering the button is a request the salon will refuse.
         for status_word in ("COMPLETED", "CANCELLED", "NO_SHOW"):
             with self.subTest(status_word):
-                response = self.get(
-                    upstream=(200, self.page([self.row(status=status_word)]))
-                )
+                response = self.get(upstream=self.group(status=status_word))
                 self.assertFalse(response.data["results"][0]["can_cancel"])
 
     def test_a_row_with_no_usable_start_offers_no_cancel_button(self):
         # Saying yes here would show a button the cancel endpoint refuses.
         for start in (None, "not-a-time", "2026-09-20T20:00:00"):
             with self.subTest(start):
-                response = self.get(
-                    upstream=(200, self.page([self.row(start_time=start)]))
-                )
+                response = self.get(upstream=self.group(start_time=start))
                 self.assertFalse(response.data["results"][0]["can_cancel"])
+
+    def test_only_a_group_row_may_be_cancelled(self):
+        # Window open on both tabs. SINGLE has no cancel route here yet, and
+        # a ROUTINE row's id is one session's booking id, which no route here
+        # takes. GROUP proves the window itself is open.
+        for shelf in ("upcoming", "archive"):
+            for kind, expected in (("GROUP", True), ("SINGLE", False), ("ROUTINE", False)):
+                with self.subTest(shelf=shelf, booking_type=kind):
+                    upstream = (200, self.page([self.row(booking_type=kind)]))
+                    row = self.get(f"filter={shelf}", upstream=upstream).data["results"][0]
+                    self.assertEqual(row["booking_type"], kind)
+                    self.assertIs(row["can_cancel"], expected)
+
+    def test_a_row_of_missing_or_unknown_type_may_not_be_cancelled(self):
+        # An unknown type must not promise a button, even with the window open.
+        missing = self.row()
+        del missing["booking_type"]
+        rows = [missing] + [
+            self.row(booking_type=kind)
+            for kind in (None, "", "single", "group", "SERIES", ["GROUP"])
+        ]
+        for row in rows:
+            with self.subTest(booking_type=row.get("booking_type", "<missing>")):
+                answer = self.get(upstream=(200, self.page([row]))).data["results"][0]
+                self.assertIs(answer["can_cancel"], False)
+
+    # ------------------------------------------------------ can_reschedule
+
+    def test_no_row_may_be_rescheduled(self):
+        # No route here moves a single booking, a party, or a routine session
+        # by its booking id. Window open, and a salon with no window at all:
+        # GROUP's can_cancel shows the window did say yes.
+        missing = self.row()
+        del missing["booking_type"]
+        rows = [missing] + [
+            self.row(booking_type=kind)
+            for kind in ("SINGLE", "GROUP", "ROUTINE", "SERIES")
+        ]
+        bare = {**self.CARD, "cancel_window_hours": None}
+        for shelf in ("upcoming", "archive"):
+            for card in (self.CARD, bare):
+                for row in rows:
+                    kind = row.get("booking_type", "<missing>")
+                    with self.subTest(shelf=shelf, window=card["cancel_window_hours"], booking_type=kind):
+                        answer = self.get(
+                            f"filter={shelf}",
+                            upstream=(200, self.page([row])),
+                            cards={"marina-walk": card},
+                        ).data["results"][0]
+                        self.assertIs(answer["can_reschedule"], False)
+                        self.assertIs(answer["can_cancel"], kind == "GROUP")
 
     # ------------------------------------------------------------ pagination
 
