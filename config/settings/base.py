@@ -29,6 +29,9 @@ INSTALLED_APPS = [
     "apps.salons", 
     "apps.platform_data",
     "apps.uploads",
+    "apps.booking_data",
+    "apps.review_data",
+    "apps.push_data",
 ]
 
 MIDDLEWARE = [
@@ -132,6 +135,36 @@ DATABASES = {
         },
     }
 }
+
+# Other services' databases, for the admin only (apps/booking_data,
+# apps/review_data, apps/push_data; config/db_router.py). Each one is off until
+# its variable is set, and the admin then leaves that app out. The session is
+# read-only and the database user can only SELECT, so nothing here ever writes.
+# No persistent connections: the admin opens them rarely.
+READ_ONLY_DB = {
+    "CONN_MAX_AGE": 0,
+    "OPTIONS": {
+        "options": "-c default_transaction_read_only=on",
+        "connect_timeout": 5,
+    },
+}
+
+# booking-api's database is on the same server as ours, so it reuses our login
+# and only the database name changes.
+if BOOKING_DB_NAME := env("BOOKING_DB_NAME", default=""):
+    DATABASES["booking"] = {
+        **DATABASES["default"],
+        **READ_ONLY_DB,
+        "NAME": BOOKING_DB_NAME,
+    }
+
+# review-service and push-notification-service each run their own Postgres:
+# postgres://<read-only user>:<password>@<host>:5432/<db>
+for alias in ("review", "push"):
+    if url := env(f"{alias.upper()}_DATABASE_URL", default=""):
+        DATABASES[alias] = {**environ.Env.db_url_config(url), **READ_ONLY_DB}
+
+DATABASE_ROUTERS = ["config.db_router.ReadOnlyDataRouter"]
 
 # DATABASES = {
 #     "default": {

@@ -3,9 +3,12 @@ from django.contrib import admin
 from django.contrib.admin.sites import AlreadyRegistered
 from django.db import models as dj_models
 
+from config.read_only_admin import READ_ONLY_APPS
+
 for model in apps.get_models():
-    # platform_data has its own admin.py with read-only registration
-    if model._meta.app_label == "platform_data":
+    # Other services' tables: read-only, registered by their own admin.py
+    # (config/read_only_admin.py)
+    if model._meta.app_label in READ_ONLY_APPS:
         continue
 
     # Django admin cannot handle composite primary keys
