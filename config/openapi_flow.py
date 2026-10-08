@@ -98,7 +98,8 @@ FLOW = (
     ),
     (
         "8. Book one visit",
-        "Find a free time, book it, read it, record the payment, move it.",
+        "Find a free time, book it, read it, record the payment, move it, and "
+        "say I am here when I arrive.",
         (
             ("GET", "/api/v1/booking/nearest-available/{salon_id}", "The nearest free time"),
             ("POST", "/api/v1/booking", "Book it"),
@@ -108,6 +109,16 @@ FLOW = (
                 "POST",
                 "/api/v1/booking/{booking_id}/reschedule",
                 "Move it to a new time (SINGLE_BOOKING_ACTIONS_V1)",
+            ),
+            (
+                "POST",
+                "/api/v1/booking/{booking_id}/check-in",
+                "I am here: ask the desk to check me in (SELF_CHECK_IN_V1)",
+            ),
+            (
+                "GET",
+                "/api/v1/booking/{booking_id}/check-in",
+                "Has the desk answered my check-in? (SELF_CHECK_IN_V1)",
             ),
         ),
     ),

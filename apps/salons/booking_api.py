@@ -276,6 +276,39 @@ def reschedule_booking(booking_id, body, *, authorization, tenant_id=None):
     )
 
 
+def raise_check_in(booking_id, *, authorization):
+    """
+    POST /v1/bookings/<id>/check-in-request: the customer says "I am here"
+    for their own booking (SELF_CHECK_IN_V1). Returns (status, parsed body)
+    as given: 201 with the new request, 200 with the one already waiting, or
+    booking-api's refusal (404 for a booking that is not the caller's, never
+    403; 409 with a code the app can switch on).
+
+    NO BODY and NO X-Tenant-Id. booking-api takes no body here, and it takes
+    the tenant from the booking itself, so the app's header is never the one
+    that counts.
+    """
+    return _send(
+        "POST",
+        f"/v1/bookings/{urllib.parse.quote(str(booking_id), safe='')}/check-in-request",
+        headers={"Authorization": authorization},
+    )
+
+
+def read_check_in(booking_id, *, authorization):
+    """
+    GET /v1/bookings/<id>/check-in-request: the caller's latest check-in
+    request on their own booking (SELF_CHECK_IN_V1). Returns (status, parsed
+    body) as given: 200 with `{"request": ...}`, `{"request": null}` when
+    none was raised, or booking-api's 404.
+    """
+    return _send(
+        "GET",
+        f"/v1/bookings/{urllib.parse.quote(str(booking_id), safe='')}/check-in-request",
+        headers={"Authorization": authorization},
+    )
+
+
 def get_branch_services(tenant_id, branch_id):
     """
     Services a branch offers, as booking-api reads them from the platform.

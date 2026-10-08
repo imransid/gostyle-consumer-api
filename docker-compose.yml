@@ -82,6 +82,7 @@ services:
       SERIES_BOOKING_V1: ${SERIES_BOOKING_V1:-False}
       SINGLE_BOOKING_ACTIONS_V1: ${SINGLE_BOOKING_ACTIONS_V1:-False}
       SINGLE_LOOKUP_TIMEOUT: ${SINGLE_LOOKUP_TIMEOUT:-3}
+      SELF_CHECK_IN_V1: ${SELF_CHECK_IN_V1:-False}
 
       # File uploads to S3. The keys live in stack.env, never in git.
       AWS_BUCKET_NAME: ${AWS_BUCKET_NAME:-}
