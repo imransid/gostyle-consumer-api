@@ -117,9 +117,11 @@ The rule the server uses (switch on):
 | `ROUTINE` | always `false` | always `false` |
 | missing or unknown | always `false` | always `false` |
 
-- **"The salon's window"** means: the booking is still live (`BOOKED`,
-  `CONFIRMED_BY_SALON` or `CHECKED_IN`) and the start is more than the salon's
+- **"The salon's window"** means: the booking is `BOOKED` or
+  `CONFIRMED_BY_SALON`, and the start is more than the salon's
   `cancel_window_hours` away. A salon with no window allows it until the start.
+- **A `CHECKED_IN` booking shows neither button**, whatever its type: once the
+  customer is checked in, only the salon can cancel, and nobody can move it.
 - **A single booking with two stylists shows no Reschedule button.** A move
   can put the visit with one stylist only, so the route refuses it (`422
   multiple_stylists`). Cancel still shows: a cancel works with any number of
@@ -528,7 +530,7 @@ booking-api's decision about the booking.
 | `401` | A | `not_authenticated` | No token, or it expired. | Refresh the token, retry. |
 | `404` | A | `not_found` (field `id`) | Not a single booking on the first page of this customer's Upcoming: already cancelled (a second tap), someone else's, a routine session, past the first 50 upcoming, or the lookup failed. Also: the switch is off. | Show "This booking can't be cancelled here", reload the list. If the row is now in Archive as `CANCELLED`, the first cancel worked. |
 | `503` | A | `service_unavailable` (`errors[0].code: booking_api_unavailable`) | booking-api did not answer. The cancel may or may not have happened. | Reload the list first. If the booking is still on Upcoming, try again. |
-| `403` | B | `FORBIDDEN_ROLE` | The customer is already checked in: only the salon can cancel now. | "Please ask the salon to cancel." Reload the list. |
+| `403` | B | `FORBIDDEN_ROLE` | The customer was checked in after the list loaded: only the salon can cancel now. | "Please ask the salon to cancel." Reload the list. |
 | `409` | B | `BOOKING_STATE_INVALID` | The booking cannot be cancelled in its state now, for example the service has started (rare). | "This booking can no longer be cancelled." Reload the list. |
 | `404` | B | `BOOKING_NOT_FOUND` | The booking went between the list and the cancel (rare). | Reload the list. |
 | other `4xx` / `5xx` | B | any | Not expected. | "Something went wrong. Please try again." Reload the list. |
@@ -574,7 +576,7 @@ new time was held, the held time is given back at once.
 | `409` | B | `BOOKING_SKILL_MISSING` | booking-api says the stylist lacks a skill for these services. | Pick another stylist. |
 | `422` | B | `BOOKING_STAFF_UNKNOWN` | booking-api does not know that stylist at this salon. | Pick another stylist. |
 | `404` | B | `BOOKING_NOT_FOUND` | booking-api does not find a service of the booking, or the booking itself went (rare). | Reload the list. If it persists: "Please contact the salon." |
-| `409` | B | `BOOKING_STATE_INVALID` | The booking cannot be moved in its state now, e.g. already checked in. | "This booking can no longer be moved." Reload the list. |
+| `409` | B | `BOOKING_STATE_INVALID` | The booking cannot be moved in its state now, e.g. checked in after the list loaded. | "This booking can no longer be moved." Reload the list. |
 | `410` | B | (branch on the status) | The held time lapsed before the move (rare). The booking is untouched. | Reload the time picker and try again. |
 | other `4xx` / `5xx` | B | any | Not expected. | "Something went wrong. Please try again." Reload the list. |
 
@@ -652,6 +654,7 @@ testing these screens.
 - [ ] Switch on: a single booking well ahead shows both buttons; one inside the salon's window shows neither.
 - [ ] A single booking with two stylists shows Cancel but no Reschedule.
 - [ ] A `GROUP` row still shows only Cancel; a `ROUTINE` row shows neither.
+- [ ] A `CHECKED_IN` booking, single or party, shows neither button.
 - [ ] Cancel with no reason, and with each of the four reasons: `201`, the sheet built from `outcome` and the amounts.
 - [ ] Cancel a pay-at-the-salon booking: `NO_CHARGE`, no money wording.
 - [ ] Tap Cancel twice fast: one cancel; the button is disabled while it runs; a late `404` reloads the list.
