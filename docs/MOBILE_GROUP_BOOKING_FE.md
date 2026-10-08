@@ -373,7 +373,7 @@ Each party is ONE row with `booking_type: "GROUP"` and `member_count`, on the bo
   "due_amount": 552.83,
   "salon": { "id": "33333333-...", "name": "The Iron Razor Barbershop", "logo_url": null, "city": "Dubai" },
   "can_cancel": true,
-  "can_reschedule": true,
+  "can_reschedule": false,
   "created_at": "2026-09-25T15:06:53+06:00"
 }
 ```
