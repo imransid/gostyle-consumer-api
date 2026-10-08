@@ -239,6 +239,13 @@ SINGLE_BOOKING_ACTIONS_V1 = env.bool("SINGLE_BOOKING_ACTIONS_V1", default=False)
 # not wait BOOKING_API_TIMEOUT twice before its 503. The reschedule uses the
 # same lookup, and an id it does not find there is 404.
 SINGLE_LOOKUP_TIMEOUT = env.int("SINGLE_LOOKUP_TIMEOUT", default=3)
+
+# Self check-in: POST /api/v1/booking/{id}/check-in says "I am here" and GET
+# reads the desk's answer, forwarded to booking-api's
+# /v1/bookings/{id}/check-in-request (check_in_views.py). booking-api has its
+# own flag of the same name; both must be on. OFF here, both are the 404 this
+# path was before, and booking-api is not called.
+SELF_CHECK_IN_V1 = env.bool("SELF_CHECK_IN_V1", default=False)
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",

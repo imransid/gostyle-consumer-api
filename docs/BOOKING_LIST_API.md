@@ -21,7 +21,7 @@ makes that a safe shape to expose.
 ```
 app ──GET /api/v1/bookings──▶ customer-api ──GET /v1/mobile-booking──▶ booking-api
                                     │
-                                    └─ salon, can_cancel, can_reschedule
+                                    └─ salon, can_cancel, can_reschedule, can_check_in
                                        ← platform tables, read directly
 ```
 
@@ -30,16 +30,17 @@ connection to it and no business writing there, so the page — which bookings,
 which shelf, what order, the counts and the money — is entirely booking-api's
 answer and is not re-decided here.
 
-Three fields on each row are the exception, and they are the reason this is
+A few fields on each row are the exception, and they are the reason this is
 not a bare proxy:
 
 | Field                           | Why it is filled in here                                                                                                                                            |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `salon`                         | A booking stores `branch_id` and nothing else. No proto exposes a branch's name, logo or city to booking-api — but this service reads the platform tables directly.  |
 | `can_cancel` / `can_reschedule` | Both answer the salon's cancellation policy, which the salon publishes into `storefront_policy` here. booking-api cannot see it, and a hardcoded `true` would be a promise nobody can keep. Which row types get each one is in §5. |
+| `can_check_in`                  | Whether "I am here" (`POST /booking/{id}/check-in`) may be offered, behind `SELF_CHECK_IN_V1`. Decided here from the row, so the app never works the rule out. See §5. |
 
-See booking-api's own `docs/booking-list.md` §9, which records these three as
-the parts it cannot answer.
+See booking-api's own `docs/booking-list.md` §9, which records `salon`,
+`can_cancel` and `can_reschedule` as the parts it cannot answer.
 
 ---
 
@@ -97,8 +98,8 @@ reading — the rules that matter are there and are tested there:
 ### The Recurring rows
 
 Every row carries the short salon card (`id`, `name`, `logo_url`, `city`),
-like the other tabs, but no `can_cancel` or `can_reschedule`: those are per
-visit, and a routine answers them per session.
+like the other tabs, but no `can_cancel`, `can_reschedule` or `can_check_in`:
+those are per visit, and a routine answers them per session.
 
 - **`ROUTINE_CONTRACT_V1` off (today):** each row is the routine hub, the
   shape of the old `/booking/series` routes, with every time on the salon's
@@ -142,6 +143,7 @@ visit, and a routine answers them per session.
       "due_amount": 0,
       "can_cancel": false,
       "can_reschedule": false,
+      "can_check_in": false,
       "created_at": "2026-09-18T14:02:11+04:00"
     }
   ]
@@ -165,13 +167,14 @@ visit, and a routine answers them per session.
 | `↳ due_amount`      | number         | Still to pay. `0` when settled.                                                   |
 | `↳ can_cancel`      | boolean        | See §5.                                                                           |
 | `↳ can_reschedule`  | boolean        | See §5.                                                                           |
+| `↳ can_check_in`    | boolean        | See §5. Always `false` while `SELF_CHECK_IN_V1` is off.                           |
 
 Rows are summaries. Products, the tax breakdown, the promo code and the QR
 pass come from `GET /booking/<id>`.
 
 ---
 
-## 5. The three fields this service fills in
+## 5. The fields this service fills in
 
 ### `salon`
 
@@ -243,6 +246,28 @@ field in that they may never cancel, which is a refusal the salon never made.
 They are two fields rather than one because they are two questions. Today
 they share the window, and they differ by type: a party can be cancelled here
 but not moved.
+
+### `can_check_in`
+
+"I am here": `POST /booking/{id}/check-in` with the row's own `id`
+(docs/MOBILE_SELF_CHECK_IN_FE.md). Behind the switch `SELF_CHECK_IN_V1`, off by
+default. **Off, it is `false` on every row.** On, it is `true` only when all of
+these hold:
+
+| Rule | Why |
+| ---- | --- |
+| `booking_type` is `SINGLE` or `ROUTINE` | One visit each. A `ROUTINE` row's `id` is that session's own booking id, which is what the check-in takes. A party (`GROUP`) has no party-wide check-in in v1. A missing or unknown type is `false`. |
+| `status` is `CONFIRMED_BY_SALON` | booking-api checks in only a confirmed booking. `BOOKED` is not confirmed or paid yet; `CHECKED_IN` is done. |
+| from 30 minutes before `start_time` until `end_time` | booking-api's own check-in window: it opens when the desk's check-in opens and closes when the visit ends. Compared on the salon's clock, the offset both times carry. |
+
+It does **not** read the salon's cancellation window: a booking inside it
+(no cancel, no move) can still check in.
+
+**One thing the row cannot know** is whether the desk already said no to this
+booking. That tap answers `409 BOOKING_CHECKIN_REJECTED`, and
+`GET /booking/{id}/check-in` says `REJECTED`. Once the customer has tapped,
+that `GET` is the screen's state; `can_check_in` is only whether to offer the
+button.
 
 ---
 

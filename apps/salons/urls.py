@@ -1,6 +1,7 @@
 from django.urls import path
 
 from . import (
+    check_in_views,
     expert_profile_views,
     group_views,
     routine_views,
@@ -79,6 +80,13 @@ urlpatterns = [
         "booking/<uuid:booking_id>/reschedule",
         single_views.SingleBookingRescheduleView.as_view(),
         name="booking-reschedule",
+    ),
+    # Self check-in (SELF_CHECK_IN_V1): "I am here", and the desk's answer.
+    # Off, it is the 404 this path was before.
+    path(
+        "booking/<uuid:booking_id>/check-in",
+        check_in_views.SelfCheckInView.as_view(),
+        name="booking-check-in",
     ),
     # Routines (SERIES_BOOKING_V1). `series` is not a uuid, so booking/<uuid> cannot take it.
     path("booking/series", series_views.SeriesBookingCreateView.as_view(), name="booking-series"),

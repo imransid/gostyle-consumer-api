@@ -2493,6 +2493,49 @@ def _reschedulable_booking_types():
     return ()
 
 
+# Self check-in's window, booking-api's own (domain/booking/lifecycle.ts
+# CHECK_IN_OPENS_MIN): "I am here" opens this many minutes before the start,
+# when the desk's own check-in opens, and closes at the end time.
+CHECK_IN_OPENS_MINUTES = 30
+
+# The row types that can say "I am here" by the row's own id, through
+# POST /booking/<id>/check-in (check_in_views.py). A SINGLE row is one visit,
+# and a ROUTINE row's id is that one session's booking id, which is exactly
+# what the check-in takes (unlike the cancel and the move, which go through
+# the routine). A party has no party-wide request in v1. A tuple, as above.
+CHECK_IN_BOOKING_TYPES = ("SINGLE", "ROUTINE")
+
+
+def _can_check_in(row, now):
+    """
+    Whether "I am here" may be offered on this row (SELF_CHECK_IN_V1).
+
+    THE SERVER DECIDES, as for can_cancel. Off: false everywhere. On, all of:
+
+      * a SINGLE or ROUTINE row (CHECK_IN_BOOKING_TYPES);
+      * CONFIRMED_BY_SALON, booking-api's `confirmed`: the only status it
+        checks in. BOOKED is not yet confirmed or paid; CHECKED_IN is done;
+      * from CHECK_IN_OPENS_MINUTES before `start_time` until `end_time`,
+        compared against the salon's clock (the offset both carry).
+
+    One thing the row cannot know: whether the desk already said no to this
+    booking. booking-api answers that tap with 409 BOOKING_CHECKIN_REJECTED,
+    and GET /booking/<id>/check-in says REJECTED (docs/MOBILE_SELF_CHECK_IN_FE.md).
+    """
+    if not settings.SELF_CHECK_IN_V1:
+        return False
+    if row.get("booking_type") not in CHECK_IN_BOOKING_TYPES:
+        return False
+    if row.get("status") != "CONFIRMED_BY_SALON":
+        return False
+    start = _parse_iso(row.get("start_time"))
+    end = _parse_iso(row.get("end_time"))
+    if start is None or end is None:
+        # Nothing to measure against: "yes" would be a button that fails.
+        return False
+    return start - timedelta(minutes=CHECK_IN_OPENS_MINUTES) <= now < end
+
+
 @extend_schema(
     summary="The caller's bookings — upcoming, recurring or archive",
     description=(
@@ -2513,8 +2556,12 @@ def _reschedulable_booking_types():
         "same window for a SINGLE row with at most one stylist while "
         "SINGLE_BOOKING_ACTIONS_V1 is on (off: `false`), and is `false` on "
         "every other row: the move refuses a booking with two stylists, and "
-        "no route here moves a party or a routine session by its id. A salon "
-        "that cannot be "
+        "no route here moves a party or a routine session by its id. "
+        "`can_check_in` (\"I am here\", POST /booking/{id}/check-in) is "
+        "`true` while SELF_CHECK_IN_V1 is on, for a SINGLE or ROUTINE row "
+        "that is CONFIRMED_BY_SALON, from 30 minutes before `start_time` "
+        "until `end_time`; `false` on every other row, and everywhere while "
+        "the switch is off. A salon that cannot be "
         "resolved gets `\"salon\": null` rather than an object with holes in "
         "it.\n\n"
         "`counts` carries all three tab badges, so the app does not make "
@@ -2760,6 +2807,9 @@ class BookingListView(APIView):
                 and not too_many_stylists(row)
                 and _can_still_move(row, card, now)
             )
+            # "I am here", behind SELF_CHECK_IN_V1: the check-in window, not
+            # the salon's cancellation window.
+            row["can_check_in"] = _can_check_in(row, now)
 
         count = body.get("count") or 0
         return {
