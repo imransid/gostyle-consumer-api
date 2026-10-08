@@ -2366,6 +2366,86 @@ class BookingListViewTests(SimpleTestCase):
                                 self.assertIs(answer["can_cancel"], expected[0])
                                 self.assertIs(answer["can_reschedule"], expected[1])
 
+    # ------------------------------------------------------------ can_check_in
+    #
+    # NOW is 12:00 UTC, 16:00 at the salon (+04:00). A visit starting 16:10
+    # and ending 17:10 there is inside the check-in window.
+
+    def soon(self, **overrides):
+        return self.row(**{"start_time": "2026-09-18T16:10:00+04:00",
+                           "end_time": "2026-09-18T17:10:00+04:00", **overrides})
+
+    def check_in(self, row, shelf="upcoming"):
+        answer = self.get(f"filter={shelf}", upstream=(200, self.page([row]))).data["results"][0]
+        return answer["can_check_in"]
+
+    def test_can_check_in_is_false_everywhere_while_the_switch_is_off(self):
+        for switch in (None, False):
+            settings_ = {} if switch is None else {"SELF_CHECK_IN_V1": switch}
+            with override_settings(**settings_):
+                for kind in ("SINGLE", "ROUTINE", "GROUP"):
+                    with self.subTest(switch=switch, booking_type=kind):
+                        self.assertIs(self.check_in(self.soon(booking_type=kind)), False)
+
+    @override_settings(SELF_CHECK_IN_V1=True)
+    def test_a_single_or_routine_row_in_the_window_may_check_in(self):
+        missing = self.soon()
+        del missing["booking_type"]
+        rows = [missing] + [
+            self.soon(booking_type=kind)
+            for kind in ("SINGLE", "ROUTINE", "GROUP", "SERIES", None, "single", ["SINGLE"])
+        ]
+        for shelf in ("upcoming", "archive"):
+            for row in rows:
+                kind = row.get("booking_type", "<missing>")
+                kind = kind if isinstance(kind, str) or kind is None else repr(kind)
+                with self.subTest(shelf=shelf, booking_type=kind):
+                    self.assertIs(self.check_in(row, shelf), kind in ("SINGLE", "ROUTINE"))
+
+    @override_settings(SELF_CHECK_IN_V1=True)
+    def test_only_a_confirmed_booking_may_check_in(self):
+        for status_word, expected in (
+            ("CONFIRMED_BY_SALON", True),
+            ("BOOKED", False),
+            ("CHECKED_IN", False),
+            ("COMPLETED", False),
+            ("CANCELLED", False),
+        ):
+            with self.subTest(status=status_word):
+                self.assertIs(self.check_in(self.soon(status=status_word)), expected)
+
+    @override_settings(SELF_CHECK_IN_V1=True)
+    def test_the_window_opens_30_minutes_before_the_start_and_closes_at_the_end(self):
+        # On the salon's clock: now is 16:00 there.
+        for start, end, expected in (
+            ("16:30", "17:30", True),    # opens exactly now
+            ("16:31", "17:31", False),   # opens a minute from now
+            ("15:00", "16:01", True),    # started an hour ago, ends in a minute
+            ("15:00", "16:00", False),   # ended exactly now
+            ("2026-09-20T20:00", "2026-09-20T20:45", False),  # two days out
+        ):
+            with self.subTest(start=start, end=end):
+                day = "" if "T" in start else "2026-09-18T"
+                row = self.row(start_time=f"{day}{start}:00+04:00",
+                               end_time=f"{day}{end}:00+04:00")
+                self.assertIs(self.check_in(row), expected)
+
+    @override_settings(SELF_CHECK_IN_V1=True)
+    def test_no_start_or_no_end_offers_no_check_in(self):
+        for field_name in ("start_time", "end_time"):
+            for value in (None, "not a time", "2026-09-18T16:10:00"):
+                with self.subTest(field=field_name, value=value):
+                    self.assertIs(self.check_in(self.soon(**{field_name: value})), False)
+
+    @override_settings(SELF_CHECK_IN_V1=True, SINGLE_BOOKING_ACTIONS_V1=True)
+    def test_check_in_does_not_move_the_other_two_buttons(self):
+        # Inside the salon's 24 hour window: no cancel, no move, but check-in.
+        answer = self.get(upstream=(200, self.page([self.soon()]))).data["results"][0]
+        self.assertEqual(
+            (answer["can_cancel"], answer["can_reschedule"], answer["can_check_in"]),
+            (False, False, True),
+        )
+
     # ------------------------------------------------------------ pagination
 
     def test_next_carries_every_parameter_the_caller_sent(self):
