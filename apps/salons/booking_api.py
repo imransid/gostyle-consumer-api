@@ -204,6 +204,26 @@ def patch_booking(booking_id, body, *, authorization, idempotency_key=None, tena
     return _send("PATCH", f"/v1/mobile-booking/{booking_id}", headers=headers, body=body)
 
 
+def cancel_booking(booking_id, body, *, authorization, idempotency_key=None):
+    """
+    POST /v1/bookings/<id>/cancel: a customer calls off their own single
+    booking (SINGLE_BOOKING_ACTIONS_V1). Returns (status, parsed body) as
+    given: the cancel with its refund, or booking-api's refusal (404 for a
+    booking that is not the caller's, never 403).
+
+    `body` is one this service BUILT, never the app's: booking-api answers
+    400 for any key it does not know.
+    """
+    headers = _group_headers(authorization, None)
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    return _send(
+        "POST",
+        f"/v1/bookings/{urllib.parse.quote(str(booking_id), safe='')}/cancel",
+        headers=headers, body=_encode(body),
+    )
+
+
 def get_branch_services(tenant_id, branch_id):
     """
     Services a branch offers, as booking-api reads them from the platform.

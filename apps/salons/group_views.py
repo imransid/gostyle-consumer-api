@@ -981,19 +981,44 @@ def read_group_response(request, group_id):
 
 
 @extend_schema(
-    summary="Cancel a whole party",
+    summary="Cancel a whole party, or a single booking",
     description=(
         "Behind GROUP_BOOKING_V2. The booker only: every member is cancelled "
         "together, or, if one cannot be (already checked in, say), none is "
         "and the answer is 409 `cannot_cancel`. Sending it again after a "
         "part-way failure finishes the job. Answers with the party, read "
-        "back. A single booking's id is 404 here."
+        "back. No body.\n\n"
+        "A SINGLE booking's id: behind SINGLE_BOOKING_ACTIONS_V1 (off: 404, "
+        "as for any id that is not a party). The type is looked up on the "
+        "caller's own Upcoming shelf. The body is optional: `reason` is one "
+        "of NOT_SATISFIED, TOO_EXPENSIVE, MOVING or OTHER, else 422 "
+        "`invalid_cancel_reason`; left out, null or blank is no reason. "
+        "booking-api decides the refund, and its answer comes back as it "
+        "came: 201 with `refund`, `kept`, `lateCancel` and `explanation`, or "
+        "its refusal. A routine's id, or one of its sessions, is 404 here."
     ),
-    request=None,
+    request={
+        "application/json": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "enum": ["NOT_SATISFIED", "TOO_EXPENSIVE", "MOVING", "OTHER"],
+                    "description": "Single booking only, optional. A party's cancel reads no body.",
+                }
+            },
+        }
+    },
     responses={
         200: OpenApiResponse(description="Cancelled. The party."),
-        404: OpenApiResponse(response=_OUR_ENVELOPE, description="No such party, or not the booker."),
+        201: OpenApiResponse(description="A single booking, cancelled: booking-api's answer with the refund."),
+        404: OpenApiResponse(
+            response=_OUR_ENVELOPE,
+            description="No such party or booking, not the booker, not the caller's, or a flag is off.",
+        ),
         409: OpenApiResponse(response=_OUR_ENVELOPE, description="`cannot_cancel`: nothing was cancelled."),
+        415: OpenApiResponse(response=_OUR_ENVELOPE, description="Single booking: a body that is not JSON."),
+        422: OpenApiResponse(response=_OUR_ENVELOPE, description="Single booking: `invalid_cancel_reason`."),
         503: OpenApiResponse(response=_OUR_ENVELOPE, description="booking-api unreachable."),
     },
 )
@@ -1003,6 +1028,15 @@ class GroupBookingCancelView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, booking_id):
+        if settings.SINGLE_BOOKING_ACTIONS_V1:
+            # A single booking's id is answered there; any other id comes
+            # back as None and goes on below, as before the flag. Imported
+            # here, as single_views imports this module.
+            from .single_views import single_cancel_response
+
+            single = single_cancel_response(request, booking_id)
+            if single is not None:
+                return single
         if not settings.GROUP_BOOKING_V2:
             raise Http404("Not found")
         try:
