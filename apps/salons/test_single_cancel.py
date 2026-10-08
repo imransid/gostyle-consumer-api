@@ -181,32 +181,35 @@ class SingleCancelTests(Seams, SimpleTestCase):
         self.assertEqual(call.args[0], "filter=upcoming&page=1&pageSize=50")
         self.assertEqual(call.kwargs, {"authorization": "Bearer customer-token", "tenant_id": "tenant-1"})
 
-    def test_the_lookup_reads_the_next_page_until_the_count_is_reached(self):
+    def test_only_the_first_page_is_read(self):
+        # The id is on page 2: not looked for, so not a single cancel. It
+        # goes on to the group cancel, whose 404 comes back.
         filler = [row(str(uuid.uuid4()), "SINGLE") for _ in range(50)]
-        pages = mock.Mock(side_effect=[(200, shelf(filler, count=52)),
-                                       (200, shelf([row(SINGLE_ID, "SINGLE")], count=52))])
-        response, s = self.cancel(**{"apps.salons.single_views.list_bookings": pages})
-        self.assertEqual(response.status_code, 201, response.data)
-        self.assertEqual([c.args[0].split("&")[1] for c in pages.call_args_list], ["page=1", "page=2"])
-
-        absent = mock.Mock(side_effect=[(200, shelf(filler, count=50))])
-        response, s = self.cancel(SOMEONE_ELSES, **{"apps.salons.single_views.list_bookings": absent})
-        self.assertEqual(absent.call_count, 1)
+        pages = mock.Mock(return_value=(200, shelf(filler, count=51)))
+        missing = mock.Mock(return_value=(404, NOT_FOUND))
+        response, s = self.cancel(**{"apps.salons.single_views.list_bookings": pages,
+                                     "apps.salons.group_views.cancel_group_booking": missing})
+        self.assertEqual(response.status_code, 404)
+        pages.assert_called_once()
         s["apps.salons.single_views.cancel_booking"].assert_not_called()
 
-    def test_a_lookup_booking_api_refuses_is_answered_as_it_came(self):
-        refusal = {"statusCode": 401, "message": "Invalid token"}
-        response, s = self.cancel(**{
-            "apps.salons.single_views.list_bookings": mock.Mock(return_value=(401, refusal))})
-        self.assertEqual((response.status_code, response.data), (401, refusal))
-        s["apps.salons.single_views.cancel_booking"].assert_not_called()
-        s["apps.salons.group_views.cancel_group_booking"].assert_not_called()
-
-    def test_booking_api_down_on_the_lookup_is_503(self):
-        response, s = self.cancel(**{
-            "apps.salons.single_views.list_bookings": mock.Mock(side_effect=BookingApiUnavailable("x"))})
-        self.assertEqual(response.status_code, 503)
-        s["apps.salons.group_views.cancel_group_booking"].assert_not_called()
+    def test_a_lookup_that_fails_is_not_a_single_cancel(self):
+        # Refused, broken or unreachable: the id goes on to the group cancel
+        # and its answer comes back. Never the lookup's own error.
+        failures = {
+            "refused": mock.Mock(return_value=(401, {"statusCode": 401, "message": "Invalid token"})),
+            "5xx": mock.Mock(return_value=(500, {"statusCode": 500})),
+            "not an object": mock.Mock(return_value=(200, None)),
+            "unreachable": mock.Mock(side_effect=BookingApiUnavailable("x")),
+        }
+        for name, lookup in failures.items():
+            with self.subTest(name):
+                missing = mock.Mock(return_value=(404, NOT_FOUND))
+                response, s = self.cancel(**{"apps.salons.single_views.list_bookings": lookup,
+                                             "apps.salons.group_views.cancel_group_booking": missing})
+                self.assertEqual((response.status_code, response.data), (404, NOT_FOUND))
+                missing.assert_called_once()
+                s["apps.salons.single_views.cancel_booking"].assert_not_called()
 
     # ------------------------------------------------------------ routines
 
@@ -253,6 +256,25 @@ class GroupCancelUnchangedTests(Seams, SimpleTestCase):
         self.assertEqual((on.status_code, on.data), (off.status_code, off.data))
         self.assertEqual(on.status_code, 200)
         s_on["apps.salons.single_views.cancel_booking"].assert_not_called()
+
+    def test_a_failing_lookup_never_breaks_a_party_cancel(self):
+        # Before the flag a party's cancel never called the list, so with the
+        # flag on a list that fails must not change its answer.
+        failures = {
+            "unreachable": mock.Mock(side_effect=BookingApiUnavailable("x")),
+            "refused": mock.Mock(return_value=(401, {"statusCode": 401})),
+            "5xx": mock.Mock(return_value=(502, None)),
+        }
+        for name, lookup in failures.items():
+            with self.subTest(name):
+                cancelled = mock.Mock(return_value=(200, dict(ANSWER, status="CANCELLED")))
+                (off, _), (on, s_on) = self.both(**{
+                    "apps.salons.group_views.cancel_group_booking": cancelled,
+                    "apps.salons.single_views.list_bookings": lookup})
+                self.assertEqual(on.status_code, 200, on.data)
+                self.assertEqual((on.status_code, on.data), (off.status_code, off.data))
+                self.assertEqual(on.data["status"], "CANCELLED")
+                s_on["apps.salons.single_views.cancel_booking"].assert_not_called()
 
     def test_a_refusal_is_forwarded_exactly_as_before(self):
         refusal = {"detail": "GS-1281 is checked in", "code": "cannot_cancel", "errors": []}

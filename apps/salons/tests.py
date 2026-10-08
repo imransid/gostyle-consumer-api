@@ -2194,6 +2194,7 @@ class BookingListViewTests(SimpleTestCase):
                 response = self.get(upstream=self.group(start_time=start))
                 self.assertFalse(response.data["results"][0]["can_cancel"])
 
+    @override_settings(SINGLE_BOOKING_ACTIONS_V1=False)
     def test_only_a_group_row_may_be_cancelled(self):
         # Window open on both tabs. SINGLE has no cancel route here yet, and
         # a ROUTINE row's id is one session's booking id, which no route here
@@ -2206,6 +2207,7 @@ class BookingListViewTests(SimpleTestCase):
                     self.assertEqual(row["booking_type"], kind)
                     self.assertIs(row["can_cancel"], expected)
 
+    @override_settings(SINGLE_BOOKING_ACTIONS_V1=False)
     def test_a_row_of_missing_or_unknown_type_may_not_be_cancelled(self):
         # An unknown type must not promise a button, even with the window open.
         missing = self.row()
@@ -2219,12 +2221,48 @@ class BookingListViewTests(SimpleTestCase):
                 answer = self.get(upstream=(200, self.page([row]))).data["results"][0]
                 self.assertIs(answer["can_cancel"], False)
 
+    # SINGLE_BOOKING_ACTIONS_V1 on: POST /booking/<id>/cancel cancels a single
+    # booking, so a SINGLE row's button follows the window as GROUP's does.
+
+    @override_settings(SINGLE_BOOKING_ACTIONS_V1=True)
+    def test_with_single_actions_on_a_single_row_follows_the_window(self):
+        late = {**self.CARD, "cancel_window_hours": 24 * 30}
+        bare = {**self.CARD, "cancel_window_hours": None}
+        for shelf in ("upcoming", "archive"):
+            with self.subTest(shelf):
+                def can_cancel(card=self.CARD, **overrides):
+                    upstream = (200, self.page([self.row(booking_type="SINGLE", **overrides)]))
+                    answer = self.get(
+                        f"filter={shelf}", upstream=upstream, cards={"marina-walk": card},
+                    ).data["results"][0]
+                    return answer["can_cancel"]
+
+                self.assertIs(can_cancel(), True)
+                self.assertIs(can_cancel(card=bare), True)
+                self.assertIs(can_cancel(card=late), False)
+                self.assertIs(can_cancel(status="COMPLETED"), False)
+                self.assertIs(can_cancel(start_time=None), False)
+
+    @override_settings(SINGLE_BOOKING_ACTIONS_V1=True)
+    def test_with_single_actions_on_routine_and_unknown_rows_stay_false(self):
+        missing = self.row()
+        del missing["booking_type"]
+        rows = [missing] + [
+            self.row(booking_type=kind)
+            for kind in ("ROUTINE", None, "single", "SERIES", ["SINGLE"])
+        ]
+        for row in rows:
+            with self.subTest(booking_type=row.get("booking_type", "<missing>")):
+                answer = self.get(upstream=(200, self.page([row]))).data["results"][0]
+                self.assertIs(answer["can_cancel"], False)
+
     # ------------------------------------------------------ can_reschedule
 
     def test_no_row_may_be_rescheduled(self):
         # No route here moves a single booking, a party, or a routine session
-        # by its booking id. Window open, and a salon with no window at all:
-        # GROUP's can_cancel shows the window did say yes.
+        # by its booking id, whatever SINGLE_BOOKING_ACTIONS_V1 says. Window
+        # open, and a salon with no window at all: can_cancel shows the
+        # window did say yes.
         missing = self.row()
         del missing["booking_type"]
         rows = [missing] + [
@@ -2232,18 +2270,21 @@ class BookingListViewTests(SimpleTestCase):
             for kind in ("SINGLE", "GROUP", "ROUTINE", "SERIES")
         ]
         bare = {**self.CARD, "cancel_window_hours": None}
-        for shelf in ("upcoming", "archive"):
-            for card in (self.CARD, bare):
-                for row in rows:
-                    kind = row.get("booking_type", "<missing>")
-                    with self.subTest(shelf=shelf, window=card["cancel_window_hours"], booking_type=kind):
-                        answer = self.get(
-                            f"filter={shelf}",
-                            upstream=(200, self.page([row])),
-                            cards={"marina-walk": card},
-                        ).data["results"][0]
-                        self.assertIs(answer["can_reschedule"], False)
-                        self.assertIs(answer["can_cancel"], kind == "GROUP")
+        for single_actions, cancellable in ((False, {"GROUP"}), (True, {"GROUP", "SINGLE"})):
+            with override_settings(SINGLE_BOOKING_ACTIONS_V1=single_actions):
+                for shelf in ("upcoming", "archive"):
+                    for card in (self.CARD, bare):
+                        for row in rows:
+                            kind = row.get("booking_type", "<missing>")
+                            with self.subTest(single_actions=single_actions, shelf=shelf,
+                                              window=card["cancel_window_hours"], booking_type=kind):
+                                answer = self.get(
+                                    f"filter={shelf}",
+                                    upstream=(200, self.page([row])),
+                                    cards={"marina-walk": card},
+                                ).data["results"][0]
+                                self.assertIs(answer["can_reschedule"], False)
+                                self.assertIs(answer["can_cancel"], kind in cancellable)
 
     # ------------------------------------------------------------ pagination
 

@@ -22,9 +22,16 @@ booking-api, the same rows the app drew the Cancel button from:
   * a booking that can still be cancelled is live and still to come, so it
     is on Upcoming. Anything not there is not a single cancel.
 
+THE LOOKUP NEVER BREAKS A PARTY'S CANCEL. Before the flag, a group cancel did
+not depend on the list at all. So a list that fails, refuses or is
+unreachable is "not a single booking", and the group cancel answers as
+before. Only the first page is read: a customer with more live bookings than
+one page holds is not a real case, and round trips before every cancel are.
+
 booking-api owns the booking and decides the refund. This module finds the
 type, builds the body, and passes booking-api's answer back as it came.
 """
+import logging
 import urllib.parse
 
 from rest_framework.exceptions import UnsupportedMediaType
@@ -33,6 +40,8 @@ from rest_framework.response import Response
 from .booking_api import BookingApiUnavailable, cancel_booking, list_bookings
 from .group_views import _refuse
 from .views import BookingApiDown
+
+logger = logging.getLogger(__name__)
 
 # The reasons the app may send: the same four as a routine's cancel
 # (docs/MOBILE_ROUTINE_BOOKING_FE.md). No free text.
@@ -43,11 +52,9 @@ CANCEL_REASONS = ("NOT_SATISFIED", "TOO_EXPENSIVE", "MOVING", "OTHER")
 # when there is one. The same form as booking-api's routine cancel.
 CANCEL_TEXT = "Cancelled by the customer in the app"
 
-# booking-api's own cap on a page. A customer with more live bookings than
-# LOOKUP_MAX_PAGES pages is not looked through past it: such an id is not
-# treated as single.
+# booking-api's own cap on a page. Only the first page is read: an id past
+# it is not treated as single.
 LOOKUP_PAGE_SIZE = 50
-LOOKUP_MAX_PAGES = 20
 
 
 def single_cancel_response(request, booking_id):
@@ -56,11 +63,9 @@ def single_cancel_response(request, booking_id):
     group cancel then answers exactly as before.
     """
     authorization = request.META.get("HTTP_AUTHORIZATION", "")
-    row, refused = upcoming_row(
+    row = upcoming_row(
         booking_id, authorization, tenant_id=request.META.get("HTTP_X_TENANT_ID"),
     )
-    if refused is not None:
-        return refused
     if row is None or row.get("booking_type") != "SINGLE":
         return None
 
@@ -86,30 +91,25 @@ def single_cancel_response(request, booking_id):
 
 def upcoming_row(booking_id, authorization, *, tenant_id=None):
     """
-    (row, None): the caller's own Upcoming row with this id.
-    (None, None): no such row.
-    (None, Response): booking-api refused the lookup, with its answer.
+    The caller's own row with this id on the first page of their Upcoming
+    shelf, or None: not there, or the list failed, refused or could not be
+    reached. Never an error of its own, so a party's cancel never depends
+    on it.
     """
+    query = urllib.parse.urlencode({"filter": "upcoming", "page": 1, "pageSize": LOOKUP_PAGE_SIZE})
+    try:
+        code, body = list_bookings(query, authorization=authorization, tenant_id=tenant_id)
+    except BookingApiUnavailable:
+        logger.warning("single cancel: the Upcoming lookup could not reach booking-api")
+        return None
+    if code != 200 or not isinstance(body, dict):
+        logger.warning("single cancel: the Upcoming lookup answered %s", code)
+        return None
     wanted = str(booking_id).lower()
-    for page in range(1, LOOKUP_MAX_PAGES + 1):
-        query = urllib.parse.urlencode(
-            {"filter": "upcoming", "page": page, "pageSize": LOOKUP_PAGE_SIZE}
-        )
-        try:
-            code, body = list_bookings(query, authorization=authorization, tenant_id=tenant_id)
-        except BookingApiUnavailable as exc:
-            raise BookingApiDown() from exc
-        if code != 200:
-            return None, Response(body, status=code)
-        if not isinstance(body, dict):
-            raise BookingApiDown()
-        rows = body.get("results") or []
-        for row in rows:
-            if isinstance(row, dict) and str(row.get("id", "")).lower() == wanted:
-                return row, None
-        if not rows or page * LOOKUP_PAGE_SIZE >= (body.get("count") or 0):
-            break
-    return None, None
+    for row in body.get("results") or []:
+        if isinstance(row, dict) and str(row.get("id", "")).lower() == wanted:
+            return row
+    return None
 
 
 def cancel_reason(body):
