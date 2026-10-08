@@ -225,16 +225,19 @@ SERIES_BOOKING_CREATE_TIMEOUT = env.int("SERIES_BOOKING_CREATE_TIMEOUT", default
 # with MOBILE_ROUTINE_CONTRACT=true (and MOBILE_SERIES_BOOKING=true).
 ROUTINE_CONTRACT_V1 = env.bool("ROUTINE_CONTRACT_V1", default=False)
 
-# A customer cancels (and, later, moves) a SINGLE booking through POST
-# /api/v1/booking/{id}/cancel, forwarded to booking-api's POST
-# /v1/bookings/{id}/cancel (single_views.py). OFF, that route is exactly the
-# group cancel it was, and a single booking's id is 404 there as before.
+# A customer cancels a SINGLE booking through POST /api/v1/booking/{id}/cancel,
+# forwarded to booking-api's POST /v1/bookings/{id}/cancel, and moves one
+# through POST /api/v1/booking/{id}/reschedule: a hold (POST /v1/holds), then
+# POST /v1/bookings/{id}/reschedule (single_views.py). OFF, the cancel route is
+# exactly the group cancel it was, a single booking's id is 404 there as
+# before, and the reschedule route is 404 for every id.
 SINGLE_BOOKING_ACTIONS_V1 = env.bool("SINGLE_BOOKING_ACTIONS_V1", default=False)
 
 # How long that cancel waits for its lookup (the caller's Upcoming shelf)
 # before treating the id as not single and going on to the group cancel. Short
 # on purpose: the lookup is optional, and with booking-api down a cancel must
-# not wait BOOKING_API_TIMEOUT twice before its 503.
+# not wait BOOKING_API_TIMEOUT twice before its 503. The reschedule uses the
+# same lookup, and an id it does not find there is 404.
 SINGLE_LOOKUP_TIMEOUT = env.int("SINGLE_LOOKUP_TIMEOUT", default=3)
 CACHES = {
     "default": {
