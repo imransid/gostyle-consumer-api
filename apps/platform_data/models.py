@@ -5,9 +5,18 @@
 #   * Removed the `nope` table (no primary key, breaks the admin).
 #   * All models are managed = False: Django only reads these tables and will
 #     never create migrations for them. The platform (NestJS/Prisma) owns them.
-#   * Models using CompositePrimaryKey are kept for ORM access but are NOT
-#     registered in the admin (see admin.py) because the Django admin does not
-#     support composite primary keys.
+#   * Models using CompositePrimaryKey are kept for ORM access. The Django
+#     admin does not support composite primary keys, so each one has a
+#     list_only *Rows twin at the end of this file, which is what the admin
+#     shows (config/read_only_admin.py).
+#   * inspectdb's comments are dropped. Its "This field type is a guess" marks
+#     Postgres enums and arrays, read here as plain text.
+#
+# Refreshed 2026-10-08 against the platform's migrations up to
+# 20260924090000_business_catalog_matches_console_nav: 41 tables added, the
+# dropped support_ticket* tables removed, new columns on 8 tables.
+# service_stage.skill keeps its ForeignKey although the platform dropped that
+# constraint: the column is the same and selectors read skill_id.
 from django.db import models
 
 
@@ -314,6 +323,31 @@ class Build(models.Model):
         db_table = 'build'
 
 
+class BuildClientSignOff(models.Model):
+    id = models.UUIDField(primary_key=True)
+    build_id = models.UUIDField(unique=True)
+    review_link_id = models.UUIDField()
+    signed_by_name = models.TextField()
+    signed_at = models.DateTimeField()
+    signature_file_key = models.TextField()
+    acknowledge_config = models.BooleanField()
+    acknowledge_responsibility = models.BooleanField()
+    acknowledge_terms = models.BooleanField()
+    acknowledgements_version = models.TextField()
+    document_hash = models.TextField()
+    ip_address = models.TextField(blank=True, null=True)
+    user_agent = models.TextField(blank=True, null=True)
+    revoked_at = models.DateTimeField(blank=True, null=True)
+    revoked_by_id = models.UUIDField(blank=True, null=True)
+    revoked_reason = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'build_client_sign_off'
+
+
 class BuildMenuCategory(models.Model):
     id = models.TextField(primary_key=True)
     build_id = models.UUIDField()
@@ -380,6 +414,32 @@ class BuildMenuService(models.Model):
         db_table = 'build_menu_service'
 
 
+class BuildReviewLink(models.Model):
+    id = models.UUIDField(primary_key=True)
+    build_id = models.UUIDField(unique=True)
+    token_hash = models.TextField(unique=True)
+    token_encrypted = models.JSONField()
+    passcode_encrypted = models.JSONField()
+    status = models.TextField()
+    expires_at = models.DateTimeField()
+    session_epoch = models.IntegerField()
+    failed_attempts = models.IntegerField()
+    lockout_count = models.IntegerField()
+    locked_until = models.DateTimeField(blank=True, null=True)
+    view_count = models.IntegerField()
+    last_viewed_at = models.DateTimeField(blank=True, null=True)
+    created_by_id = models.UUIDField()
+    passcode_rotated_at = models.DateTimeField(blank=True, null=True)
+    revoked_at = models.DateTimeField(blank=True, null=True)
+    revoked_by_id = models.UUIDField(blank=True, null=True)
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'build_review_link'
+
+
 class BuildStep(models.Model):
     id = models.UUIDField(primary_key=True)
     build = models.ForeignKey(Build, models.DO_NOTHING)
@@ -413,6 +473,49 @@ class CancellationPolicy(models.Model):
         managed = False
         db_table = 'cancellation_policy'
         unique_together = (('tenant_id', 'code'),)
+
+
+class CardFormat(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    code = models.TextField()
+    label = models.TextField()
+    note = models.TextField(blank=True, null=True)
+    unit_price_fils = models.IntegerField()
+    sort_order = models.IntegerField()
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+    deleted_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'card_format'
+
+
+class CardPrintJob(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    branch_id = models.UUIDField()
+    format = models.ForeignKey(CardFormat, models.DO_NOTHING)
+    format_code = models.TextField()
+    format_label = models.TextField()
+    unit_price_fils = models.IntegerField()
+    station_ids = models.TextField()
+    station_numbers = models.TextField()
+    quantity_per_chair = models.IntegerField()
+    total_cost_fils = models.IntegerField()
+    state = models.TextField()
+    vendor_ref = models.TextField(blank=True, null=True)
+    note = models.TextField(blank=True, null=True)
+    reprint_of_job = models.ForeignKey('self', models.DO_NOTHING, blank=True, null=True)
+    queued_by_id = models.UUIDField(blank=True, null=True)
+    queued_at = models.DateTimeField()
+    settled_at = models.DateTimeField(blank=True, null=True)
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'card_print_job'
 
 
 class CatalogAuditLog(models.Model):
@@ -685,6 +788,23 @@ class Floor(models.Model):
         db_table = 'floor'
 
 
+class FloorActivity(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    branch_id = models.UUIDField(blank=True, null=True)
+    floor_id = models.UUIDField(blank=True, null=True)
+    station_ids = models.TextField()
+    actor_id = models.UUIDField(blank=True, null=True)
+    action = models.TextField()
+    subject = models.JSONField()
+    details = models.JSONField()
+    occurred_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'floor_activity'
+
+
 class FloorFurniture(models.Model):
     id = models.UUIDField(primary_key=True)
     tenant_id = models.UUIDField()
@@ -738,6 +858,19 @@ class FloorZoneDefaultCapability(models.Model):
     class Meta:
         managed = False
         db_table = 'floor_zone_default_capability'
+
+
+class FloorZoneFloatingStaff(models.Model):
+    pk = models.CompositePrimaryKey('zone_id', 'staff_profile_id')
+    zone = models.ForeignKey(FloorZone, models.DO_NOTHING)
+    staff_profile_id = models.UUIDField()
+    tenant_id = models.UUIDField()
+    assigned_by_id = models.UUIDField(blank=True, null=True)
+    assigned_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'floor_zone_floating_staff'
 
 
 class FloorZoneRequiredFeature(models.Model):
@@ -811,6 +944,15 @@ class Handover(models.Model):
     accepted_by_id = models.UUIDField(blank=True, null=True)
     welcome_email_delivered = models.BooleanField()
     step_keys_captured = models.TextField()
+    client_sign_off_id = models.UUIDField(blank=True, null=True)
+    review_link_id = models.UUIDField(blank=True, null=True)
+    signed_by_name = models.TextField(blank=True, null=True)
+    signed_at = models.DateTimeField(blank=True, null=True)
+    acknowledgements = models.JSONField(blank=True, null=True)
+    acknowledgements_version = models.TextField(blank=True, null=True)
+    document_hash = models.TextField(blank=True, null=True)
+    sign_ip_address = models.TextField(blank=True, null=True)
+    sign_user_agent = models.TextField(blank=True, null=True)
 
     class Meta:
         managed = False
@@ -859,6 +1001,7 @@ class InventorySettings(models.Model):
     locked_by_movement_id = models.UUIDField(blank=True, null=True)
     selected_at = models.DateTimeField(blank=True, null=True)
     selected_by_id = models.UUIDField(blank=True, null=True)
+    pos_oversell_policy = models.TextField()
 
     class Meta:
         managed = False
@@ -880,11 +1023,13 @@ class JournalEntry(models.Model):
     reversal_of = models.ForeignKey('self', models.DO_NOTHING, blank=True, null=True)
     created_at = models.DateTimeField()
     updated_at = models.DateTimeField()
+    source_ref = models.TextField(blank=True, null=True)
+    z_report_id = models.UUIDField(blank=True, null=True)
 
     class Meta:
         managed = False
         db_table = 'journal_entry'
-        unique_together = (('tenant_id', 'number'),)
+        unique_together = (('tenant_id', 'source_ref'), ('tenant_id', 'number'),)
 
 
 class JournalLine(models.Model):
@@ -956,6 +1101,21 @@ class LoginAttempt(models.Model):
         db_table = 'login_attempt'
 
 
+class LoyaltyAccount(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    customer_id = models.UUIDField()
+    balance_points = models.IntegerField()
+    lifetime_points = models.IntegerField()
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'loyalty_account'
+        unique_together = (('tenant_id', 'customer_id'),)
+
+
 class LoyaltyEarningRule(models.Model):
     id = models.UUIDField(primary_key=True)
     tenant_id = models.UUIDField()
@@ -985,6 +1145,44 @@ class LoyaltyEarningRuleService(models.Model):
     class Meta:
         managed = False
         db_table = 'loyalty_earning_rule_service'
+
+
+class LoyaltyPointsEntry(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    account = models.ForeignKey(LoyaltyAccount, models.DO_NOTHING)
+    kind = models.TextField()
+    points = models.IntegerField()
+    source_type = models.TextField()
+    source_id = models.UUIDField(blank=True, null=True)
+    reversal_of = models.ForeignKey('self', models.DO_NOTHING, blank=True, null=True)
+    expires_at = models.DateTimeField(blank=True, null=True)
+    reason = models.TextField(blank=True, null=True)
+    occurred_at = models.DateTimeField()
+    created_by_id = models.UUIDField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'loyalty_points_entry'
+        unique_together = (('tenant_id', 'source_type', 'source_id'),)
+
+
+class LoyaltyPointsHold(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    account = models.ForeignKey(LoyaltyAccount, models.DO_NOTHING)
+    points = models.IntegerField()
+    source_type = models.TextField()
+    source_id = models.UUIDField()
+    expires_at = models.DateTimeField()
+    consumed_at = models.DateTimeField(blank=True, null=True)
+    released_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'loyalty_points_hold'
+        unique_together = (('source_type', 'source_id'),)
 
 
 class LoyaltyReward(models.Model):
@@ -1024,6 +1222,20 @@ class LoyaltyRewardTier(models.Model):
         db_table = 'loyalty_reward_tier'
 
 
+class LoyaltySettings(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField(unique=True)
+    redeem_point_value_minor = models.IntegerField()
+    redeem_step_points = models.IntegerField()
+    redeem_verify_threshold_minor = models.IntegerField()
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'loyalty_settings'
+
+
 class LoyaltyTier(models.Model):
     id = models.UUIDField(primary_key=True)
     tenant_id = models.UUIDField()
@@ -1036,6 +1248,7 @@ class LoyaltyTier(models.Model):
     updated_at = models.DateTimeField()
     created_by_id = models.UUIDField(blank=True, null=True)
     deleted_at = models.DateTimeField(blank=True, null=True)
+    discount_bps = models.IntegerField()
 
     class Meta:
         managed = False
@@ -1094,6 +1307,7 @@ class OutboxMessage(models.Model):
     last_error = models.TextField(blank=True, null=True)
     actor = models.TextField(blank=True, null=True)
     correlation_id = models.TextField(blank=True, null=True)
+    next_attempt_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         managed = False
@@ -1206,6 +1420,593 @@ class PlatformSupportTicketMessageAttachment(models.Model):
     class Meta:
         managed = False
         db_table = 'platform_support_ticket_message_attachment'
+
+
+class PosAdjustment(models.Model):
+    id = models.UUIDField(primary_key=True)
+    ticket = models.ForeignKey('PosTicket', models.DO_NOTHING)
+    tenant_id = models.UUIDField()
+    type = models.TextField()
+    code = models.TextField(blank=True, null=True)
+    amount_minor = models.IntegerField()
+    percent_bps = models.IntegerField(blank=True, null=True)
+    reason = models.TextField(blank=True, null=True)
+    approved_by_id = models.UUIDField(blank=True, null=True)
+    pin_verified = models.BooleanField()
+    created_at = models.DateTimeField()
+    created_by_id = models.UUIDField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'pos_adjustment'
+
+
+class PosBranchCounter(models.Model):
+    pk = models.CompositePrimaryKey('tenant_id', 'branch_id')
+    tenant_id = models.UUIDField()
+    branch_id = models.UUIDField()
+    last_ticket_number = models.IntegerField()
+    updated_at = models.DateTimeField()
+    last_z_number = models.IntegerField()
+    last_refund_number = models.IntegerField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_branch_counter'
+
+
+class PosCatalogGridScore(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    branch_id = models.UUIDField()
+    catalog_ref = models.UUIDField()
+    kind = models.TextField()
+    frequency = models.IntegerField()
+    pinned_rank = models.IntegerField(blank=True, null=True)
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_catalog_grid_score'
+        unique_together = (('tenant_id', 'branch_id', 'catalog_ref'),)
+
+
+class PosDocument(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    branch_id = models.UUIDField()
+    business_date = models.DateField()
+    ticket = models.OneToOneField('PosTicket', models.DO_NOTHING)
+    type = models.TextField()
+    status = models.TextField()
+    seq = models.IntegerField()
+    number = models.TextField()
+    scope_ref = models.UUIDField()
+    period = models.TextField()
+    issued_at = models.DateTimeField()
+    rendered_at = models.DateTimeField(blank=True, null=True)
+    trn = models.TextField(blank=True, null=True)
+    currency = models.TextField()
+    vat_bps = models.IntegerField()
+    net_minor = models.IntegerField()
+    vat_minor = models.IntegerField()
+    total_minor = models.IntegerField()
+    tax_exempt = models.BooleanField()
+    tax_exempt_reason = models.TextField(blank=True, null=True)
+    tax_exempt_ref = models.TextField(blank=True, null=True)
+    payload = models.JSONField(blank=True, null=True)
+    payload_sha256 = models.TextField(blank=True, null=True)
+    render_version = models.IntegerField(blank=True, null=True)
+    pdf_ref = models.TextField(blank=True, null=True)
+    reverses_document = models.ForeignKey('self', models.DO_NOTHING, blank=True, null=True)
+    replaces_document = models.ForeignKey('self', models.DO_NOTHING, related_name='posdocument_replaces_document_set', blank=True, null=True)
+    issued_by_id = models.UUIDField(blank=True, null=True)
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_document'
+        unique_together = (('tenant_id', 'type', 'number'), ('tenant_id', 'type', 'scope_ref', 'period', 'seq'),)
+
+
+class PosDocumentCounter(models.Model):
+    pk = models.CompositePrimaryKey('tenant_id', 'type', 'scope_ref', 'period')
+    tenant_id = models.UUIDField()
+    type = models.TextField()
+    scope_ref = models.UUIDField()
+    period = models.TextField()
+    last_number = models.IntegerField()
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_document_counter'
+
+
+class PosDocumentDelivery(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    document = models.ForeignKey(PosDocument, models.DO_NOTHING)
+    channel = models.TextField()
+    state = models.TextField()
+    destination = models.TextField(blank=True, null=True)
+    attempts = models.IntegerField()
+    next_attempt_at = models.DateTimeField(blank=True, null=True)
+    last_attempt_at = models.DateTimeField(blank=True, null=True)
+    delivered_at = models.DateTimeField(blank=True, null=True)
+    last_error = models.TextField(blank=True, null=True)
+    requested_by_id = models.UUIDField(blank=True, null=True)
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_document_delivery'
+        unique_together = (('document', 'channel'),)
+
+
+class PosDrawerAccountability(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    session = models.OneToOneField('PosDrawerSession', models.DO_NOTHING)
+    cashier_id = models.UUIDField()
+    opening_count = models.ForeignKey('PosDrawerCount', models.DO_NOTHING, blank=True, null=True)
+    closing_count = models.ForeignKey('PosDrawerCount', models.DO_NOTHING, related_name='posdraweraccountability_closing_count_set', blank=True, null=True)
+    from_at = models.DateTimeField()
+    to_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'pos_drawer_accountability'
+
+
+class PosDrawerCount(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    session = models.ForeignKey('PosDrawerSession', models.DO_NOTHING)
+    kind = models.TextField()
+    denominations = models.JSONField()
+    counted_minor = models.IntegerField()
+    expected_minor = models.IntegerField()
+    variance_minor = models.IntegerField()
+    variance_note = models.TextField(blank=True, null=True)
+    counted_by_id = models.UUIDField()
+    acknowledged_at = models.DateTimeField(blank=True, null=True)
+    acknowledged_by_id = models.UUIDField(blank=True, null=True)
+    at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_drawer_count'
+
+
+class PosDrawerMovement(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    branch_id = models.UUIDField()
+    business_date = models.DateField()
+    register_id = models.UUIDField()
+    kind = models.TextField()
+    amount_minor = models.IntegerField()
+    tender = models.ForeignKey('PosTender', models.DO_NOTHING, blank=True, null=True)
+    ref_type = models.TextField()
+    ref_id = models.UUIDField()
+    actor_id = models.UUIDField()
+    at = models.DateTimeField()
+    session = models.ForeignKey('PosDrawerSession', models.DO_NOTHING, blank=True, null=True)
+    category = models.TextField(blank=True, null=True)
+    reference = models.TextField(blank=True, null=True)
+    pin_approved_by_id = models.UUIDField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'pos_drawer_movement'
+        unique_together = (('tenant_id', 'tender', 'kind'),)
+
+
+class PosDrawerSession(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    branch_id = models.UUIDField()
+    register_id = models.UUIDField()
+    business_date = models.DateField()
+    state = models.TextField()
+    float_minor = models.IntegerField()
+    opened_by_id = models.UUIDField()
+    opened_at = models.DateTimeField()
+    closed_by_id = models.UUIDField(blank=True, null=True)
+    closed_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_drawer_session'
+        unique_together = (('tenant_id', 'register_id', 'business_date'),)
+
+
+class PosPinApproval(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    staff_id = models.UUIDField()
+    action = models.TextField()
+    object_ref = models.TextField()
+    consumed_at = models.DateTimeField(blank=True, null=True)
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_pin_approval'
+
+
+class PosRefund(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    ticket = models.ForeignKey('PosTicket', models.DO_NOTHING, blank=True, null=True)
+    branch_id = models.UUIDField()
+    business_date = models.DateField()
+    state = models.TextField()
+    amount_minor = models.IntegerField()
+    net_minor = models.IntegerField()
+    vat_minor = models.IntegerField()
+    tip_minor = models.IntegerField()
+    reason = models.TextField()
+    note = models.TextField(blank=True, null=True)
+    method = models.TextField()
+    include_tip = models.BooleanField()
+    is_goodwill = models.BooleanField()
+    requested_by_id = models.UUIDField()
+    requested_at = models.DateTimeField()
+    approved_by_id = models.UUIDField(blank=True, null=True)
+    decided_at = models.DateTimeField(blank=True, null=True)
+    decision_note = models.TextField(blank=True, null=True)
+    processed_at = models.DateTimeField(blank=True, null=True)
+    fail_reason = models.TextField(blank=True, null=True)
+    retry_count = models.IntegerField()
+    credit_note_document = models.OneToOneField(PosDocument, models.DO_NOTHING, blank=True, null=True)
+    idempotency_key = models.TextField()
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+    number = models.IntegerField(blank=True, null=True)
+    register_id = models.UUIDField(blank=True, null=True)
+    goodwill_category = models.TextField(blank=True, null=True)
+    goodwill_reference = models.TextField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'pos_refund'
+        unique_together = (('tenant_id', 'branch_id', 'number'), ('tenant_id', 'idempotency_key'),)
+
+
+class PosRefundLine(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    refund = models.ForeignKey(PosRefund, models.DO_NOTHING)
+    ticket_line = models.ForeignKey('PosTicketLine', models.DO_NOTHING)
+    qty_e2 = models.IntegerField()
+    net_minor = models.IntegerField()
+    discount_share_minor = models.IntegerField()
+    vat_share_minor = models.IntegerField()
+    restock_movement_id = models.UUIDField(blank=True, null=True)
+    created_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_refund_line'
+        unique_together = (('refund', 'ticket_line'),)
+
+
+class PosRegister(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    branch_id = models.UUIDField()
+    code = models.TextField()
+    name = models.TextField(blank=True, null=True)
+    state = models.TextField()
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+    deleted_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'pos_register'
+        unique_together = (('tenant_id', 'branch_id'),)
+
+
+class PosServiceConsumable(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    service_id = models.UUIDField()
+    product_variant = models.ForeignKey('ProductVariant', models.DO_NOTHING)
+    qty_e2 = models.IntegerField()
+    note = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+    deleted_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'pos_service_consumable'
+        unique_together = (('tenant_id', 'service_id', 'product_variant'),)
+
+
+class PosStaffPin(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    staff_id = models.UUIDField()
+    pin_hash = models.TextField()
+    failed_count = models.IntegerField()
+    locked_until = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_staff_pin'
+        unique_together = (('tenant_id', 'staff_id'),)
+
+
+class PosStockReservation(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    branch_id = models.UUIDField()
+    product_variant_id = models.UUIDField()
+    ticket_id = models.UUIDField()
+    ticket_line_id = models.UUIDField(unique=True)
+    qty = models.IntegerField()
+    expires_at = models.DateTimeField()
+    released_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_stock_reservation'
+
+
+class PosTender(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    ticket = models.OneToOneField('PosTicket', models.DO_NOTHING)
+    branch_id = models.UUIDField()
+    business_date = models.DateField()
+    register_id = models.UUIDField()
+    method = models.TextField()
+    state = models.TextField()
+    amount_minor = models.IntegerField()
+    tendered_amount_minor = models.IntegerField(blank=True, null=True)
+    change_given_minor = models.IntegerField(blank=True, null=True)
+    idempotency_key = models.TextField()
+    captured_by_id = models.UUIDField()
+    initiated_at = models.DateTimeField()
+    captured_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_tender'
+        unique_together = (('tenant_id', 'idempotency_key'),)
+
+
+class PosTicket(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    branch_id = models.UUIDField()
+    number = models.IntegerField(blank=True, null=True)
+    register = models.ForeignKey(PosRegister, models.DO_NOTHING, blank=True, null=True)
+    state = models.TextField()
+    source = models.TextField()
+    version = models.IntegerField()
+    booking_id = models.UUIDField(blank=True, null=True)
+    customer_id = models.UUIDField(blank=True, null=True)
+    session_id = models.UUIDField(blank=True, null=True)
+    session_seq = models.IntegerField()
+    parent_ticket = models.ForeignKey('self', models.DO_NOTHING, blank=True, null=True)
+    cashier_id = models.UUIDField(blank=True, null=True)
+    opened_by_id = models.UUIDField()
+    note = models.TextField(blank=True, null=True)
+    currency = models.TextField()
+    vat_bps = models.IntegerField()
+    vat_inclusive = models.BooleanField()
+    subtotal_minor = models.IntegerField()
+    discounts_minor = models.IntegerField()
+    tier_reduction_minor = models.IntegerField()
+    vat_base_minor = models.IntegerField()
+    vat_minor = models.IntegerField()
+    tip_minor = models.IntegerField()
+    total_minor = models.IntegerField()
+    payable_minor = models.IntegerField()
+    opened_at = models.DateTimeField()
+    parked_at = models.DateTimeField(blank=True, null=True)
+    ready_at = models.DateTimeField(blank=True, null=True)
+    paid_at = models.DateTimeField(blank=True, null=True)
+    completed_at = models.DateTimeField(blank=True, null=True)
+    voided_at = models.DateTimeField(blank=True, null=True)
+    voided_by_id = models.UUIDField(blank=True, null=True)
+    void_reason = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+    points_redeemed = models.IntegerField()
+    points_redemption_minor = models.IntegerField()
+    business_date = models.DateField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_ticket'
+        unique_together = (('tenant_id', 'branch_id', 'number'), ('tenant_id', 'session_id', 'session_seq'),)
+
+
+class PosTicketLine(models.Model):
+    id = models.UUIDField(primary_key=True)
+    ticket = models.ForeignKey(PosTicket, models.DO_NOTHING)
+    tenant_id = models.UUIDField()
+    kind = models.TextField()
+    catalog_ref = models.UUIDField()
+    description = models.TextField()
+    unit_price_minor = models.IntegerField()
+    qty_e2 = models.IntegerField()
+    staff_id = models.UUIDField(blank=True, null=True)
+    assistant_id = models.UUIDField(blank=True, null=True)
+    chair_id = models.UUIDField(blank=True, null=True)
+    session_id = models.UUIDField(blank=True, null=True)
+    session_locked = models.BooleanField()
+    discount_alloc_minor = models.IntegerField()
+    vat_amount_minor = models.IntegerField()
+    cogs_ref = models.UUIDField(blank=True, null=True)
+    voided_at = models.DateTimeField(blank=True, null=True)
+    voided_by_id = models.UUIDField(blank=True, null=True)
+    void_reason = models.TextField(blank=True, null=True)
+    added_at = models.DateTimeField()
+    added_by_id = models.UUIDField(blank=True, null=True)
+    updated_at = models.DateTimeField()
+    oversell_approved_by_id = models.UUIDField(blank=True, null=True)
+    category_id = models.UUIDField(blank=True, null=True)
+    description_ar = models.TextField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'pos_ticket_line'
+
+
+class PosTipDistribution(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    tip_record = models.ForeignKey('PosTipRecord', models.DO_NOTHING)
+    recipient_staff_id = models.UUIDField(blank=True, null=True)
+    role = models.TextField()
+    service_category_id = models.UUIDField(blank=True, null=True)
+    amount_minor = models.IntegerField()
+    created_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_tip_distribution'
+
+
+class PosTipLedgerEntry(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    branch_id = models.UUIDField()
+    business_date = models.DateField()
+    subject_staff_id = models.UUIDField(blank=True, null=True)
+    kind = models.TextField()
+    amount_minor = models.IntegerField()
+    ref_type = models.TextField()
+    ref_id = models.UUIDField()
+    reversal_of = models.ForeignKey('self', models.DO_NOTHING, blank=True, null=True)
+    at = models.DateTimeField()
+    tip_record = models.ForeignKey('PosTipRecord', models.DO_NOTHING, blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'pos_tip_ledger_entry'
+        unique_together = (('tenant_id', 'kind', 'ref_type', 'ref_id'),)
+
+
+class PosTipPoolRun(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    branch_id = models.UUIDField()
+    period_start = models.DateField()
+    period_end = models.DateField()
+    total_minor = models.IntegerField()
+    recipient_count = models.IntegerField()
+    trigger = models.TextField()
+    ran_by_id = models.UUIDField(blank=True, null=True)
+    ran_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_tip_pool_run'
+        unique_together = (('tenant_id', 'branch_id', 'period_end'),)
+
+
+class PosTipRecord(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    branch_id = models.UUIDField()
+    ticket = models.OneToOneField(PosTicket, models.DO_NOTHING)
+    business_date = models.DateField()
+    kind = models.TextField()
+    method = models.TextField()
+    percent_bps = models.IntegerField(blank=True, null=True)
+    amount_minor = models.IntegerField()
+    rule_version = models.IntegerField()
+    rule = models.ForeignKey('PosTipRule', models.DO_NOTHING)
+    captured_at = models.DateTimeField(blank=True, null=True)
+    created_by_id = models.UUIDField(blank=True, null=True)
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+    voided_at = models.DateTimeField(blank=True, null=True)
+    voided_by_id = models.UUIDField(blank=True, null=True)
+    void_reason = models.TextField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'pos_tip_record'
+
+
+class PosTipRule(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    branch_id = models.UUIDField()
+    version = models.IntegerField()
+    stylist_bps = models.IntegerField()
+    assistant_bps = models.IntegerField()
+    pool_bps = models.IntegerField()
+    fallback = models.TextField()
+    protection_floor_bps = models.IntegerField()
+    effective_from = models.DateField()
+    created_by_id = models.UUIDField(blank=True, null=True)
+    created_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_tip_rule'
+        unique_together = (('tenant_id', 'branch_id', 'version'),)
+
+
+class PosTipSettlement(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    branch_id = models.UUIDField()
+    period_start = models.DateField()
+    period_end = models.DateField()
+    state = models.TextField()
+    total_minor = models.IntegerField()
+    lines = models.JSONField()
+    locked_at = models.DateTimeField(blank=True, null=True)
+    paid_at = models.DateTimeField(blank=True, null=True)
+    run_by_id = models.UUIDField(blank=True, null=True)
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_tip_settlement'
+        unique_together = (('tenant_id', 'branch_id', 'period_start'),)
+
+
+class PosZReport(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    branch_id = models.UUIDField()
+    business_date = models.DateField()
+    number = models.TextField()
+    sections = models.JSONField()
+    content_hash = models.TextField()
+    variance_ack = models.JSONField(blank=True, null=True)
+    carried_refunds = models.JSONField(blank=True, null=True)
+    signed_by_id = models.UUIDField()
+    signed_at = models.DateTimeField()
+    created_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_z_report'
+        unique_together = (('tenant_id', 'branch_id', 'business_date'), ('tenant_id', 'branch_id', 'number'),)
 
 
 class Product(models.Model):
@@ -1427,11 +2228,13 @@ class Sale(models.Model):
     invoice_number = models.IntegerField(blank=True, null=True)
     source_booking_id = models.UUIDField(blank=True, null=True)
     customer_id = models.UUIDField(blank=True, null=True)
+    source_document_number = models.TextField(blank=True, null=True)
+    source_ticket_id = models.UUIDField(blank=True, null=True)
 
     class Meta:
         managed = False
         db_table = 'sale'
-        unique_together = (('tenant_id', 'invoice_number'), ('tenant_id', 'source_booking_id'),)
+        unique_together = (('tenant_id', 'invoice_number'), ('tenant_id', 'source_booking_id'), ('tenant_id', 'source_ticket_id'),)
 
 
 class SaleLine(models.Model):
@@ -1461,6 +2264,8 @@ class SaleLine(models.Model):
     override_delta_minor = models.IntegerField(blank=True, null=True)
     price_overridden_by_id = models.UUIDField(blank=True, null=True)
     override_reason = models.TextField(blank=True, null=True)
+    addon_id = models.UUIDField(blank=True, null=True)
+    product_variant_id = models.UUIDField(blank=True, null=True)
 
     class Meta:
         managed = False
@@ -2157,6 +2962,78 @@ class StationFeatureLink(models.Model):
         db_table = 'station_feature_link'
 
 
+class StationQrCode(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    station = models.OneToOneField(Station, models.DO_NOTHING)
+    token = models.TextField(unique=True)
+    url = models.TextField()
+    serial = models.TextField()
+    state = models.TextField()
+    reason = models.TextField(blank=True, null=True)
+    rotate_after_days = models.IntegerField()
+    card_placed_at = models.DateTimeField(blank=True, null=True)
+    dead_at = models.DateTimeField(blank=True, null=True)
+    dead_reason = models.TextField(blank=True, null=True)
+    issued_by_id = models.UUIDField()
+    generated_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'station_qr_code'
+
+
+class StationQrScan(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    station_id = models.UUIDField()
+    code = models.ForeignKey(StationQrCode, models.DO_NOTHING)
+    was_dead = models.BooleanField()
+    user_agent = models.TextField(blank=True, null=True)
+    scanned_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'station_qr_scan'
+
+
+class StationStaffAssignment(models.Model):
+    pk = models.CompositePrimaryKey('station_id', 'staff_profile_id')
+    station = models.OneToOneField(Station, models.DO_NOTHING)
+    staff_profile_id = models.UUIDField()
+    tenant_id = models.UUIDField()
+    role = models.TextField()
+    assigned_by_id = models.UUIDField(blank=True, null=True)
+    assigned_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'station_staff_assignment'
+
+
+class StationTicket(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField()
+    station = models.ForeignKey(Station, models.DO_NOTHING)
+    title = models.TextField()
+    urgency = models.TextField()
+    state = models.TextField()
+    blocking = models.BooleanField()
+    assignee_staff_profile_id = models.UUIDField(blank=True, null=True)
+    parts = models.TextField()
+    cost_fils = models.IntegerField(blank=True, null=True)
+    note = models.TextField(blank=True, null=True)
+    opened_by_id = models.UUIDField(blank=True, null=True)
+    opened_at = models.DateTimeField()
+    closed_at = models.DateTimeField(blank=True, null=True)
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'station_ticket'
+
+
 class StockLot(models.Model):
     id = models.UUIDField(primary_key=True)
     tenant_id = models.UUIDField()
@@ -2406,6 +3283,7 @@ class StorefrontPolicy(models.Model):
     prepay_discount_bps = models.IntegerField(blank=True, null=True)
     prepay_discount_minor = models.IntegerField(blank=True, null=True)
     prepay_discount_cap_minor = models.IntegerField(blank=True, null=True)
+    refund_tiers = models.JSONField()
 
     class Meta:
         managed = False
@@ -2608,64 +3486,6 @@ class Supplier(models.Model):
     class Meta:
         managed = False
         db_table = 'supplier'
-
-
-class SupportTicket(models.Model):
-    id = models.UUIDField(primary_key=True)
-    tenant_id = models.UUIDField()
-    ticket_no = models.TextField()
-    subject = models.TextField()
-    description = models.TextField()
-    channel = models.TextField()
-    priority = models.TextField()
-    status = models.TextField()
-    assignee_user_id = models.UUIDField(blank=True, null=True)
-    sla_due_at = models.DateTimeField()
-    resolved_at = models.DateTimeField(blank=True, null=True)
-    created_at = models.DateTimeField()
-    updated_at = models.DateTimeField()
-    created_by_id = models.UUIDField(blank=True, null=True)
-    deleted_at = models.DateTimeField(blank=True, null=True)
-    first_response_at = models.DateTimeField(blank=True, null=True)
-
-    class Meta:
-        managed = False
-        db_table = 'support_ticket'
-        unique_together = (('tenant_id', 'ticket_no'),)
-
-
-class SupportTicketMessage(models.Model):
-    id = models.UUIDField(primary_key=True)
-    tenant_id = models.UUIDField()
-    ticket = models.ForeignKey(SupportTicket, models.DO_NOTHING)
-    body = models.TextField()
-    internal = models.BooleanField()
-    author_type = models.TextField()
-    author_user_id = models.UUIDField(blank=True, null=True)
-    created_at = models.DateTimeField()
-
-    class Meta:
-        managed = False
-        db_table = 'support_ticket_message'
-
-
-class SupportTicketMessageAttachment(models.Model):
-    id = models.UUIDField(primary_key=True)
-    tenant_id = models.UUIDField()
-    ticket = models.ForeignKey(SupportTicket, models.DO_NOTHING)
-    message = models.ForeignKey(SupportTicketMessage, models.DO_NOTHING, blank=True, null=True)
-    s3_key = models.TextField()
-    filename = models.TextField()
-    mime_type = models.TextField()
-    size = models.IntegerField()
-    scan_state = models.TextField()
-    uploaded_by_id = models.UUIDField(blank=True, null=True)
-    created_at = models.DateTimeField()
-    sort_order = models.IntegerField()
-
-    class Meta:
-        managed = False
-        db_table = 'support_ticket_message_attachment'
 
 
 class TaxRate(models.Model):
@@ -2932,3 +3752,282 @@ class UserSession(models.Model):
     class Meta:
         managed = False
         db_table = 'user_session'
+
+
+# The admin's view of the tables above with a primary key of several columns
+# (config/read_only_admin.py). The first key column stands in as the primary
+# key, so these are for the admin list only, never for the ORM.
+
+
+class BranchMembershipRows(models.Model):
+    list_only = True
+
+    tenant_membership_id = models.UUIDField(primary_key=True)
+    branch_id = models.UUIDField()
+    created_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'branch_membership'
+        verbose_name = 'branch membership'
+
+
+class CustomerServiceInterestRows(models.Model):
+    list_only = True
+
+    customer_id = models.UUIDField(primary_key=True)
+    service_id = models.UUIDField()
+    created_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'customer_service_interest'
+        verbose_name = 'customer service interest'
+
+
+class FloorZoneDefaultCapabilityRows(models.Model):
+    list_only = True
+
+    zone_id = models.UUIDField(primary_key=True)
+    catalog_skill_id = models.UUIDField()
+    tenant_id = models.UUIDField()
+
+    class Meta:
+        managed = False
+        db_table = 'floor_zone_default_capability'
+        verbose_name = 'floor zone default capability'
+
+
+class FloorZoneFloatingStaffRows(models.Model):
+    list_only = True
+
+    zone_id = models.UUIDField(primary_key=True)
+    staff_profile_id = models.UUIDField()
+    tenant_id = models.UUIDField()
+    assigned_by_id = models.UUIDField(blank=True, null=True)
+    assigned_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'floor_zone_floating_staff'
+        verbose_name = 'floor zone floating staff'
+
+
+class FloorZoneRequiredFeatureRows(models.Model):
+    list_only = True
+
+    zone_id = models.UUIDField(primary_key=True)
+    feature_id = models.UUIDField()
+    tenant_id = models.UUIDField()
+
+    class Meta:
+        managed = False
+        db_table = 'floor_zone_required_feature'
+        verbose_name = 'floor zone required feature'
+
+
+class IdempotencyKeyRows(models.Model):
+    list_only = True
+
+    tenant_id = models.UUIDField(primary_key=True)
+    key = models.TextField()
+    request_hash = models.TextField()
+    response_status = models.IntegerField()
+    response_body = models.JSONField()
+    created_at = models.DateTimeField()
+    expires_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'idempotency_key'
+        verbose_name = 'idempotency key'
+
+
+class LoyaltyEarningRuleServiceRows(models.Model):
+    list_only = True
+
+    rule_id = models.UUIDField(primary_key=True)
+    service_id = models.UUIDField()
+    tenant_id = models.UUIDField()
+    created_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'loyalty_earning_rule_service'
+        verbose_name = 'loyalty earning rule service'
+
+
+class LoyaltyRewardTierRows(models.Model):
+    list_only = True
+
+    reward_id = models.UUIDField(primary_key=True)
+    tier_id = models.UUIDField()
+    tenant_id = models.UUIDField()
+    created_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'loyalty_reward_tier'
+        verbose_name = 'loyalty reward tier'
+
+
+class LoyaltyTierBenefitLinkRows(models.Model):
+    list_only = True
+
+    tier_id = models.UUIDField(primary_key=True)
+    benefit_id = models.UUIDField()
+    tenant_id = models.UUIDField()
+    created_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'loyalty_tier_benefit_link'
+        verbose_name = 'loyalty tier benefit link'
+
+
+class PosBranchCounterRows(models.Model):
+    list_only = True
+
+    tenant_id = models.UUIDField(primary_key=True)
+    branch_id = models.UUIDField()
+    last_ticket_number = models.IntegerField()
+    updated_at = models.DateTimeField()
+    last_z_number = models.IntegerField()
+    last_refund_number = models.IntegerField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_branch_counter'
+        verbose_name = 'pos branch counter'
+
+
+class PosDocumentCounterRows(models.Model):
+    list_only = True
+
+    tenant_id = models.UUIDField(primary_key=True)
+    type = models.TextField()
+    scope_ref = models.UUIDField()
+    period = models.TextField()
+    last_number = models.IntegerField()
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'pos_document_counter'
+        verbose_name = 'pos document counter'
+
+
+class RolePermissionRows(models.Model):
+    list_only = True
+
+    role_id = models.UUIDField(primary_key=True)
+    permission_id = models.UUIDField()
+
+    class Meta:
+        managed = False
+        db_table = 'role_permission'
+        verbose_name = 'role permission'
+
+
+class ShiftRosterMemberRows(models.Model):
+    list_only = True
+
+    roster_id = models.UUIDField(primary_key=True)
+    staff_member_id = models.UUIDField()
+    tenant_id = models.UUIDField()
+    sort_order = models.IntegerField()
+    created_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'shift_roster_member'
+        verbose_name = 'shift roster member'
+
+
+class StaffSkillAssignmentRows(models.Model):
+    list_only = True
+
+    staff_member_id = models.UUIDField(primary_key=True)
+    skill_id = models.UUIDField()
+    tenant_id = models.UUIDField()
+    level = models.TextField()
+    assigned_by_user_id = models.UUIDField(blank=True, null=True)
+    assigned_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'staff_skill_assignment'
+        verbose_name = 'staff skill assignment'
+
+
+class StationCapabilityRows(models.Model):
+    list_only = True
+
+    station_id = models.UUIDField(primary_key=True)
+    catalog_skill_id = models.UUIDField()
+    tenant_id = models.UUIDField()
+
+    class Meta:
+        managed = False
+        db_table = 'station_capability'
+        verbose_name = 'station capability'
+
+
+class StationFeatureLinkRows(models.Model):
+    list_only = True
+
+    station_id = models.UUIDField(primary_key=True)
+    feature_id = models.UUIDField()
+    tenant_id = models.UUIDField()
+
+    class Meta:
+        managed = False
+        db_table = 'station_feature_link'
+        verbose_name = 'station feature link'
+
+
+class StationStaffAssignmentRows(models.Model):
+    list_only = True
+
+    station_id = models.UUIDField(primary_key=True)
+    staff_profile_id = models.UUIDField()
+    tenant_id = models.UUIDField()
+    role = models.TextField()
+    assigned_by_id = models.UUIDField(blank=True, null=True)
+    assigned_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'station_staff_assignment'
+        verbose_name = 'station staff assignment'
+
+
+class UserBranchAccessRows(models.Model):
+    list_only = True
+
+    user_id = models.UUIDField(primary_key=True)
+    branch_id = models.UUIDField()
+    tenant_id = models.UUIDField()
+    created_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'user_branch_access'
+        verbose_name = 'user branch access'
+
+
+class UserRoleRows(models.Model):
+    list_only = True
+
+    user_id = models.UUIDField(primary_key=True)
+    role_id = models.UUIDField()
+    scope_key = models.TextField()
+    assigned_at = models.DateTimeField()
+    assigned_by_id = models.UUIDField(blank=True, null=True)
+    is_primary = models.BooleanField()
+
+    class Meta:
+        managed = False
+        db_table = 'user_role'
+        verbose_name = 'user role'
+
