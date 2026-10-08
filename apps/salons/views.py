@@ -2457,13 +2457,21 @@ def _salon_card(card, *, full):
 LIVE_BOOKING_STATUSES = frozenset({"BOOKED", "CONFIRMED_BY_SALON", "CHECKED_IN"})
 
 # The Upcoming and Archive row types whose cancel button follows the salon's
-# window: the ones this service can cancel by the row's own id. Only GROUP
-# (POST /booking/<id>/cancel). SINGLE has no cancel route here yet. A ROUTINE
+# window: the ones this service can cancel by the row's own id. GROUP always
+# (POST /booking/<id>/cancel), and SINGLE only behind SINGLE_BOOKING_ACTIONS_V1,
+# the switch for that same route's single cancel (single_views.py). A ROUTINE
 # row's id is one session's booking id, and the routine routes take the
 # series id and a session id, neither of which is on the row. A row with no
 # type, or a type this service does not know, offers no button either. A
 # tuple, not a set: `in` compares, so an odd value is simply not a match.
 CANCELLABLE_BOOKING_TYPES = ("GROUP",)
+
+
+def _cancellable_booking_types():
+    """CANCELLABLE_BOOKING_TYPES, with SINGLE while its cancel route is on."""
+    if settings.SINGLE_BOOKING_ACTIONS_V1:
+        return CANCELLABLE_BOOKING_TYPES + ("SINGLE",)
+    return CANCELLABLE_BOOKING_TYPES
 
 
 @extend_schema(
@@ -2479,10 +2487,12 @@ CANCELLABLE_BOOKING_TYPES = ("GROUP",)
         "cannot resolve a name, logo or city; and `can_cancel` / "
         "`can_reschedule`, because the cancellation window is published by "
         "the salon into this service's tables. `can_cancel` follows that "
-        "window for a GROUP row only; every other row (SINGLE, ROUTINE, a "
-        "missing or unknown `booking_type`) has `false`, because no route "
-        "here cancels it by its id. `can_reschedule` is always `false` on "
-        "Upcoming and Archive: no route here moves a row by its id. A salon that cannot be "
+        "window for a GROUP row, and for a SINGLE row while "
+        "SINGLE_BOOKING_ACTIONS_V1 is on (off: `false`); every other row "
+        "(ROUTINE, a missing or unknown `booking_type`) has `false`, because "
+        "no route here cancels it by its id. `can_reschedule` is always "
+        "`false` on Upcoming and Archive: no route here moves a row by its "
+        "id. A salon that cannot be "
         "resolved gets `\"salon\": null` rather than an object with holes in "
         "it.\n\n"
         "`counts` carries all three tab badges, so the app does not make "
@@ -2701,6 +2711,7 @@ class BookingListView(APIView):
         # can_cancel or can_reschedule, which are per visit (in the hub).
         routines = request.query_params.get("filter") == "recurring"
         salons = {}
+        cancellable = _cancellable_booking_types()
         for i, row in enumerate(results):
             card = cards.get(row.get("salon_id"))
             if routines:
@@ -2710,7 +2721,7 @@ class BookingListView(APIView):
             # Two questions, and today two different answers. Cancel follows
             # the salon's window, for the types this service can cancel.
             row["can_cancel"] = (
-                row.get("booking_type") in CANCELLABLE_BOOKING_TYPES
+                row.get("booking_type") in cancellable
                 and _can_still_move(row, card, now)
             )
             # No route here moves any row of these two tabs: not a single

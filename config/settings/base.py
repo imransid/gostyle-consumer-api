@@ -224,6 +224,18 @@ SERIES_BOOKING_CREATE_TIMEOUT = env.int("SERIES_BOOKING_CREATE_TIMEOUT", default
 # the three and changes nothing else. Turn it on only where booking-api runs
 # with MOBILE_ROUTINE_CONTRACT=true (and MOBILE_SERIES_BOOKING=true).
 ROUTINE_CONTRACT_V1 = env.bool("ROUTINE_CONTRACT_V1", default=False)
+
+# A customer cancels (and, later, moves) a SINGLE booking through POST
+# /api/v1/booking/{id}/cancel, forwarded to booking-api's POST
+# /v1/bookings/{id}/cancel (single_views.py). OFF, that route is exactly the
+# group cancel it was, and a single booking's id is 404 there as before.
+SINGLE_BOOKING_ACTIONS_V1 = env.bool("SINGLE_BOOKING_ACTIONS_V1", default=False)
+
+# How long that cancel waits for its lookup (the caller's Upcoming shelf)
+# before treating the id as not single and going on to the group cancel. Short
+# on purpose: the lookup is optional, and with booking-api down a cancel must
+# not wait BOOKING_API_TIMEOUT twice before its 503.
+SINGLE_LOOKUP_TIMEOUT = env.int("SINGLE_LOOKUP_TIMEOUT", default=3)
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
