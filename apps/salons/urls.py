@@ -88,6 +88,13 @@ urlpatterns = [
         check_in_views.SelfCheckInView.as_view(),
         name="booking-check-in",
     ),
+    # Cancel Request: take a waiting one back. "withdraw", never "cancel":
+    # booking/<id>/cancel, one segment away, cancels the visit.
+    path(
+        "booking/<uuid:booking_id>/check-in/withdraw",
+        check_in_views.SelfCheckInWithdrawView.as_view(),
+        name="booking-check-in-withdraw",
+    ),
     # Routines (SERIES_BOOKING_V1). `series` is not a uuid, so booking/<uuid> cannot take it.
     path("booking/series", series_views.SeriesBookingCreateView.as_view(), name="booking-series"),
     path("booking/series/<uuid:series_id>", series_views.SeriesBookingDetailView.as_view(), name="booking-series-detail"),

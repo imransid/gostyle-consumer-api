@@ -1,6 +1,6 @@
 # Mobile Self Check-in: FE Guide
 
-Date: 2026-10-08, updated 2026-10-09 (chair check-in, §12). For: the mobile app team.
+Date: 2026-10-08, updated 2026-10-09 (chair check-in, §12; Cancel Request, §13; the welcome, §14). For: the mobile app team.
 
 The customer arrives at the salon, opens their booking and taps **"I am
 here"**. The salon's desk sees them on its reception list and approves or
@@ -8,7 +8,7 @@ rejects. Approving checks the booking in, exactly as if the desk had pressed
 its own check-in button.
 
 **Everything here is behind the server switch `SELF_CHECK_IN_V1`, and it is
-OFF today.** Until it is on, both routes answer `404`. See §10.
+OFF today.** Until it is on, every route here answers `404`. See §10.
 
 ---
 
@@ -21,6 +21,7 @@ OFF today.** Until it is on, both routes answer `404`. See §10.
 5. **Buttons come from the server.** Show "I am here" only when the row's `can_check_in` is `true` (§3), as with `can_cancel` and `can_reschedule`. Never work the rule out in the app. Every refusal has a `code` to switch on (§8). Never show a refusal as a crash.
 6. **The pass QR is unchanged** (§9).
 7. **Two 503s mean different things** (§12.3). Offer Wait for Staff only when `details.fallback` is `"WAIT_FOR_STAFF"`.
+8. **Cancel Request** takes a waiting request back (§13). Its route says `withdraw`, never `cancel`: `POST /booking/{id}/cancel` cancels the whole visit.
 
 ---
 
@@ -30,6 +31,7 @@ OFF today.** Until it is on, both routes answer `404`. See §10.
 | ------ | ---- | ------------ |
 | `POST` | `/booking/{id}/check-in` | "I am here": ask the desk to check me in |
 | `GET`  | `/booking/{id}/check-in` | Has the desk answered? |
+| `POST` | `/booking/{id}/check-in/withdraw` | Cancel Request: take back a request that is still waiting (§13) |
 
 `{id}` is the id on the My Bookings row: a `SINGLE` row's id, or a `ROUTINE`
 session row's id. **Not a `GROUP` row** (§9).
@@ -84,7 +86,8 @@ export type CheckInState =
   | 'APPROVED'  // the desk said yes: the booking is CHECKED_IN
   | 'REJECTED'  // the desk said no: speak to the desk, no second try
   | 'EXPIRED'   // nobody answered before the booking's end time
-  | 'CLOSED';   // the booking moved on another way (checked in at the desk, cancelled, moved)
+  | 'CLOSED'    // the booking moved on another way (checked in at the desk, cancelled, moved)
+  | 'WITHDRAWN'; // the customer took it back with Cancel Request (§13); they may ask again
 
 export interface CheckInChair {
   number: string;            // "7": what the customer and the desk read
@@ -109,6 +112,32 @@ export interface CheckInAnswer {
   request: CheckInRequest | null;  // null: never raised
 }
 
+// The welcome (§14): the check-in that stands on the booking.
+export interface CheckInWelcome {
+  at: string;                     // ISO 8601, UTC: when they were checked in
+  via: 'SELF' | 'STAFF' | null;   // always present; null: checked in before this was recorded
+  byName: string | null;          // "Layla R.", best effort: may be null (§14)
+}
+
+// GET /booking/{id}/check-in (§6). The POST answers carry no checkIn.
+export interface CheckInRead extends CheckInAnswer {
+  checkIn: CheckInWelcome | null;  // null while WAITING, and when none stands (§14)
+}
+
+// The SAME three facts on GET /booking/{id}, as `check_in` (§14.3), in that
+// booking's snake_case. A DIFFERENT TYPE ON PURPOSE: reuse CheckInWelcome
+// there and `byName` reads undefined, and the screen shows a blank name.
+export interface BookingCheckIn {
+  at: string;                     // ISO 8601, UTC
+  via: 'SELF' | 'STAFF' | null;   // as CheckInWelcome.via
+  by_name: string | null;         // snake_case here: "Layla R.", best effort
+}
+
+// GET /booking/{id} gains, while SELF_CHECK_IN_V1 is on (§14.3):
+export interface BookingWithCheckIn {
+  check_in?: BookingCheckIn | null;  // absent: off; null: nobody checked in; object: checked in
+}
+
 // The My Bookings row (GET /bookings) gains one field (§3).
 export interface MyBookingsRowCheckIn {
   can_check_in: boolean;  // snake_case: this one is customer-api's own field
@@ -125,6 +154,7 @@ export interface BookingApiError {
     status?: string;         // BOOKING_STATE_INVALID, e.g. "CHECKED_IN"
     reason?: string;         // BOOKING_CHAIR_REFUSED, or CHAIR_CHECK_UNAVAILABLE on the 503 (§12)
     fallback?: 'WAIT_FOR_STAFF';  // the 503 that means "use Wait for Staff" (§12.3)
+    request?: CheckInState | null;  // BOOKING_STATE_INVALID on Cancel Request: the state now; null, none raised (§13)
   };
   error: string;
 }
@@ -157,16 +187,18 @@ tap, or a tap after the app was closed, is harmless. Treat 200 and 201 the same.
 
 ## 6. Read the answer: `GET /booking/{id}/check-in`
 
-**`200 OK`**: `{ "request": CheckInRequest }`, or `{ "request": null }` if the
-customer never tapped "I am here" for this booking.
+**`200 OK`**: `{ "request": CheckInRequest | null, "checkIn": CheckInWelcome | null }`
+(`CheckInRead`, §4). `request` is null if the customer never tapped "I am here"
+for this booking. `checkIn` is the welcome: §14.
 
 | `state` | Show | Button |
 | ------- | ---- | ------ |
 | `WAITING` | "The salon knows you are here. Please take a seat." | hidden |
-| `APPROVED` | "You are checked in." Refresh the booking. | hidden |
+| `APPROVED` | The welcome, from `checkIn` (§14). Refresh the booking. | hidden |
 | `REJECTED` | "The salon could not confirm your arrival. Please speak to the desk." | hidden for good |
 | `EXPIRED` | "The salon did not answer in time. Please speak to the desk." | hidden |
 | `CLOSED` | Nothing special: show the booking as it now is. | as §3 |
+| `WITHDRAWN` | Nothing special: they took it back. They may tap "I am here" again, or scan another chair. | as §3 |
 
 The desk's own reason for a rejection is never sent to the app. Use your own words.
 
@@ -195,6 +227,7 @@ Two shapes, as on the single cancel and reschedule:
 | `409` | `BOOKING_STATE_INVALID` with `details.status` | Not confirmed (already checked in, cancelled, unpaid, ...) | Refresh the booking. If `CHECKED_IN`, show "You are checked in." |
 | `409` | `BOOKING_CHECKIN_REJECTED` | The desk said no before | "Please speak to the desk." No retry. |
 | `409` | `BOOKING_CHAIR_REFUSED` with `details.reason` | At a chair: not with that chair | Show `message` (§12.2). |
+| `409` | `BOOKING_STATE_INVALID` with `details.request` | Cancel Request: nothing is waiting | Show the screen for `details.request` (§13). |
 | `422` | `validation_error` (shape A), `errors[0].field` `chair_token` | At a chair: the scan was empty or not text | "Please scan the card again." Offer Wait for Staff. |
 | `404` | `BOOKING_NOT_FOUND` | Not the customer's booking, a party's id, or booking-api's switch is off | Hide the button. |
 | `404` | `not_found` (shape A) | This service's switch is off | Hide the button. |
@@ -222,6 +255,15 @@ while customer-api's switch is off, `can_check_in` is `false` on every row, so
 the button never shows.
 
 Chair scanning has its own order: §12.5.
+
+**Cancel Request and the welcome screen (§13) have a fixed deploy order:**
+
+1. booking-api's branch `feat/check-in-gaps` is deployed.
+2. Then customer-api's branch `feat/check-in-gaps` is deployed.
+3. Then customer-api's `SELF_CHECK_IN_V1` is turned on. booking-api's switch has to be on too, as above.
+
+**Do not build against them until the server team says all three are done.** Before step 2, Cancel Request answers `404`.
+Until step 3, `GET /booking/{id}` carries no `check_in` key, whatever booking-api's switch says (§14.3).
 
 ---
 
@@ -377,3 +419,169 @@ Staff keeps working. The server has no separate switch for chairs.
 - [ ] Platform down (ask the server team): `503` with `details.fallback: "WAIT_FOR_STAFF"`, its `message` and the Wait for Staff button. Tap it: `201`, `chair: null`.
 - [ ] booking-api down (ask the server team): `503 booking_api_unavailable`, **no** Wait for Staff button, "try again".
 - [ ] App-side switch off: no Scan the chair button; Wait for Staff still works.
+
+---
+
+## 13. Cancel Request: `POST /booking/{id}/check-in/withdraw`
+
+While the request is still `WAITING`, the customer can take it back: they
+scanned the wrong chair, or want Wait for Staff instead. The request becomes
+`WITHDRAWN`. Unlike after a rejection, they may tap "I am here" (or scan a
+chair) again straight away.
+
+- **Show the button only while the latest request is `WAITING`** (§6).
+- **The path says `withdraw`, never `cancel`.** `POST /booking/{id}/cancel`
+  cancels the whole visit, one segment away. The button can still say
+  "Cancel Request".
+- **No body.** The token only, as for every route here.
+- **The booking is untouched.** It is still never marked a no-show
+  automatically: someone who took it back to scan again is still in the salon.
+
+### 13.1 The answers
+
+**`200 OK`**: `{ "request": CheckInRequest }`, with `state: "WITHDRAWN"`. A
+second tap answers the same request. Treat both the same.
+
+```json
+{
+  "request": {
+    "requestId": "01a11b4c-aa95-75f5-8e65-b815eccc7204",
+    "bookingId": "aaaaaaaa-0000-4000-8000-0000000000a1",
+    "state": "WITHDRAWN",
+    "raisedAt": "2026-10-11T03:50:00.000Z",
+    "decidedAt": "2026-10-11T03:52:00.000Z",
+    "chair": null
+  }
+}
+```
+
+**`409 BOOKING_STATE_INVALID`**: nothing is waiting to take back. Shape B
+(§8). `details.request` is the request's state **as it is now**, so the app
+can move on without another `GET`:
+
+| `details.request` | `message` | What happened | Show |
+| ----------------- | --------- | ------------- | ---- |
+| `APPROVED` | "This request has already ended." | The desk approved it a moment before the tap. | The `APPROVED` screen (§6). |
+| `CLOSED` | "This request has already ended." | The desk checked them in with its own button. This very call recorded it. | Refresh the booking; as §6. |
+| `EXPIRED` | "This request has already ended." | The end time passed. This very call recorded it. | As §6. |
+| `REJECTED` | "This request has already ended." | The desk said no. | As §6. |
+| `null` | "There is no check-in request to cancel." | None was ever raised. An app bug: the button should not have been showing. | Hide Cancel Request. |
+
+A `GET` straight after a `409` answers the same state: the request already
+holds it.
+
+Everything else is as §8: `404` (not their booking, or a switch is off),
+`401`, and `503 booking_api_unavailable` (shape A). After that `503`, the
+request may still be waiting: `GET` again before showing anything.
+
+### 13.2 QA checklist (Cancel Request)
+
+- [ ] "I am here", then Cancel Request: `200 WITHDRAWN`. Tap again: `200`, the same `requestId`.
+- [ ] Then "I am here" again: `201 WAITING`, a new `requestId`.
+- [ ] Scan chair 7, Cancel Request, scan chair 8: the new request shows chair 8.
+- [ ] The desk approves while the screen still says `WAITING`; tap Cancel Request: `409` with `details.request: "APPROVED"`, and the app shows checked in.
+- [ ] The desk checks them in with its own button while the request waits; tap Cancel Request: `409` with `details.request: "CLOSED"`, and a `GET` straight after says `CLOSED` too.
+- [ ] Cancel Request on a booking with no request: `409`, `details.request: null`, "There is no check-in request to cancel."
+- [ ] Switch off: `404`.
+
+---
+
+## 14. The welcome screen
+
+Once the desk has checked the customer in, the app can greet them: "Checked
+in by Layla R. at 14:24". The same three facts (when, how, by whom) come on
+two reads, both booking-api's, passed through as they came:
+
+| Read | Field | Type (§4) | When to read it |
+| ---- | ----- | --------- | --------------- |
+| `GET /booking/{id}/check-in` | `checkIn: { at, via, byName }` | `CheckInWelcome` | After "I am here": the app is already polling it (§7). |
+| `GET /booking/{id}` | `check_in: { at, via, by_name }` | `BookingCheckIn` | The desk scanned the pass: no request was ever raised, so only the booking knows (§14.3). |
+
+**Two types, not one: the casing differs, and it cannot be made to match.**
+Each field comes from its own booking-api read (the check-in read is
+camelCase, the booking read snake_case), and this service passes both
+through untouched. Reuse one type for both and `byName` reads `undefined`
+on the booking screen: a blank name nobody notices until a customer does.
+
+A `ROUTINE` row works the same: its `id` is that session's own booking id
+(§1), so both reads, with the session's id, carry the session's welcome.
+**Read a session's welcome from its own booking** (`GET /booking/{session_id}`),
+never from the routine's session list (`GET /booking/{routine_id}`): the
+routine's read carries no check-in for its sessions.
+
+### 14.1 When `checkIn` is null
+
+- While the request is `WAITING`. Polling a waiting request never looks
+  anything up, so it costs nothing to keep polling (§7).
+- When no check-in stands: none yet, or the desk undid it.
+- When no request was ever raised (`request` is null too).
+- Rarely, the booking is `CHECKED_IN` with no check-in behind it: the salon
+  set the status by hand. Show "You are checked in." with no time and no
+  name.
+
+### 14.2 The fields
+
+**`at`**: when they were checked in. Show it in the salon's time zone.
+
+**`via`**: which welcome to draw. It is always present.
+
+| `via` | What happened | Draw |
+| ----- | ------------- | ---- |
+| `SELF` | The customer asked first (at a chair, or with Wait for Staff), and the desk approved it. | The self welcome. |
+| `STAFF` | The desk checked them in on its own: their pass scanned, or the booking found on the calendar. The server cannot tell those two apart. | The desk welcome. |
+| `null` | Checked in before the server recorded how (before this release). | The plain welcome: "You are checked in at 14:24", with the name if there is one. |
+
+**Draw from `checkIn.via`, never from the request's state.** An approval the
+desk undid and then redid with its own button leaves an `APPROVED` request
+behind a `STAFF` check-in.
+
+**SELF never means nobody at the salon touched it.** The desk approves every
+self check-in. There is no path where a customer is checked in on their own
+word. SELF means "the customer asked first". The design's **"Welcome -
+Self-approved"** screen describes a path that was deliberately not built:
+check its words with the design team before building it.
+
+**`byName`: best effort. The screen must work without it.**
+
+- It is "Layla R.": the first name and the initial of the last, as the
+  salon's staff records have them now.
+- It is **null** for three different reasons:
+  1. the desk member has no staff profile (an owner's account, say);
+  2. the staff records did not answer in time (the server never waits more
+     than about a second for a name, and after a failure stops asking for 30
+     seconds);
+  3. the profile has no first name.
+- **When it is null, say "Checked in at 14:24".** Never "Checked in by"
+  followed by nothing.
+
+### 14.3 The booking read: `check_in`
+
+`GET /booking/{id}` carries `check_in` while `SELF_CHECK_IN_V1` is on. Its
+three shapes mean three different things:
+
+| `check_in` | Means | Show |
+| ---------- | ----- | ---- |
+| no key at all | Self check-in is off. | Nothing from this feature. |
+| `null` | On, and nobody is checked in: none yet, or the desk undid it. | No welcome. |
+| `{ at, via, by_name }` | Checked in. | The welcome, as §14.2, with `by_name` for `byName`. |
+
+- **This is the staff path's read.** The desk scanned the pass, so no
+  request exists, and `GET /booking/{id}/check-in` answers
+  `{ "request": null, "checkIn": null }`. Only the booking knows.
+- **Never read a missing key as null, or null as "off".** No key says
+  nothing about the visit.
+- **The fields are §14.2's**, `by_name` for `byName`: best effort, null for
+  the same three reasons, and "Checked in at 14:24" without it.
+- **A `ROUTINE` session:** `GET /booking/{session_id}` carries it;
+  `GET /booking/{routine_id}` does not.
+
+### 14.4 QA checklist (the welcome)
+
+- [ ] "I am here", the desk approves: `checkIn.via` is `SELF`, `at` is the approval time, and `byName` names the receptionist.
+- [ ] While `WAITING`: `checkIn` is `null` on every poll.
+- [ ] The desk approves, undoes it within five minutes, then checks them in with its own button: `request.state` is still `APPROVED`, and `checkIn.via` is `STAFF`. The app draws the desk welcome.
+- [ ] Ask the server team to show a receptionist with no staff profile: `byName` is `null`, and the screen says "Checked in at 14:24".
+- [ ] The desk scans the pass, with no "I am here": `GET /booking/{id}` has `check_in.via` `STAFF` and `by_name`; the check-in read has `request: null`. The app draws the desk welcome from `check_in`.
+- [ ] Before anyone checks in: `GET /booking/{id}` has `check_in: null`.
+- [ ] customer-api's switch off: `GET /booking/{id}` has no `check_in` key at all, and the booking screen draws as before.
+- [ ] A `ROUTINE` session checked in at the desk: `GET /booking/{session_id}` has `check_in`.

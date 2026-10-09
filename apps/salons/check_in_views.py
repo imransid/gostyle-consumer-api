@@ -2,8 +2,18 @@
 Self check-in: a customer says "I am here" for their own booking, and reads
 the desk's answer (SELF_CHECK_IN_V1):
 
-    POST /api/v1/booking/<id>/check-in   raise a request
-    GET  /api/v1/booking/<id>/check-in   the latest one, or null
+    POST /api/v1/booking/<id>/check-in            raise a request
+    POST /api/v1/booking/<id>/check-in/withdraw   take it back (Cancel Request)
+    GET  /api/v1/booking/<id>/check-in            the latest one, or null
+
+THE WELCOME. The read answers booking-api's `{request, checkIn}` as it
+came: `checkIn` is the check-in that stands on the booking (when, SELF or
+STAFF, and the desk member's name, best effort). Nothing here looks inside
+it, so it needed no code to pass, only its schema.
+
+WITHDRAW, NOT CANCEL, in the path: POST /api/v1/booking/<id>/cancel cancels
+the whole visit, and a route one segment away from it must not share its
+word. The app's button still says Cancel Request.
 
 booking-api owns all of it (gostyle-booking-api, docs/SELF_CHECK_IN_HANDOVER.md):
 who may raise one, when check-in opens, one request at a time, no second try
@@ -53,7 +63,12 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .booking_api import BookingApiUnavailable, raise_check_in, read_check_in
+from .booking_api import (
+    BookingApiUnavailable,
+    raise_check_in,
+    read_check_in,
+    withdraw_check_in,
+)
 from .views import _OUR_ENVELOPE, BookingApiDown
 
 _REQUEST = {
@@ -61,7 +76,10 @@ _REQUEST = {
     "properties": {
         "requestId": {"type": "string"},
         "bookingId": {"type": "string"},
-        "state": {"type": "string", "enum": ["WAITING", "APPROVED", "REJECTED", "EXPIRED", "CLOSED"]},
+        "state": {
+            "type": "string",
+            "enum": ["WAITING", "APPROVED", "REJECTED", "EXPIRED", "CLOSED", "WITHDRAWN"],
+        },
         "raisedAt": {"type": "string"},
         "decidedAt": {"type": "string", "nullable": True},
         "chair": {
@@ -76,6 +94,34 @@ _REQUEST = {
     },
 }
 _ANSWER = {"type": "object", "properties": {"request": {**_REQUEST, "nullable": True}}}
+# The welcome (booking-api's checkIn), on the read only: the raise and the
+# withdraw do not carry it.
+_CHECK_IN = {
+    "type": "object",
+    "nullable": True,
+    "description": "The check-in that stands on the booking, for the welcome screen; null: none to show.",
+    "properties": {
+        "at": {"type": "string", "description": "When they were checked in (ISO 8601, UTC)."},
+        "via": {
+            "type": "string",
+            "nullable": True,
+            "enum": ["SELF", "STAFF", None],
+            "description": (
+                "SELF: the customer asked first, and the desk approved it. STAFF: the desk "
+                "on its own. Null: checked in before this was recorded."
+            ),
+        },
+        "byName": {
+            "type": "string",
+            "nullable": True,
+            "description": "\"Layla R.\": best effort, may be null; the screen must read right without it.",
+        },
+    },
+}
+_READ_ANSWER = {
+    "type": "object",
+    "properties": {"request": {**_REQUEST, "nullable": True}, "checkIn": _CHECK_IN},
+}
 _RAISE = {
     "type": "object",
     "properties": {
@@ -196,17 +242,31 @@ class SelfCheckInView(APIView):
         return Response(answer, status=code)
 
     @extend_schema(
-        summary="Has the desk answered my check-in?",
+        summary="Has the desk answered my check-in? And the welcome",
         description=(
-            "Behind SELF_CHECK_IN_V1 (off: 404). The latest request on the "
-            "caller's own booking: WAITING, APPROVED (checked in), REJECTED "
-            "(speak to the desk), EXPIRED (nobody answered before the end "
-            "time) or CLOSED (the booking moved on another way). "
-            "`{\"request\": null}` when none was raised. The desk's reason "
-            "is never shown here."
+            "Behind SELF_CHECK_IN_V1 (off: 404). `request`: the latest request "
+            "on the caller's own booking: WAITING, APPROVED (checked in), "
+            "REJECTED (speak to the desk), EXPIRED (nobody answered before the "
+            "end time), CLOSED (the booking moved on another way) or WITHDRAWN "
+            "(the customer took it back); null when none was raised. The "
+            "desk's reason is never shown here.\n\n"
+            "`checkIn`: the check-in that stands on the booking, for the "
+            "welcome screen, `{at, via, byName}`, or null. Null while the "
+            "request is WAITING (polling never looks anything up), when no "
+            "check-in stands, and when no request was ever raised. `via` is "
+            "SELF (the customer asked first; the desk still approved it), "
+            "STAFF (the desk on its own) or null (checked in before this was "
+            "recorded): draw from it, not from the request's state. `byName` "
+            "(\"Layla R.\") is BEST EFFORT: null when there is no staff "
+            "profile, booking-api's platform did not answer in time, or there "
+            "is no first name, so the screen must read right without it.\n\n"
+            "Both are booking-api's, passed through as they came."
         ),
         responses={
-            200: OpenApiResponse(response=_ANSWER, description="`{request}`, or `{request: null}`."),
+            200: OpenApiResponse(
+                response=_READ_ANSWER,
+                description="`{request, checkIn}`; either may be null.",
+            ),
             404: OpenApiResponse(description="Not the caller's booking, a party's id, or the flag is off."),
             503: OpenApiResponse(response=_OUR_ENVELOPE, description="booking-api unreachable."),
         },
@@ -216,6 +276,75 @@ class SelfCheckInView(APIView):
             raise Http404("Not found")
         try:
             code, answer = read_check_in(
+                booking_id, authorization=request.META.get("HTTP_AUTHORIZATION", ""),
+            )
+        except BookingApiUnavailable as exc:
+            raise BookingApiDown() from exc
+        return Response(answer, status=code)
+
+
+_STATE_NOW = {
+    "type": "object",
+    "properties": {
+        "statusCode": {"type": "integer", "example": 409},
+        "code": {"type": "string", "example": "BOOKING_STATE_INVALID"},
+        "message": {"type": "string", "example": "This request has already ended."},
+        "details": {
+            "type": "object",
+            "properties": {
+                "request": {
+                    "type": "string",
+                    "nullable": True,
+                    "enum": ["APPROVED", "REJECTED", "EXPIRED", "CLOSED", None],
+                    "description": "The request's state as it now is; null: none was ever raised.",
+                },
+            },
+        },
+        "error": {"type": "string", "example": "Conflict"},
+    },
+}
+
+
+class SelfCheckInWithdrawView(APIView):
+    """POST /api/v1/booking/<id>/check-in/withdraw"""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        summary="Cancel Request: take back my waiting check-in request",
+        description=(
+            "Behind SELF_CHECK_IN_V1 (off: 404, booking-api is not called). "
+            "Withdraws the request waiting for the desk on the caller's own "
+            "booking. The booking is untouched, and is still never marked a "
+            "no-show automatically. Unlike after a rejection, the customer "
+            "may say \"I am here\" again straight away, at another chair or "
+            "with Wait for Staff. No body: only the token goes on.\n\n"
+            "booking-api's answer comes back as it came: 200 with "
+            "`{request}`, WITHDRAWN (a second tap answers the same one); or "
+            "409 `BOOKING_STATE_INVALID` when nothing is waiting, whose "
+            "`details.request` is the request's state AS IT NOW IS, so the "
+            "app moves on: APPROVED, REJECTED, EXPIRED or CLOSED (\"This "
+            "request has already ended.\"; EXPIRED or CLOSED may have been "
+            "written by this very call, when the desk had already checked "
+            "them in or the end time had passed), or null when none was "
+            "ever raised (\"There is no check-in request to cancel.\")."
+        ),
+        request=None,
+        responses={
+            200: OpenApiResponse(response=_ANSWER, description="Withdrawn, or already withdrawn: the request."),
+            409: OpenApiResponse(
+                response=_STATE_NOW,
+                description="booking-api: nothing waiting; `details.request` says what it is now.",
+            ),
+            404: OpenApiResponse(description="Not the caller's booking, a party's id, or the flag is off."),
+            503: OpenApiResponse(response=_OUR_ENVELOPE, description="booking-api unreachable."),
+        },
+    )
+    def post(self, request, booking_id):
+        if not settings.SELF_CHECK_IN_V1:
+            raise Http404("Not found")
+        try:
+            code, answer = withdraw_check_in(
                 booking_id, authorization=request.META.get("HTTP_AUTHORIZATION", ""),
             )
         except BookingApiUnavailable as exc:
