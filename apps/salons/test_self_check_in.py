@@ -3,18 +3,24 @@ POST and GET /api/v1/booking/<id>/check-in (SELF_CHECK_IN_V1): the customer
 says "I am here", and reads the desk's answer.
 
 booking-api decides everything; this route checks the flag, forwards the
-caller's own token and passes booking-api's answer back as it came. No
-database, no network: booking-api's two calls are the seams.
+caller's own token (and, at a chair, the scanned token and the app's User-Agent)
+and passes booking-api's answer back as it came. No network: booking-api's two
+calls are the seams, and WireTests fakes only urlopen, so `_send`, the view and
+the middleware all run.
 """
 
+import io
 import json
+import urllib.error
 import uuid
 from unittest import mock
 
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import resolve
-from rest_framework.test import APIRequestFactory, force_authenticate
+from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
+from apps.accounts.models import ConsumerAccount
+from apps.accounts.services import tokens_for
 from apps.salons import booking_api
 from apps.salons.booking_api import BookingApiUnavailable
 from apps.salons.check_in_views import SelfCheckInView
@@ -49,6 +55,45 @@ REJECTED_BEFORE = {
 }
 NOT_FOUND = {"statusCode": 404, "code": "BOOKING_NOT_FOUND", "message": "No such booking",
              "error": "Not Found"}
+
+# At a chair (booking-api docs/chair-check-in.md, check-in-request.handler.ts).
+CHAIR_TOKEN = "q7Xk2mP9rT4vW8yZ1aB3cD"
+APP_UA = "GoStyle/1.4 (iPhone; iOS 18.1)"
+AT_CHAIR = {"request": {**WAITING["request"], "chair": {"number": "7", "zoneName": "Window section"}}}
+
+
+def chair_refused(reason, message):
+    return {"statusCode": 409, "code": "BOOKING_CHAIR_REFUSED", "message": message,
+            "details": {"reason": reason}, "error": "Conflict"}
+
+
+CHAIR_REFUSALS = (
+    chair_refused("CARD_OUT_OF_DATE", "This card is out of date. Please see the desk."),
+    chair_refused("OTHER_SALON",
+                  "This chair is not at the salon of your booking. Please see the desk."),
+    chair_refused("CHAIR_NOT_AVAILABLE",
+                  "That chair is not available. Please take another or see the desk."),
+    chair_refused("UNKNOWN_CARD", "This is not a chair card we know. Please scan the card "
+                                  "on your chair, or see the desk."),
+)
+# booking-api could not check the chair: scanning is off, the desk still works.
+WAIT_FOR_STAFF = {
+    "statusCode": 503,
+    "code": "DEPENDENCY_UNAVAILABLE",
+    "message": "We could not check this chair just now. Please use Wait for Staff and "
+               "the desk will check you in.",
+    "details": {"reason": "CHAIR_CHECK_UNAVAILABLE", "fallback": "WAIT_FOR_STAFF"},
+    "error": "Service Unavailable",
+}
+# booking-api could not check the customer's own token: Wait for Staff fails too.
+AUTH_DOWN = {
+    "statusCode": 503,
+    "code": "DEPENDENCY_UNAVAILABLE",
+    "message": "Customer authentication is unavailable",
+    "details": {"dependency": "consumer-auth", "address": "consumer_grpc:50051",
+                "grpcStatus": "UNAVAILABLE"},
+    "error": "Service Unavailable",
+}
 
 
 class Seams:
@@ -95,6 +140,13 @@ class FlagOffTests(Seams, SimpleTestCase):
         self.assertEqual(response.status_code, 404)
         fakes["raise_check_in"].assert_not_called()
 
+    @override_settings(SELF_CHECK_IN_V1=False)
+    def test_off_is_404_at_a_chair_too_even_a_broken_scan(self):
+        for token in (CHAIR_TOKEN, ""):
+            response, fakes = self.call("post", body={"chair_token": token})
+            self.assertEqual(response.status_code, 404, repr(token))
+            fakes["raise_check_in"].assert_not_called()
+
 
 @override_settings(SELF_CHECK_IN_V1=True)
 class RaiseTests(Seams, SimpleTestCase):
@@ -133,6 +185,73 @@ class RaiseTests(Seams, SimpleTestCase):
         response, fakes = self.call("post", user=False)
         self.assertEqual(response.status_code, 401)
         fakes["raise_check_in"].assert_not_called()
+
+
+@override_settings(SELF_CHECK_IN_V1=True)
+class ChairTests(Seams, SimpleTestCase):
+    """At a chair: the scanned token and the app's User-Agent go on; nothing else changes."""
+
+    def test_a_scanned_chair_goes_on_with_the_apps_user_agent(self):
+        response, fakes = self.call("post", raised=(201, AT_CHAIR),
+                                    body={"chair_token": CHAIR_TOKEN}, HTTP_USER_AGENT=APP_UA)
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data, AT_CHAIR)
+        fakes["raise_check_in"].assert_called_once_with(
+            uuid.UUID(BOOKING_ID), authorization=TOKEN, chair_token=CHAIR_TOKEN,
+            user_agent=APP_UA)
+
+    def test_no_user_agent_header_is_an_empty_one(self):
+        _, fakes = self.call("post", body={"chair_token": CHAIR_TOKEN})
+        fakes["raise_check_in"].assert_called_once_with(
+            uuid.UUID(BOOKING_ID), authorization=TOKEN, chair_token=CHAIR_TOKEN, user_agent="")
+
+    def test_the_token_goes_on_exactly_as_scanned(self):
+        # Never trimmed: the token is platform's, and a changed one is another card.
+        _, fakes = self.call("post", body={"chair_token": f" {CHAIR_TOKEN}\n"})
+        self.assertEqual(fakes["raise_check_in"].call_args.kwargs["chair_token"],
+                         f" {CHAIR_TOKEN}\n")
+
+    def test_wait_for_staff_is_the_call_from_before_chairs(self):
+        # No chair, no user agent, nothing of the app's body: the very call
+        # it was before chairs, which is what makes it a safe fallback.
+        for body in (None, {}, {"chair_token": None}, {"tenant": "x"}, ["not", "an", "object"]):
+            _, fakes = self.call("post", body=body, HTTP_USER_AGENT=APP_UA)
+            fakes["raise_check_in"].assert_called_once_with(
+                uuid.UUID(BOOKING_ID), authorization=TOKEN)
+
+    def test_a_broken_scan_is_refused_here_and_booking_api_is_not_called(self):
+        # The project's field-level 422 (apps/accounts/exceptions.py).
+        for token, code in (("", "blank"), ("   ", "blank"), ("\n", "blank"), (42, "invalid"),
+                            (True, "invalid"), (["x"], "invalid"), ({"t": "x"}, "invalid")):
+            response, fakes = self.call("post", body={"chair_token": token})
+            self.assertEqual(response.status_code, 422, repr(token))
+            self.assertEqual(response.data["errors"],
+                             [{"field": "chair_token", "code": code,
+                               "message": mock.ANY}], repr(token))
+            fakes["raise_check_in"].assert_not_called()
+
+    def test_chair_refusals_come_back_as_they_came(self):
+        for refusal in CHAIR_REFUSALS:
+            response, _ = self.call("post", raised=(409, refusal),
+                                    body={"chair_token": CHAIR_TOKEN})
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.data, refusal)
+
+    def test_booking_apis_503s_come_back_as_they_came(self):
+        # WAIT_FOR_STAFF: the desk still works. AUTH_DOWN: it does not. The
+        # app tells them apart by details.fallback, so neither is rewritten.
+        for answer in (WAIT_FOR_STAFF, AUTH_DOWN):
+            response, _ = self.call("post", raised=(503, answer),
+                                    body={"chair_token": CHAIR_TOKEN})
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.data, answer)
+
+    def test_booking_api_down_at_a_chair_is_our_503_with_no_fallback(self):
+        response, _ = self.call("post", raised=BookingApiUnavailable("refused"),
+                                body={"chair_token": CHAIR_TOKEN})
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data["errors"][0]["code"], "booking_api_unavailable")
+        self.assertNotIn("WAIT_FOR_STAFF", json.dumps(response.data))
 
 
 @override_settings(SELF_CHECK_IN_V1=True)
@@ -190,3 +309,104 @@ class ClientTests(SimpleTestCase):
             "GET", f"/v1/bookings/{BOOKING_ID}/check-in-request",
             headers={"Authorization": TOKEN},
         )
+
+    def raise_at_a_chair(self, **kwargs):
+        with mock.patch("apps.salons.booking_api._send", return_value=(201, AT_CHAIR)) as send:
+            booking_api.raise_check_in(uuid.UUID(BOOKING_ID), authorization=TOKEN, **kwargs)
+        send.assert_called_once_with(
+            "POST", f"/v1/bookings/{BOOKING_ID}/check-in-request",
+            headers={"Content-Type": "application/json", "Authorization": TOKEN},
+            body=mock.ANY,
+        )
+        return json.loads(send.call_args.kwargs["body"])
+
+    def test_raise_at_a_chair_sends_the_body_this_service_built(self):
+        self.assertEqual(self.raise_at_a_chair(chair_token=CHAIR_TOKEN, user_agent=APP_UA),
+                         {"chairToken": CHAIR_TOKEN, "userAgent": APP_UA})
+
+    def test_no_user_agent_key_without_a_user_agent(self):
+        for user_agent in (None, ""):
+            self.assertEqual(self.raise_at_a_chair(chair_token=CHAIR_TOKEN, user_agent=user_agent),
+                             {"chairToken": CHAIR_TOKEN})
+
+    def test_a_user_agent_alone_is_not_a_chair(self):
+        with mock.patch("apps.salons.booking_api._send", return_value=(201, WAITING)) as send:
+            booking_api.raise_check_in(uuid.UUID(BOOKING_ID), authorization=TOKEN,
+                                       user_agent=APP_UA)
+        send.assert_called_once_with(
+            "POST", f"/v1/bookings/{BOOKING_ID}/check-in-request",
+            headers={"Authorization": TOKEN},
+        )
+
+
+@override_settings(SELF_CHECK_IN_V1=True, BOOKING_API_URL="http://booking-api.test")
+class WireTests(TestCase):
+    """
+    The whole stack but the network: a real customer token, the URL, the
+    middleware, the view and `_send`, with only urlopen faked. What leaves
+    for booking-api, and what reaches the app.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        account = ConsumerAccount.objects.create(phone="+971500000071")
+        self.auth = f"Bearer {tokens_for(account)['access']}"
+        self.client.credentials(HTTP_AUTHORIZATION=self.auth)
+
+    def post(self, answer, body=None, **headers):
+        """POST the check-in with booking-api answering `answer`; returns (response, sent)."""
+        sent = []
+
+        def urlopen(request, timeout):
+            sent.append(request)
+            if isinstance(answer, Exception):
+                raise answer
+            status, payload = answer
+            if status >= 400:
+                raise urllib.error.HTTPError(request.full_url, status, "", {},
+                                             io.BytesIO(json.dumps(payload).encode()))
+            opened = mock.MagicMock()
+            opened.__enter__.return_value.status = status
+            opened.__enter__.return_value.read.return_value = json.dumps(payload).encode()
+            return opened
+
+        with mock.patch("urllib.request.urlopen", urlopen):
+            if body is None:
+                response = self.client.post(PATH, **headers)
+            else:
+                response = self.client.post(PATH, body, format="json", **headers)
+        self.assertEqual(len(sent), 1)
+        return response, sent[0]
+
+    def test_wait_for_staff_503_reaches_the_app_unchanged(self):
+        response, sent = self.post((503, WAIT_FOR_STAFF), {"chair_token": CHAIR_TOKEN},
+                                   HTTP_USER_AGENT=APP_UA, HTTP_X_TENANT_ID="tenant-from-app")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), WAIT_FOR_STAFF)
+        # What left for booking-api: the built body, and no tenant header.
+        self.assertEqual(sent.full_url,
+                         f"http://booking-api.test/v1/bookings/{BOOKING_ID}/check-in-request")
+        self.assertEqual(sent.get_method(), "POST")
+        self.assertEqual(json.loads(sent.data), {"chairToken": CHAIR_TOKEN, "userAgent": APP_UA})
+        self.assertEqual(dict(sent.header_items()),
+                         {"Content-type": "application/json", "Authorization": self.auth})
+
+    def test_a_chair_reaches_the_app_unchanged(self):
+        response, _ = self.post((201, AT_CHAIR), {"chair_token": CHAIR_TOKEN})
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json(), AT_CHAIR)
+
+    def test_wait_for_staff_sends_no_body_and_only_the_token(self):
+        response, sent = self.post((201, WAITING), HTTP_USER_AGENT=APP_UA,
+                                   HTTP_X_TENANT_ID="tenant-from-app")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json(), WAITING)
+        self.assertIsNone(sent.data)
+        self.assertEqual(dict(sent.header_items()), {"Authorization": self.auth})
+
+    def test_booking_api_unreachable_is_our_503_with_no_fallback(self):
+        response, _ = self.post(urllib.error.URLError("connection refused"),
+                                {"chair_token": CHAIR_TOKEN})
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["errors"][0]["code"], "booking_api_unavailable")
+        self.assertNotIn("WAIT_FOR_STAFF", response.content.decode())

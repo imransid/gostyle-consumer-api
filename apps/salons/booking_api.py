@@ -276,23 +276,34 @@ def reschedule_booking(booking_id, body, *, authorization, tenant_id=None):
     )
 
 
-def raise_check_in(booking_id, *, authorization):
+def raise_check_in(booking_id, *, authorization, chair_token=None, user_agent=None):
     """
     POST /v1/bookings/<id>/check-in-request: the customer says "I am here"
     for their own booking (SELF_CHECK_IN_V1). Returns (status, parsed body)
     as given: 201 with the new request, 200 with the one already waiting, or
     booking-api's refusal (404 for a booking that is not the caller's, never
-    403; 409 with a code the app can switch on).
+    403; 409 with a code the app can switch on; 503 with fallback
+    WAIT_FOR_STAFF when the chair could not be checked).
 
-    NO BODY and NO X-Tenant-Id. booking-api takes no body here, and it takes
-    the tenant from the booking itself, so the app's header is never the one
-    that counts.
+    NO CHAIR, NO BODY: with no `chair_token` this is byte for byte the call
+    it was before chairs, and `user_agent` is dropped. That call is the
+    app's Wait for Staff, so it must never change.
+
+    AT A CHAIR, the body is one this service BUILT, never the app's:
+    booking-api answers 400 for any key it does not know. `userAgent` is the
+    app's own User-Agent, carried in the body because this request's header
+    is ours (urllib's), and booking-api never reads it.
+
+    NO X-Tenant-Id, either way: booking-api takes the tenant from the
+    booking itself, so the app's header is never the one that counts.
     """
-    return _send(
-        "POST",
-        f"/v1/bookings/{urllib.parse.quote(str(booking_id), safe='')}/check-in-request",
-        headers={"Authorization": authorization},
-    )
+    path = f"/v1/bookings/{urllib.parse.quote(str(booking_id), safe='')}/check-in-request"
+    if chair_token is None:
+        return _send("POST", path, headers={"Authorization": authorization})
+    body = {"chairToken": chair_token}
+    if user_agent:
+        body["userAgent"] = user_agent
+    return _send("POST", path, headers=_group_headers(authorization, None), body=_encode(body))
 
 
 def read_check_in(booking_id, *, authorization):
