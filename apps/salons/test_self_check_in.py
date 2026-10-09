@@ -61,6 +61,27 @@ CHAIR_TOKEN = "q7Xk2mP9rT4vW8yZ1aB3cD"
 APP_UA = "GoStyle/1.4 (iPhone; iOS 18.1)"
 AT_CHAIR = {"request": {**WAITING["request"], "chair": {"number": "7", "zoneName": "Window section"}}}
 
+# The read's welcome (booking-api check-in-attribution.handler.ts), in the
+# shapes booking-api really sends. `via` is never absent: it is null only on
+# a check-in written before booking-api recorded it. The whole `checkIn` is
+# null while the request waits, and when no check-in stands (none yet, the
+# desk undid it, or a status set by hand with no check-in behind it).
+APPROVED = {**WAITING["request"], "state": "APPROVED", "decidedAt": "2026-10-11T03:55:00.000Z"}
+APPROVED_WELCOME = {
+    "request": APPROVED,
+    "checkIn": {"at": "2026-10-11T03:55:00.000Z", "via": "SELF", "byName": "Layla R."},
+}
+WELCOME_FROM_BEFORE_VIA = {
+    "request": APPROVED,
+    "checkIn": {"at": "2026-10-11T03:55:00.000Z", "via": None, "byName": "Layla R."},
+}
+WELCOME_WITHOUT_A_NAME = {
+    "request": APPROVED,
+    "checkIn": {"at": "2026-10-11T03:55:00.000Z", "via": "STAFF", "byName": None},
+}
+WAITING_NO_WELCOME = {**WAITING, "checkIn": None}
+CHECKED_IN_BY_HAND = {"request": APPROVED, "checkIn": None}
+
 
 def chair_refused(reason, message):
     return {"statusCode": 409, "code": "BOOKING_CHAIR_REFUSED", "message": message,
@@ -279,6 +300,23 @@ class ReadTests(Seams, SimpleTestCase):
         response, _ = self.call("get", read=BookingApiUnavailable("refused"))
         self.assertEqual(response.status_code, 503)
 
+    def test_the_welcome_comes_back_as_booking_api_answered(self):
+        for answer in (APPROVED_WELCOME, WELCOME_FROM_BEFORE_VIA, WELCOME_WITHOUT_A_NAME,
+                       WAITING_NO_WELCOME, CHECKED_IN_BY_HAND):
+            response, _ = self.call("get", read=(200, answer))
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data, answer)
+
+    def test_a_null_via_and_a_null_name_keep_their_keys(self):
+        # The keys are booking-api's contract: present, with null. Dropping
+        # one would tell the app something booking-api did not say.
+        response, _ = self.call("get", read=(200, WELCOME_FROM_BEFORE_VIA))
+        self.assertIn("via", response.data["checkIn"])
+        self.assertIsNone(response.data["checkIn"]["via"])
+        response, _ = self.call("get", read=(200, WELCOME_WITHOUT_A_NAME))
+        self.assertIn("byName", response.data["checkIn"])
+        self.assertIsNone(response.data["checkIn"]["byName"])
+
 
 class RouteTests(SimpleTestCase):
 
@@ -353,7 +391,11 @@ class WireTests(TestCase):
         self.auth = f"Bearer {tokens_for(account)['access']}"
         self.client.credentials(HTTP_AUTHORIZATION=self.auth)
 
-    def post(self, answer, body=None, path=PATH, **headers):
+    def get(self, answer):
+        """GET the check-in with booking-api answering `answer`; returns (response, sent)."""
+        return self.post(answer, method="get")
+
+    def post(self, answer, body=None, path=PATH, method="post", **headers):
         """POST `path` with booking-api answering `answer`; returns (response, sent)."""
         sent = []
 
@@ -372,7 +414,7 @@ class WireTests(TestCase):
 
         with mock.patch("urllib.request.urlopen", urlopen):
             if body is None:
-                response = self.client.post(path, **headers)
+                response = getattr(self.client, method)(path, **headers)
             else:
                 response = self.client.post(path, body, format="json", **headers)
         self.assertEqual(len(sent), 1)
@@ -410,6 +452,18 @@ class WireTests(TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["errors"][0]["code"], "booking_api_unavailable")
         self.assertNotIn("WAIT_FOR_STAFF", response.content.decode())
+
+    def test_the_read_and_its_welcome_reach_the_app_byte_for_byte(self):
+        # Through the renderer too: a null via and a null name keep their keys.
+        for answer in (APPROVED_WELCOME, WELCOME_FROM_BEFORE_VIA, WELCOME_WITHOUT_A_NAME,
+                       WAITING_NO_WELCOME):
+            response, sent = self.get((200, answer))
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), answer)
+            self.assertEqual(sent.get_method(), "GET")
+            self.assertEqual(sent.full_url,
+                             f"http://booking-api.test/v1/bookings/{BOOKING_ID}/check-in-request")
+            self.assertEqual(dict(sent.header_items()), {"Authorization": self.auth})
 
     def test_withdraw_sends_no_body_and_only_the_token_and_its_409_reaches_the_app_unchanged(self):
         response, sent = self.post((409, NOTHING_TO_CANCEL), {"tenant": "x"},

@@ -1,6 +1,6 @@
 # Mobile Self Check-in: FE Guide
 
-Date: 2026-10-08, updated 2026-10-09 (chair check-in, §12; Cancel Request, §13). For: the mobile app team.
+Date: 2026-10-08, updated 2026-10-09 (chair check-in, §12; Cancel Request, §13; the welcome, §14). For: the mobile app team.
 
 The customer arrives at the salon, opens their booking and taps **"I am
 here"**. The salon's desk sees them on its reception list and approves or
@@ -112,6 +112,18 @@ export interface CheckInAnswer {
   request: CheckInRequest | null;  // null: never raised
 }
 
+// The welcome (§14): the check-in that stands on the booking.
+export interface CheckInWelcome {
+  at: string;                     // ISO 8601, UTC: when they were checked in
+  via: 'SELF' | 'STAFF' | null;   // always present; null: checked in before this was recorded
+  byName: string | null;          // "Layla R.", best effort: may be null (§14)
+}
+
+// GET /booking/{id}/check-in (§6). The POST answers carry no checkIn.
+export interface CheckInRead extends CheckInAnswer {
+  checkIn: CheckInWelcome | null;  // null while WAITING, and when none stands (§14)
+}
+
 // The My Bookings row (GET /bookings) gains one field (§3).
 export interface MyBookingsRowCheckIn {
   can_check_in: boolean;  // snake_case: this one is customer-api's own field
@@ -161,13 +173,14 @@ tap, or a tap after the app was closed, is harmless. Treat 200 and 201 the same.
 
 ## 6. Read the answer: `GET /booking/{id}/check-in`
 
-**`200 OK`**: `{ "request": CheckInRequest }`, or `{ "request": null }` if the
-customer never tapped "I am here" for this booking.
+**`200 OK`**: `{ "request": CheckInRequest | null, "checkIn": CheckInWelcome | null }`
+(`CheckInRead`, §4). `request` is null if the customer never tapped "I am here"
+for this booking. `checkIn` is the welcome: §14.
 
 | `state` | Show | Button |
 | ------- | ---- | ------ |
 | `WAITING` | "The salon knows you are here. Please take a seat." | hidden |
-| `APPROVED` | "You are checked in." Refresh the booking. | hidden |
+| `APPROVED` | The welcome, from `checkIn` (§14). Refresh the booking. | hidden |
 | `REJECTED` | "The salon could not confirm your arrival. Please speak to the desk." | hidden for good |
 | `EXPIRED` | "The salon did not answer in time. Please speak to the desk." | hidden |
 | `CLOSED` | Nothing special: show the booking as it now is. | as §3 |
@@ -455,3 +468,67 @@ request may still be waiting: `GET` again before showing anything.
 - [ ] The desk checks them in with its own button while the request waits; tap Cancel Request: `409` with `details.request: "CLOSED"`, and a `GET` straight after says `CLOSED` too.
 - [ ] Cancel Request on a booking with no request: `409`, `details.request: null`, "There is no check-in request to cancel."
 - [ ] Switch off: `404`.
+
+---
+
+## 14. The welcome screen
+
+Once the desk has checked the customer in, the app can greet them: "Checked
+in by Layla R. at 14:24". The facts come on `GET /booking/{id}/check-in`, as
+`checkIn` beside `request` (§6). They are booking-api's, passed through as
+they came.
+
+A `ROUTINE` row works the same: its `id` is that session's own booking id
+(§1), so `GET /booking/{session_id}/check-in` carries the session's welcome.
+
+### 14.1 When `checkIn` is null
+
+- While the request is `WAITING`. Polling a waiting request never looks
+  anything up, so it costs nothing to keep polling (§7).
+- When no check-in stands: none yet, or the desk undid it.
+- When no request was ever raised (`request` is null too).
+- Rarely, the booking is `CHECKED_IN` with no check-in behind it: the salon
+  set the status by hand. Show "You are checked in." with no time and no
+  name.
+
+### 14.2 The fields
+
+**`at`**: when they were checked in. Show it in the salon's time zone.
+
+**`via`**: which welcome to draw. It is always present.
+
+| `via` | What happened | Draw |
+| ----- | ------------- | ---- |
+| `SELF` | The customer asked first (at a chair, or with Wait for Staff), and the desk approved it. | The self welcome. |
+| `STAFF` | The desk checked them in on its own: their pass scanned, or the booking found on the calendar. The server cannot tell those two apart. | The desk welcome. |
+| `null` | Checked in before the server recorded how (before this release). | The plain welcome: "You are checked in at 14:24", with the name if there is one. |
+
+**Draw from `checkIn.via`, never from the request's state.** An approval the
+desk undid and then redid with its own button leaves an `APPROVED` request
+behind a `STAFF` check-in.
+
+**SELF never means nobody at the salon touched it.** The desk approves every
+self check-in. There is no path where a customer is checked in on their own
+word. SELF means "the customer asked first". The design's **"Welcome -
+Self-approved"** screen describes a path that was deliberately not built:
+check its words with the design team before building it.
+
+**`byName`: best effort. The screen must work without it.**
+
+- It is "Layla R.": the first name and the initial of the last, as the
+  salon's staff records have them now.
+- It is **null** for three different reasons:
+  1. the desk member has no staff profile (an owner's account, say);
+  2. the staff records did not answer in time (the server never waits more
+     than about a second for a name, and after a failure stops asking for 30
+     seconds);
+  3. the profile has no first name.
+- **When it is null, say "Checked in at 14:24".** Never "Checked in by"
+  followed by nothing.
+
+### 14.3 QA checklist (the welcome)
+
+- [ ] "I am here", the desk approves: `checkIn.via` is `SELF`, `at` is the approval time, and `byName` names the receptionist.
+- [ ] While `WAITING`: `checkIn` is `null` on every poll.
+- [ ] The desk approves, undoes it within five minutes, then checks them in with its own button: `request.state` is still `APPROVED`, and `checkIn.via` is `STAFF`. The app draws the desk welcome.
+- [ ] Ask the server team to show a receptionist with no staff profile: `byName` is `null`, and the screen says "Checked in at 14:24".
