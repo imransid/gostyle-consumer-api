@@ -2618,6 +2618,67 @@ class BookingReadCheckInTests(SimpleTestCase):
         response = self.read((404, {"code": "not_found"}))
         self.assertEqual((response.status_code, response.data), (404, {"code": "not_found"}))
 
+    # ------------------------------------------------------------ check_in_opens_at
+    #
+    # NOW is 12:00 UTC (16:00 at the salon, +04:00). soon() starts 16:10
+    # there, 12:10 UTC, so check-in opened at 11:40 UTC.
+
+    def opens_at(self, row):
+        """The row's and the read's check_in_opens_at, as a pair."""
+        return (self.on_the_list(row).get("check_in_opens_at", "<no key>"),
+                self.read((200, dict(row))).data.get("check_in_opens_at", "<no key>"))
+
+    @override_settings(SELF_CHECK_IN_V1=True)
+    def test_opens_at_is_the_start_less_30_minutes_in_utc_as_booking_api_writes_it(self):
+        for kind in ("SINGLE", "ROUTINE"):
+            with self.subTest(kind):
+                self.assertEqual(self.opens_at(self.soon(booking_type=kind)),
+                                 ("2026-09-18T11:40:00.000Z", "2026-09-18T11:40:00.000Z"))
+
+    @override_settings(SELF_CHECK_IN_V1=True)
+    def test_null_where_self_check_in_does_not_apply(self):
+        missing = self.soon()
+        del missing["booking_type"]
+        for name, row in (
+            ("a party", self.soon(booking_type="GROUP")),
+            ("no booking_type", missing),
+            ("not yet confirmed", self.soon(status="BOOKED")),
+            ("already checked in", self.soon(status="CHECKED_IN")),
+            ("no start time", self.soon(start_time=None)),
+            ("a start with no offset", self.soon(start_time="2026-09-18T16:10:00")),
+        ):
+            with self.subTest(name):
+                self.assertEqual(self.opens_at(row), (None, None))
+
+    @override_settings(SELF_CHECK_IN_V1=True)
+    def test_a_closed_window_still_opened_at_its_time(self):
+        # Started 15:00, ended 16:00 salon time: the button is gone, the fact is not.
+        ended = self.soon(start_time="2026-09-18T15:00:00+04:00",
+                          end_time="2026-09-18T16:00:00+04:00")
+        self.assertIs(self.on_the_list(ended)["can_check_in"], False)
+        self.assertEqual(self.opens_at(ended),
+                         ("2026-09-18T10:30:00.000Z", "2026-09-18T10:30:00.000Z"))
+
+    @override_settings(SELF_CHECK_IN_V1=True)
+    def test_one_rule_the_time_shown_and_the_window_move_together(self):
+        # Starts 16:40 salon time (12:40 UTC): at 30 minutes, check-in opens
+        # 12:10 UTC, after NOW; at 45 minutes, 11:55, before it.
+        later = self.soon(start_time="2026-09-18T16:40:00+04:00",
+                          end_time="2026-09-18T17:40:00+04:00")
+        self.assertEqual(self.opens_at(later)[0], "2026-09-18T12:10:00.000Z")
+        self.assertIs(self.read((200, dict(later))).data["can_check_in"], False)
+        with mock.patch("apps.salons.views.CHECK_IN_OPENS_MINUTES", 45):
+            self.assertEqual(self.opens_at(later),
+                             ("2026-09-18T11:55:00.000Z", "2026-09-18T11:55:00.000Z"))
+            self.assertIs(self.read((200, dict(later))).data["can_check_in"], True)
+            self.assertIs(self.on_the_list(later)["can_check_in"], True)
+
+    def test_switch_off_no_opens_at_on_the_row_or_the_read(self):
+        for switch in (None, False):
+            settings_ = {} if switch is None else {"SELF_CHECK_IN_V1": switch}
+            with override_settings(**settings_), self.subTest(switch=switch):
+                self.assertEqual(self.opens_at(self.soon()), ("<no key>", "<no key>"))
+
 
 class BookingPatchMediaTypeTests(SimpleTestCase):
     """The 415 guard, which PATCH was missing while create had it."""

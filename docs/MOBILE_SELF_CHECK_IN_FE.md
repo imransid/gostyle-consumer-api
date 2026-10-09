@@ -72,6 +72,21 @@ booking, when the screen comes back to the foreground**, so a booking that was
 (it always has), and `GET /booking/{id}` has no `can_check_in` key at all.
 Treat a missing key as `false`.
 
+**`check_in_opens_at`: when "I am here" opens.** On the row and on
+`GET /booking/{id}`, the same value, while the switch is on.
+- It is UTC, written like every other check-in time
+  (`"2026-09-18T11:40:00.000Z"`). Show it in the salon's time zone:
+  "Check-in opens at 15:40."
+- It is `null` when self check-in does not apply to this booking: a party, a
+  booking that is not `CONFIRMED_BY_SALON`, or one with no start time.
+- **It is a fact, not the button.** A booking whose window has closed still
+  has the time it opened. Whether to show "I am here" now is `can_check_in`
+  alone; never work the button out from this time.
+- Use it to know when to read again: a booking whose time is still ahead
+  gets its button once that time passes, so refresh then (or when the screen
+  comes back to the foreground, as above).
+- No key while the switch is off.
+
 **The row cannot know one thing:** whether the desk already said no for this
 booking. So on the booking screen, also `GET /booking/{id}/check-in` once (§6):
 if it says `REJECTED`, hide the button even though `can_check_in` is `true`.
@@ -143,11 +158,13 @@ export interface BookingCheckIn {
 export interface BookingWithCheckIn {
   check_in?: BookingCheckIn | null;  // absent: off; null: nobody checked in; object: checked in (§14.3)
   can_check_in?: boolean;            // the row's rule, the same function (§3)
+  check_in_opens_at?: string | null; // as on the row (§3)
 }
 
 // The My Bookings row (GET /bookings) gains one field (§3).
 export interface MyBookingsRowCheckIn {
-  can_check_in: boolean;  // snake_case: this one is customer-api's own field
+  can_check_in: boolean;              // snake_case: this one is customer-api's own field
+  check_in_opens_at?: string | null;  // UTC ISO; null: does not apply; absent: switch off (§3)
 }
 
 // booking-api's refusal shape (§8, shape B).
