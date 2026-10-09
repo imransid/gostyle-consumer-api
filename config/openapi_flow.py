@@ -120,6 +120,11 @@ FLOW = (
                 "/api/v1/booking/{booking_id}/check-in",
                 "Has the desk answered my check-in? (SELF_CHECK_IN_V1)",
             ),
+            (
+                "POST",
+                "/api/v1/booking/{booking_id}/check-in/withdraw",
+                "Cancel Request: take back my waiting check-in (SELF_CHECK_IN_V1)",
+            ),
         ),
     ),
     (

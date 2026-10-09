@@ -1,6 +1,6 @@
 # Mobile Self Check-in: FE Guide
 
-Date: 2026-10-08, updated 2026-10-09 (chair check-in, §12). For: the mobile app team.
+Date: 2026-10-08, updated 2026-10-09 (chair check-in, §12; Cancel Request, §13). For: the mobile app team.
 
 The customer arrives at the salon, opens their booking and taps **"I am
 here"**. The salon's desk sees them on its reception list and approves or
@@ -8,7 +8,7 @@ rejects. Approving checks the booking in, exactly as if the desk had pressed
 its own check-in button.
 
 **Everything here is behind the server switch `SELF_CHECK_IN_V1`, and it is
-OFF today.** Until it is on, both routes answer `404`. See §10.
+OFF today.** Until it is on, every route here answers `404`. See §10.
 
 ---
 
@@ -21,6 +21,7 @@ OFF today.** Until it is on, both routes answer `404`. See §10.
 5. **Buttons come from the server.** Show "I am here" only when the row's `can_check_in` is `true` (§3), as with `can_cancel` and `can_reschedule`. Never work the rule out in the app. Every refusal has a `code` to switch on (§8). Never show a refusal as a crash.
 6. **The pass QR is unchanged** (§9).
 7. **Two 503s mean different things** (§12.3). Offer Wait for Staff only when `details.fallback` is `"WAIT_FOR_STAFF"`.
+8. **Cancel Request** takes a waiting request back (§13). Its route says `withdraw`, never `cancel`: `POST /booking/{id}/cancel` cancels the whole visit.
 
 ---
 
@@ -30,6 +31,7 @@ OFF today.** Until it is on, both routes answer `404`. See §10.
 | ------ | ---- | ------------ |
 | `POST` | `/booking/{id}/check-in` | "I am here": ask the desk to check me in |
 | `GET`  | `/booking/{id}/check-in` | Has the desk answered? |
+| `POST` | `/booking/{id}/check-in/withdraw` | Cancel Request: take back a request that is still waiting (§13) |
 
 `{id}` is the id on the My Bookings row: a `SINGLE` row's id, or a `ROUTINE`
 session row's id. **Not a `GROUP` row** (§9).
@@ -84,7 +86,8 @@ export type CheckInState =
   | 'APPROVED'  // the desk said yes: the booking is CHECKED_IN
   | 'REJECTED'  // the desk said no: speak to the desk, no second try
   | 'EXPIRED'   // nobody answered before the booking's end time
-  | 'CLOSED';   // the booking moved on another way (checked in at the desk, cancelled, moved)
+  | 'CLOSED'    // the booking moved on another way (checked in at the desk, cancelled, moved)
+  | 'WITHDRAWN'; // the customer took it back with Cancel Request (§13); they may ask again
 
 export interface CheckInChair {
   number: string;            // "7": what the customer and the desk read
@@ -125,6 +128,7 @@ export interface BookingApiError {
     status?: string;         // BOOKING_STATE_INVALID, e.g. "CHECKED_IN"
     reason?: string;         // BOOKING_CHAIR_REFUSED, or CHAIR_CHECK_UNAVAILABLE on the 503 (§12)
     fallback?: 'WAIT_FOR_STAFF';  // the 503 that means "use Wait for Staff" (§12.3)
+    request?: CheckInState | null;  // BOOKING_STATE_INVALID on Cancel Request: the state now; null, none raised (§13)
   };
   error: string;
 }
@@ -167,6 +171,7 @@ customer never tapped "I am here" for this booking.
 | `REJECTED` | "The salon could not confirm your arrival. Please speak to the desk." | hidden for good |
 | `EXPIRED` | "The salon did not answer in time. Please speak to the desk." | hidden |
 | `CLOSED` | Nothing special: show the booking as it now is. | as §3 |
+| `WITHDRAWN` | Nothing special: they took it back. They may tap "I am here" again, or scan another chair. | as §3 |
 
 The desk's own reason for a rejection is never sent to the app. Use your own words.
 
@@ -195,6 +200,7 @@ Two shapes, as on the single cancel and reschedule:
 | `409` | `BOOKING_STATE_INVALID` with `details.status` | Not confirmed (already checked in, cancelled, unpaid, ...) | Refresh the booking. If `CHECKED_IN`, show "You are checked in." |
 | `409` | `BOOKING_CHECKIN_REJECTED` | The desk said no before | "Please speak to the desk." No retry. |
 | `409` | `BOOKING_CHAIR_REFUSED` with `details.reason` | At a chair: not with that chair | Show `message` (§12.2). |
+| `409` | `BOOKING_STATE_INVALID` with `details.request` | Cancel Request: nothing is waiting | Show the screen for `details.request` (§13). |
 | `422` | `validation_error` (shape A), `errors[0].field` `chair_token` | At a chair: the scan was empty or not text | "Please scan the card again." Offer Wait for Staff. |
 | `404` | `BOOKING_NOT_FOUND` | Not the customer's booking, a party's id, or booking-api's switch is off | Hide the button. |
 | `404` | `not_found` (shape A) | This service's switch is off | Hide the button. |
@@ -222,6 +228,14 @@ while customer-api's switch is off, `can_check_in` is `false` on every row, so
 the button never shows.
 
 Chair scanning has its own order: §12.5.
+
+**Cancel Request and the welcome screen (§13) have a fixed deploy order:**
+
+1. booking-api's branch `feat/check-in-gaps` is deployed.
+2. Then customer-api's branch `feat/check-in-gaps` is deployed.
+3. Then customer-api's `SELF_CHECK_IN_V1` is turned on. booking-api's switch has to be on too, as above.
+
+**Do not build against them until the server team says all three are done.** Before step 2, Cancel Request answers `404`.
 
 ---
 
@@ -377,3 +391,67 @@ Staff keeps working. The server has no separate switch for chairs.
 - [ ] Platform down (ask the server team): `503` with `details.fallback: "WAIT_FOR_STAFF"`, its `message` and the Wait for Staff button. Tap it: `201`, `chair: null`.
 - [ ] booking-api down (ask the server team): `503 booking_api_unavailable`, **no** Wait for Staff button, "try again".
 - [ ] App-side switch off: no Scan the chair button; Wait for Staff still works.
+
+---
+
+## 13. Cancel Request: `POST /booking/{id}/check-in/withdraw`
+
+While the request is still `WAITING`, the customer can take it back: they
+scanned the wrong chair, or want Wait for Staff instead. The request becomes
+`WITHDRAWN`. Unlike after a rejection, they may tap "I am here" (or scan a
+chair) again straight away.
+
+- **Show the button only while the latest request is `WAITING`** (§6).
+- **The path says `withdraw`, never `cancel`.** `POST /booking/{id}/cancel`
+  cancels the whole visit, one segment away. The button can still say
+  "Cancel Request".
+- **No body.** The token only, as for every route here.
+- **The booking is untouched.** It is still never marked a no-show
+  automatically: someone who took it back to scan again is still in the salon.
+
+### 13.1 The answers
+
+**`200 OK`**: `{ "request": CheckInRequest }`, with `state: "WITHDRAWN"`. A
+second tap answers the same request. Treat both the same.
+
+```json
+{
+  "request": {
+    "requestId": "01a11b4c-aa95-75f5-8e65-b815eccc7204",
+    "bookingId": "aaaaaaaa-0000-4000-8000-0000000000a1",
+    "state": "WITHDRAWN",
+    "raisedAt": "2026-10-11T03:50:00.000Z",
+    "decidedAt": "2026-10-11T03:52:00.000Z",
+    "chair": null
+  }
+}
+```
+
+**`409 BOOKING_STATE_INVALID`**: nothing is waiting to take back. Shape B
+(§8). `details.request` is the request's state **as it is now**, so the app
+can move on without another `GET`:
+
+| `details.request` | `message` | What happened | Show |
+| ----------------- | --------- | ------------- | ---- |
+| `APPROVED` | "This request has already ended." | The desk approved it a moment before the tap. | The `APPROVED` screen (§6). |
+| `CLOSED` | "This request has already ended." | The desk checked them in with its own button. This very call recorded it. | Refresh the booking; as §6. |
+| `EXPIRED` | "This request has already ended." | The end time passed. This very call recorded it. | As §6. |
+| `REJECTED` | "This request has already ended." | The desk said no. | As §6. |
+| `null` | "There is no check-in request to cancel." | None was ever raised. An app bug: the button should not have been showing. | Hide Cancel Request. |
+
+A `GET` straight after a `409` answers the same state: the request already
+holds it.
+
+Everything else is as §8: `404` (not their booking, or a switch is off),
+`401`, and `503 booking_api_unavailable` (shape A). After that `503`, the
+request may still be waiting: `GET` again before showing anything.
+
+### 13.2 QA checklist (Cancel Request)
+
+- [ ] "I am here", then Cancel Request: `200 WITHDRAWN`. Tap again: `200`, the same `requestId`.
+- [ ] Then "I am here" again: `201 WAITING`, a new `requestId`.
+- [ ] Scan chair 7, Cancel Request, scan chair 8: the new request shows chair 8.
+- [ ] The desk approves while the screen still says `WAITING`; tap Cancel Request: `409` with `details.request: "APPROVED"`, and the app shows checked in.
+- [ ] The desk checks them in with its own button while the request waits; tap Cancel Request: `409` with `details.request: "CLOSED"`, and a `GET` straight after says `CLOSED` too.
+- [ ] Cancel Request on a booking with no request: `409`, `details.request: null`, "There is no check-in request to cancel."
+- [ ] Switch off: `404`.

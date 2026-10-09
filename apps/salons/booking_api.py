@@ -297,7 +297,7 @@ def raise_check_in(booking_id, *, authorization, chair_token=None, user_agent=No
     NO X-Tenant-Id, either way: booking-api takes the tenant from the
     booking itself, so the app's header is never the one that counts.
     """
-    path = f"/v1/bookings/{urllib.parse.quote(str(booking_id), safe='')}/check-in-request"
+    path = _check_in_path(booking_id)
     if chair_token is None:
         return _send("POST", path, headers={"Authorization": authorization})
     body = {"chairToken": chair_token}
@@ -313,11 +313,32 @@ def read_check_in(booking_id, *, authorization):
     body) as given: 200 with `{"request": ...}`, `{"request": null}` when
     none was raised, or booking-api's 404.
     """
+    return _send("GET", _check_in_path(booking_id), headers={"Authorization": authorization})
+
+
+def withdraw_check_in(booking_id, *, authorization):
+    """
+    POST /v1/bookings/<id>/check-in-request/withdraw: the customer takes
+    their waiting request back, the app's Cancel Request (SELF_CHECK_IN_V1).
+    Returns (status, parsed body) as given: 200 with the request, WITHDRAWN
+    (a second tap answers the same one); 409 BOOKING_STATE_INVALID whose
+    `details.request` is the request's state as it now is (CLOSED or EXPIRED
+    may have been written by this very call: the desk had already checked
+    them in, or the end time had passed), or null when none was ever raised;
+    or booking-api's 404.
+
+    The token only, as read_check_in: no body (booking-api reads none) and no
+    X-Tenant-Id (booking-api takes the tenant from the booking).
+    """
     return _send(
-        "GET",
-        f"/v1/bookings/{urllib.parse.quote(str(booking_id), safe='')}/check-in-request",
+        "POST", f"{_check_in_path(booking_id)}/withdraw",
         headers={"Authorization": authorization},
     )
+
+
+def _check_in_path(booking_id):
+    """booking-api's path for a booking's check-in request: one spelling."""
+    return f"/v1/bookings/{urllib.parse.quote(str(booking_id), safe='')}/check-in-request"
 
 
 def get_branch_services(tenant_id, branch_id):
