@@ -124,6 +124,20 @@ export interface CheckInRead extends CheckInAnswer {
   checkIn: CheckInWelcome | null;  // null while WAITING, and when none stands (§14)
 }
 
+// The SAME three facts on GET /booking/{id}, as `check_in` (§14.3), in that
+// booking's snake_case. A DIFFERENT TYPE ON PURPOSE: reuse CheckInWelcome
+// there and `byName` reads undefined, and the screen shows a blank name.
+export interface BookingCheckIn {
+  at: string;                     // ISO 8601, UTC
+  via: 'SELF' | 'STAFF' | null;   // as CheckInWelcome.via
+  by_name: string | null;         // snake_case here: "Layla R.", best effort
+}
+
+// GET /booking/{id} gains, while SELF_CHECK_IN_V1 is on (§14.3):
+export interface BookingWithCheckIn {
+  check_in?: BookingCheckIn | null;  // absent: off; null: nobody checked in; object: checked in
+}
+
 // The My Bookings row (GET /bookings) gains one field (§3).
 export interface MyBookingsRowCheckIn {
   can_check_in: boolean;  // snake_case: this one is customer-api's own field
@@ -249,6 +263,7 @@ Chair scanning has its own order: §12.5.
 3. Then customer-api's `SELF_CHECK_IN_V1` is turned on. booking-api's switch has to be on too, as above.
 
 **Do not build against them until the server team says all three are done.** Before step 2, Cancel Request answers `404`.
+Until step 3, `GET /booking/{id}` carries no `check_in` key, whatever booking-api's switch says (§14.3).
 
 ---
 
@@ -474,12 +489,25 @@ request may still be waiting: `GET` again before showing anything.
 ## 14. The welcome screen
 
 Once the desk has checked the customer in, the app can greet them: "Checked
-in by Layla R. at 14:24". The facts come on `GET /booking/{id}/check-in`, as
-`checkIn` beside `request` (§6). They are booking-api's, passed through as
-they came.
+in by Layla R. at 14:24". The same three facts (when, how, by whom) come on
+two reads, both booking-api's, passed through as they came:
+
+| Read | Field | Type (§4) | When to read it |
+| ---- | ----- | --------- | --------------- |
+| `GET /booking/{id}/check-in` | `checkIn: { at, via, byName }` | `CheckInWelcome` | After "I am here": the app is already polling it (§7). |
+| `GET /booking/{id}` | `check_in: { at, via, by_name }` | `BookingCheckIn` | The desk scanned the pass: no request was ever raised, so only the booking knows (§14.3). |
+
+**Two types, not one: the casing differs, and it cannot be made to match.**
+Each field comes from its own booking-api read (the check-in read is
+camelCase, the booking read snake_case), and this service passes both
+through untouched. Reuse one type for both and `byName` reads `undefined`
+on the booking screen: a blank name nobody notices until a customer does.
 
 A `ROUTINE` row works the same: its `id` is that session's own booking id
-(§1), so `GET /booking/{session_id}/check-in` carries the session's welcome.
+(§1), so both reads, with the session's id, carry the session's welcome.
+**Read a session's welcome from its own booking** (`GET /booking/{session_id}`),
+never from the routine's session list (`GET /booking/{routine_id}`): the
+routine's read carries no check-in for its sessions.
 
 ### 14.1 When `checkIn` is null
 
@@ -526,9 +554,34 @@ check its words with the design team before building it.
 - **When it is null, say "Checked in at 14:24".** Never "Checked in by"
   followed by nothing.
 
-### 14.3 QA checklist (the welcome)
+### 14.3 The booking read: `check_in`
+
+`GET /booking/{id}` carries `check_in` while `SELF_CHECK_IN_V1` is on. Its
+three shapes mean three different things:
+
+| `check_in` | Means | Show |
+| ---------- | ----- | ---- |
+| no key at all | Self check-in is off. | Nothing from this feature. |
+| `null` | On, and nobody is checked in: none yet, or the desk undid it. | No welcome. |
+| `{ at, via, by_name }` | Checked in. | The welcome, as §14.2, with `by_name` for `byName`. |
+
+- **This is the staff path's read.** The desk scanned the pass, so no
+  request exists, and `GET /booking/{id}/check-in` answers
+  `{ "request": null, "checkIn": null }`. Only the booking knows.
+- **Never read a missing key as null, or null as "off".** No key says
+  nothing about the visit.
+- **The fields are §14.2's**, `by_name` for `byName`: best effort, null for
+  the same three reasons, and "Checked in at 14:24" without it.
+- **A `ROUTINE` session:** `GET /booking/{session_id}` carries it;
+  `GET /booking/{routine_id}` does not.
+
+### 14.4 QA checklist (the welcome)
 
 - [ ] "I am here", the desk approves: `checkIn.via` is `SELF`, `at` is the approval time, and `byName` names the receptionist.
 - [ ] While `WAITING`: `checkIn` is `null` on every poll.
 - [ ] The desk approves, undoes it within five minutes, then checks them in with its own button: `request.state` is still `APPROVED`, and `checkIn.via` is `STAFF`. The app draws the desk welcome.
 - [ ] Ask the server team to show a receptionist with no staff profile: `byName` is `null`, and the screen says "Checked in at 14:24".
+- [ ] The desk scans the pass, with no "I am here": `GET /booking/{id}` has `check_in.via` `STAFF` and `by_name`; the check-in read has `request: null`. The app draws the desk welcome from `check_in`.
+- [ ] Before anyone checks in: `GET /booking/{id}` has `check_in: null`.
+- [ ] customer-api's switch off: `GET /booking/{id}` has no `check_in` key at all, and the booking screen draws as before.
+- [ ] A `ROUTINE` session checked in at the desk: `GET /booking/{session_id}` has `check_in`.

@@ -2104,7 +2104,15 @@ _PAYMENT_REQUEST = {
             "No query parameters: services, products and stylists always "
             "come expanded, never as bare ids. A DRAFT booking is readable "
             "so an interrupted checkout can be resumed, and carries "
-            "`expires_at` while its hold window is still running."
+            "`expires_at` while its hold window is still running.\n\n"
+            "THE WELCOME, behind SELF_CHECK_IN_V1: `check_in`, snake_case like "
+            "the rest of this booking, `{at, via, by_name}`. No key: the "
+            "switch is off. `null`: on, and no check-in stands. An object: "
+            "checked in; `via` SELF (the customer asked first) or STAFF (the "
+            "desk on its own, e.g. the pass scanned) or null (before this was "
+            "recorded); `by_name` (\"Layla R.\") is best effort and may be "
+            "null. A routine session's id carries it; the routine's own read "
+            "does not."
         ),
         responses={
             200: OpenApiResponse(
@@ -2292,6 +2300,20 @@ class BookingDetailView(APIView):
                 ),
                 full=True,
             )
+
+            # THE WELCOME (`check_in`), ONLY WHILE OURS IS ON. booking-api
+            # adds it behind its own SELF_CHECK_IN_V1, and booking-api deploys
+            # first: without this, its flag would change this service's
+            # contract with no deploy here, and turning its flag back off to
+            # undo that would turn the desk's check-in off with it. So while
+            # this service's switch is off, the key is REMOVED, never set to
+            # null: no key means off here, null means on with nobody checked
+            # in, an object means checked in, and booking-api itself omits the
+            # key with its flag off, a shape the app already handles. Only
+            # this key, only on a single booking's 200 (booking-api's party
+            # and routine reads carry none), and never looked inside.
+            if not settings.SELF_CHECK_IN_V1:
+                body.pop("check_in", None)
 
         return Response(body, status=upstream_status)
 

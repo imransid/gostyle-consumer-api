@@ -9,6 +9,7 @@ calls are the seams, and WireTests fakes only urlopen, so `_send`, the view and
 the middleware all run.
 """
 
+import contextlib
 import io
 import json
 import urllib.error
@@ -17,6 +18,7 @@ from unittest import mock
 
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import resolve
+from rest_framework.response import Response
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
 from apps.accounts.models import ConsumerAccount
@@ -25,6 +27,7 @@ from apps.salons import booking_api
 from apps.salons.booking_api import BookingApiUnavailable
 from apps.salons.check_in_views import SelfCheckInView, SelfCheckInWithdrawView
 from apps.salons.test_group_booking import Customer
+from apps.salons.views import BookingDetailView
 
 BOOKING_ID = "9f1c0f4e-3a2b-4d55-9a71-2c8e5b0d7a11"
 PATH = f"/api/v1/booking/{BOOKING_ID}/check-in"
@@ -604,3 +607,121 @@ class WithdrawClientTests(SimpleTestCase):
             "POST", f"/v1/bookings/{BOOKING_ID}/check-in-request/withdraw",
             headers={"Authorization": TOKEN},
         )
+
+
+# ------------------------------------------------------------ the booking read
+#
+# GET /api/v1/booking/<id> carries booking-api's `check_in` (snake_case, like
+# the rest of that booking) only while THIS service's SELF_CHECK_IN_V1 is on.
+# Off, the key is removed, never nulled: no key is "off here", null is "on,
+# nobody checked in". booking-api's party and routine reads carry no
+# `check_in`, so only the single booking's 200 is gated.
+
+BOOKING_PATH = f"/api/v1/booking/{BOOKING_ID}"
+SALON_ID = "b7e92439-8285-469a-bba4-dcaa3dd5842c"
+# booking-api's single booking, cut to the keys these tests need.
+SINGLE = {"id": BOOKING_ID, "status": "CHECKED_IN", "salon_id": SALON_ID}
+STAFF_WELCOME = {"at": "2026-10-11T03:55:00.000Z", "via": "STAFF", "by_name": "Layla R."}
+
+
+def single(**over):
+    return {**SINGLE, **over}
+
+
+class BookingReadWelcomeTests(SimpleTestCase):
+
+    def read(self, upstream, **patches):
+        request = APIRequestFactory().get(BOOKING_PATH, HTTP_AUTHORIZATION=TOKEN)
+        force_authenticate(request, user=Customer())
+        fakes = {
+            "apps.salons.views.read_booking": mock.Mock(return_value=upstream),
+            "apps.salons.views.salon_cards_for_refs": mock.Mock(return_value={}),
+            **patches,
+        }
+        with contextlib.ExitStack() as stack:
+            for target, fake in fakes.items():
+                stack.enter_context(mock.patch(target, fake))
+            return BookingDetailView.as_view()(request, booking_id=uuid.UUID(BOOKING_ID))
+
+    @override_settings(SELF_CHECK_IN_V1=False)
+    def test_off_here_the_key_is_removed_not_nulled(self):
+        for welcome in (STAFF_WELCOME, None):
+            response = self.read((200, single(check_in=welcome)))
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn("check_in", response.data)
+            # Only that key: everything else as booking-api sent it, plus our salon.
+            self.assertEqual(response.data, {**SINGLE, "salon": None})
+
+    @override_settings(SELF_CHECK_IN_V1=False)
+    def test_off_here_with_the_key_already_absent_is_no_error(self):
+        # Off at booking-api too: it never sent the key.
+        response = self.read((200, single()))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {**SINGLE, "salon": None})
+
+    @override_settings(SELF_CHECK_IN_V1=True)
+    def test_on_here_it_passes_as_it_came_and_is_never_looked_inside(self):
+        for welcome in (STAFF_WELCOME, None, {"whatever": ["booking-api", "sends"]}):
+            response = self.read((200, single(check_in=welcome)))
+            self.assertIn("check_in", response.data)
+            self.assertEqual(response.data["check_in"], welcome)
+
+    @override_settings(SELF_CHECK_IN_V1=True)
+    def test_on_here_but_off_at_booking_api_no_key_is_invented(self):
+        response = self.read((200, single()))
+        self.assertNotIn("check_in", response.data)
+
+    @override_settings(SELF_CHECK_IN_V1=False, GROUP_BOOKING_V2=False, ROUTINE_CONTRACT_V1=False)
+    def test_a_404_passes_as_booking_api_said(self):
+        response = self.read((404, NOT_FOUND))
+        self.assertEqual((response.status_code, response.data), (404, NOT_FOUND))
+
+    @override_settings(SELF_CHECK_IN_V1=False, GROUP_BOOKING_V2=False, ROUTINE_CONTRACT_V1=True)
+    def test_the_routine_fallback_is_its_own_answer_untouched(self):
+        routine = Response({"id": BOOKING_ID, "booking_type": "ROUTINE", "sessions": []})
+        response = self.read((404, NOT_FOUND), **{
+            "apps.salons.routine_views.read_as_routine": mock.Mock(return_value=routine),
+        })
+        self.assertEqual(response.data, {"id": BOOKING_ID, "booking_type": "ROUTINE", "sessions": []})
+
+    @override_settings(SELF_CHECK_IN_V1=False, GROUP_BOOKING_V2=True, ROUTINE_CONTRACT_V1=False)
+    def test_the_party_fallback_is_its_own_answer_untouched(self):
+        party = Response({"id": BOOKING_ID, "booking_type": "GROUP", "participants": []})
+        response = self.read((404, NOT_FOUND), **{
+            "apps.salons.group_views.read_group_response": mock.Mock(return_value=party),
+        })
+        self.assertEqual(response.data, {"id": BOOKING_ID, "booking_type": "GROUP", "participants": []})
+
+
+@override_settings(BOOKING_API_URL="http://booking-api.test")
+class BookingReadWelcomeWireTests(TestCase):
+    """The booking read with only urlopen faked: what reaches the app."""
+
+    def setUp(self):
+        self.client = APIClient()
+        account = ConsumerAccount.objects.create(phone="+971500000072")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens_for(account)['access']}")
+
+    def get(self, payload):
+        def urlopen(request, timeout):
+            opened = mock.MagicMock()
+            opened.__enter__.return_value.status = 200
+            opened.__enter__.return_value.read.return_value = json.dumps(payload).encode()
+            return opened
+
+        with mock.patch("urllib.request.urlopen", urlopen), \
+                mock.patch("apps.salons.views.salon_cards_for_refs", return_value={}):
+            return self.client.get(BOOKING_PATH)
+
+    def test_off_here_the_app_gets_no_check_in_key(self):
+        with override_settings(SELF_CHECK_IN_V1=False):
+            body = self.get(single(check_in=STAFF_WELCOME)).json()
+        self.assertNotIn("check_in", body)
+        self.assertEqual(body["status"], "CHECKED_IN")
+
+    def test_on_here_the_app_gets_it_byte_for_byte(self):
+        with override_settings(SELF_CHECK_IN_V1=True):
+            for welcome in (STAFF_WELCOME, None):
+                body = self.get(single(check_in=welcome)).json()
+                self.assertIn("check_in", body)
+                self.assertEqual(body["check_in"], welcome)
