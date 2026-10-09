@@ -211,9 +211,9 @@ class RaiseTests(Seams, SimpleTestCase):
         fakes["raise_check_in"].assert_not_called()
 
 
-@override_settings(SELF_CHECK_IN_V1=True)
+@override_settings(SELF_CHECK_IN_V1=True, CHAIR_SCAN_V1=True)
 class ChairTests(Seams, SimpleTestCase):
-    """At a chair: the scanned token and the app's User-Agent go on; nothing else changes."""
+    """At a chair, scanning on: the scanned token and the app's User-Agent go on; nothing else changes."""
 
     def test_a_scanned_chair_goes_on_with_the_apps_user_agent(self):
         response, fakes = self.call("post", raised=(201, AT_CHAIR),
@@ -276,6 +276,78 @@ class ChairTests(Seams, SimpleTestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.data["errors"][0]["code"], "booking_api_unavailable")
         self.assertNotIn("WAIT_FOR_STAFF", json.dumps(response.data))
+
+
+# Written out, not imported: this is the contract the app reads.
+SCAN_OFF = {
+    "statusCode": 409,
+    "code": "BOOKING_CHAIR_SCAN_OFF",
+    "message": "Scanning the chair is not available right now. Please use Wait for "
+               "Staff and the desk will check you in.",
+    "details": {"fallback": "WAIT_FOR_STAFF"},
+    "error": "Conflict",
+}
+
+
+@override_settings(SELF_CHECK_IN_V1=True)
+class ChairScanOffTests(Seams, SimpleTestCase):
+    """
+    CHAIR_SCAN_V1 off: a scan is refused HERE, 409 BOOKING_CHAIR_SCAN_OFF in
+    booking-api's shape, and booking-api is not called, so nothing is raised
+    without the chair. A backstop: every can_scan_chair is false while it is
+    off. Wait for Staff is untouched.
+    """
+
+    def test_off_by_default_a_scan_is_refused_and_booking_api_is_not_called(self):
+        response, fakes = self.call("post", body={"chair_token": CHAIR_TOKEN},
+                                    HTTP_USER_AGENT=APP_UA)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data, SCAN_OFF)
+        fakes["raise_check_in"].assert_not_called()
+
+    @override_settings(CHAIR_SCAN_V1=False)
+    def test_off_when_set_off(self):
+        response, fakes = self.call("post", body={"chair_token": CHAIR_TOKEN})
+        self.assertEqual((response.status_code, response.data), (409, SCAN_OFF))
+        fakes["raise_check_in"].assert_not_called()
+
+    @override_settings(CHAIR_SCAN_V1=False)
+    def test_any_chair_token_even_a_broken_one_is_the_409_not_the_422(self):
+        # "Scan again" would send the customer back to a scanner that is off.
+        for token in ("", "   ", "\n", 42, True, ["x"], {"t": "x"}, f" {CHAIR_TOKEN}\n"):
+            response, fakes = self.call("post", body={"chair_token": token})
+            self.assertEqual((response.status_code, response.data), (409, SCAN_OFF), repr(token))
+            fakes["raise_check_in"].assert_not_called()
+
+    @override_settings(CHAIR_SCAN_V1=False)
+    def test_wait_for_staff_goes_on_as_ever(self):
+        for body in (None, {}, {"chair_token": None}, {"tenant": "x"}, ["not", "an", "object"]):
+            response, fakes = self.call("post", body=body, HTTP_USER_AGENT=APP_UA)
+            self.assertEqual((response.status_code, response.data), (201, WAITING), repr(body))
+            fakes["raise_check_in"].assert_called_once_with(
+                uuid.UUID(BOOKING_ID), authorization=TOKEN)
+
+    def test_the_switch_is_the_only_difference(self):
+        for chairs, status, called in ((False, 409, False), (True, 201, True)):
+            with override_settings(CHAIR_SCAN_V1=chairs), self.subTest(chairs=chairs):
+                response, fakes = self.call("post", raised=(201, AT_CHAIR),
+                                            body={"chair_token": CHAIR_TOKEN})
+                self.assertEqual(response.status_code, status)
+                self.assertIs(fakes["raise_check_in"].called, called)
+
+    def test_self_check_in_off_is_still_the_404_whatever_chairs_say(self):
+        for chairs in (True, False):
+            with override_settings(SELF_CHECK_IN_V1=False, CHAIR_SCAN_V1=chairs), \
+                    self.subTest(chairs=chairs):
+                response, fakes = self.call("post", body={"chair_token": CHAIR_TOKEN})
+                self.assertEqual(response.status_code, 404)
+                fakes["raise_check_in"].assert_not_called()
+
+    @override_settings(CHAIR_SCAN_V1=False)
+    def test_signed_out_is_still_the_401_first(self):
+        response, fakes = self.call("post", body={"chair_token": CHAIR_TOKEN}, user=False)
+        self.assertEqual(response.status_code, 401)
+        fakes["raise_check_in"].assert_not_called()
 
 
 @override_settings(SELF_CHECK_IN_V1=True)
@@ -380,7 +452,7 @@ class ClientTests(SimpleTestCase):
         )
 
 
-@override_settings(SELF_CHECK_IN_V1=True, BOOKING_API_URL="http://booking-api.test")
+@override_settings(SELF_CHECK_IN_V1=True, CHAIR_SCAN_V1=True, BOOKING_API_URL="http://booking-api.test")
 class WireTests(TestCase):
     """
     The whole stack but the network: a real customer token, the URL, the
@@ -440,6 +512,22 @@ class WireTests(TestCase):
         response, _ = self.post((201, AT_CHAIR), {"chair_token": CHAIR_TOKEN})
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json(), AT_CHAIR)
+
+    @override_settings(CHAIR_SCAN_V1=False)
+    def test_scanning_off_the_409_reaches_the_app_and_nothing_leaves(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            response = self.client.post(PATH, {"chair_token": CHAIR_TOKEN}, format="json",
+                                        HTTP_USER_AGENT=APP_UA)
+        urlopen.assert_not_called()
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response["Content-Type"], "application/json")
+        self.assertEqual(response.json(), SCAN_OFF)
+
+    @override_settings(CHAIR_SCAN_V1=False)
+    def test_scanning_off_wait_for_staff_still_leaves_as_before(self):
+        response, sent = self.post((201, WAITING), HTTP_USER_AGENT=APP_UA)
+        self.assertEqual((response.status_code, response.json()), (201, WAITING))
+        self.assertIsNone(sent.data)
 
     def test_wait_for_staff_sends_no_body_and_only_the_token(self):
         response, sent = self.post((201, WAITING), HTTP_USER_AGENT=APP_UA,

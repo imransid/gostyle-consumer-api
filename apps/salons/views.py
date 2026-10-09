@@ -2112,7 +2112,16 @@ _PAYMENT_REQUEST = {
             "desk on its own, e.g. the pass scanned) or null (before this was "
             "recorded); `by_name` (\"Layla R.\") is best effort and may be "
             "null. A routine session's id carries it; the routine's own read "
-            "does not."
+            "does not.\n\n"
+            "THE BUTTON, behind SELF_CHECK_IN_V1: `can_check_in`, the My "
+            "Bookings row's own rule, worked out by the same function, so the "
+            "list and this screen never disagree. `check_in_opens_at`, the "
+            "row's own too: when \"I am here\" opens, in UTC, or null when "
+            "self check-in does not apply to the booking. `can_scan_chair`, "
+            "the row's own too: whether to offer Scan the chair, "
+            "`can_check_in` with chair scanning (CHAIR_SCAN_V1) on, `false` "
+            "while it is off. No key for any of the three while the switch "
+            "is off. Not on a party's or a routine's read."
         ),
         responses={
             200: OpenApiResponse(
@@ -2314,6 +2323,15 @@ class BookingDetailView(APIView):
             # and routine reads carry none), and never looked inside.
             if not settings.SELF_CHECK_IN_V1:
                 body.pop("check_in", None)
+
+            # THE BUTTON, as on the booking's My Bookings row: the same
+            # _check_in_fields, so the list and this screen cannot disagree.
+            # Off, no key. Only on this single booking's 200: the party and
+            # routine reads above answer for themselves. The rule needs
+            # booking_type, which booking-api's read carries from its
+            # single-read-booking-type change on; before that deploy the
+            # read has none and the rule says false, so this ships after it.
+            body.update(_check_in_fields(body, datetime.now(dt_timezone.utc)))
 
         return Response(body, status=upstream_status)
 
@@ -2546,16 +2564,73 @@ def _can_check_in(row, now):
     """
     if not settings.SELF_CHECK_IN_V1:
         return False
-    if row.get("booking_type") not in CHECK_IN_BOOKING_TYPES:
-        return False
-    if row.get("status") != "CONFIRMED_BY_SALON":
-        return False
-    start = _parse_iso(row.get("start_time"))
+    opens = _check_in_opens_at(row)
     end = _parse_iso(row.get("end_time"))
-    if start is None or end is None:
+    if opens is None or end is None:
         # Nothing to measure against: "yes" would be a button that fails.
         return False
-    return start - timedelta(minutes=CHECK_IN_OPENS_MINUTES) <= now < end
+    return opens <= now < end
+
+
+def _check_in_opens_at(row):
+    """
+    When "I am here" opens for this booking: CHECK_IN_OPENS_MINUTES before its
+    start. THE ONE PLACE this rule lives: _can_check_in asks it too, so the
+    time the app shows and the window the button follows cannot drift apart.
+
+    None when self check-in does not apply to the booking at all: not a
+    SINGLE or ROUTINE booking (a party), not CONFIRMED_BY_SALON, or no start
+    time (with its offset) to count back from.
+
+    A FACT, NOT A JUDGEMENT. A window that has closed still opened at this
+    time; whether the button shows now is _can_check_in's question.
+    """
+    if row.get("booking_type") not in CHECK_IN_BOOKING_TYPES:
+        return None
+    if row.get("status") != "CONFIRMED_BY_SALON":
+        return None
+    start = _parse_iso(row.get("start_time"))
+    if start is None:
+        return None
+    return start - timedelta(minutes=CHECK_IN_OPENS_MINUTES)
+
+
+def _utc_iso(moment):
+    """
+    An instant in UTC, written as booking-api writes every check-in time
+    (JavaScript's toISOString: milliseconds and a Z), so the app reads one
+    format: "2026-10-11T03:50:00.000Z".
+    """
+    utc = moment.astimezone(dt_timezone.utc)
+    return f"{utc:%Y-%m-%dT%H:%M:%S}.{utc.microsecond // 1000:03d}Z"
+
+
+def _check_in_fields(row, now):
+    """
+    The self check-in fields one booking carries, THE SAME on a My Bookings
+    row and on its own read (GET /booking/<id>): one function, so a booking
+    can never say one thing on the list and another on its own screen.
+
+      can_check_in        the judgement: may "I am here" be offered now
+                          (Wait for Staff, at a chair, is this button too)
+      check_in_opens_at   the fact: when it opens (UTC), or null when self
+                          check-in does not apply to this booking
+      can_scan_chair      may Scan the chair be offered now: can_check_in,
+                          and chair scanning on (CHAIR_SCAN_V1). Never true
+                          where can_check_in is false
+
+    While SELF_CHECK_IN_V1 is off, nothing: no key at all. (The list row's
+    own can_check_in predates that rule and stays false there; see the list.)
+    """
+    if not settings.SELF_CHECK_IN_V1:
+        return {}
+    opens = _check_in_opens_at(row)
+    can_check_in = _can_check_in(row, now)
+    return {
+        "can_check_in": can_check_in,
+        "check_in_opens_at": None if opens is None else _utc_iso(opens),
+        "can_scan_chair": can_check_in and bool(settings.CHAIR_SCAN_V1),
+    }
 
 
 @extend_schema(
@@ -2583,7 +2658,13 @@ def _can_check_in(row, now):
         "`true` while SELF_CHECK_IN_V1 is on, for a SINGLE or ROUTINE row "
         "that is CONFIRMED_BY_SALON, from 30 minutes before `start_time` "
         "until `end_time`; `false` on every other row, and everywhere while "
-        "the switch is off. A salon that cannot be "
+        "the switch is off. While it is on, `check_in_opens_at` too: when "
+        "\"I am here\" opens, in UTC (`2026-10-11T03:50:00.000Z`), or null "
+        "for a party, a booking not CONFIRMED_BY_SALON, or no start time. A "
+        "fact, not the button: a closed window keeps its time. And "
+        "`can_scan_chair` (Scan the chair): `can_check_in` with chair "
+        "scanning (CHAIR_SCAN_V1) on, `false` while it is off; no key while "
+        "SELF_CHECK_IN_V1 is off. A salon that cannot be "
         "resolved gets `\"salon\": null` rather than an object with holes in "
         "it.\n\n"
         "`counts` carries all three tab badges, so the app does not make "
@@ -2830,8 +2911,12 @@ class BookingListView(APIView):
                 and _can_still_move(row, card, now)
             )
             # "I am here", behind SELF_CHECK_IN_V1: the check-in window, not
-            # the salon's cancellation window.
+            # the salon's cancellation window. The row's can_check_in is there
+            # with the switch off too, as false: it shipped that way and the
+            # app hides the button on it (MOBILE_SELF_CHECK_IN_FE.md §10).
+            # Everything else comes from _check_in_fields, as on the read.
             row["can_check_in"] = _can_check_in(row, now)
+            row.update(_check_in_fields(row, now))
 
         count = body.get("count") or 0
         return {

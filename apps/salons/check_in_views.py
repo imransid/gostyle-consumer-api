@@ -38,6 +38,12 @@ module never looks at the chair. A blank or non-string `chair_token` is a
 broken scan, not a chair to look up: refused here (the project's field-level
 422), so platform never records a scan of a token that could not resolve.
 
+SCANNING OFF (CHAIR_SCAN_V1). While it is off, every booking's
+`can_scan_chair` is false, so the app draws no Scan the chair button; a
+`chair_token` that arrives anyway is refused here with 409
+BOOKING_CHAIR_SCAN_OFF (`details.fallback: WAIT_FOR_STAFF`), and booking-api
+is not called. A backstop, see SelfCheckInView.post.
+
 NO CHAIR is Wait for Staff: no `chair_token`, and the call to booking-api is
 byte for byte the one it was before chairs (no body). The rest of the app's
 body is never forwarded, and neither is X-Tenant-Id: booking-api takes the
@@ -122,6 +128,18 @@ _READ_ANSWER = {
     "type": "object",
     "properties": {"request": {**_REQUEST, "nullable": True}, "checkIn": _CHECK_IN},
 }
+# A scan while chair scanning is off (CHAIR_SCAN_V1), in booking-api's shape,
+# so the app reads every refusal of this route one way and keys Wait for
+# Staff on `details.fallback` alone (MOBILE_SELF_CHECK_IN_FE.md §12.3).
+CHAIR_SCAN_OFF = {
+    "statusCode": 409,
+    "code": "BOOKING_CHAIR_SCAN_OFF",
+    "message": "Scanning the chair is not available right now. Please use Wait for "
+               "Staff and the desk will check you in.",
+    "details": {"fallback": "WAIT_FOR_STAFF"},
+    "error": "Conflict",
+}
+
 _RAISE = {
     "type": "object",
     "properties": {
@@ -137,6 +155,12 @@ _RAISE = {
 }
 
 
+def _sent_chair_token(request):
+    """`chair_token` as the app sent it, unchecked. None (absent or null): no chair."""
+    data = request.data
+    return data.get("chair_token") if isinstance(data, Mapping) else None
+
+
 def _chair_token(request):
     """
     The scanned token, or None for no chair (Wait for Staff). Absent and
@@ -144,8 +168,7 @@ def _chair_token(request):
     it, and goes on exactly as scanned, never trimmed: the token is
     platform's, and a changed one is a different card.
     """
-    data = request.data
-    token = data.get("chair_token") if isinstance(data, Mapping) else None
+    token = _sent_chair_token(request)
     if token is None:
         return None
     if not isinstance(token, str):
@@ -175,8 +198,15 @@ class SelfCheckInView(APIView):
             "the request already waiting.\n\n"
             "AT A CHAIR: send `chair_token`, the chair card's text exactly as "
             "scanned, and the request carries the chair (`request.chair`). "
+            "Only while the booking's `can_scan_chair` is true. "
             "WAIT FOR STAFF: no body (or no `chair_token`); the request "
             "carries no chair.\n\n"
+            "SCANNING OFF (CHAIR_SCAN_V1): any `chair_token`, an empty one "
+            "too, is `BOOKING_CHAIR_SCAN_OFF` (409, booking-api's shape, "
+            "`details.fallback: WAIT_FOR_STAFF`), answered here: booking-api "
+            "is not called and nothing is raised. The app should not have "
+            "sent it, since `can_scan_chair` was false: show `message` and "
+            "Wait for Staff.\n\n"
             "booking-api's answer comes back as it came: 201 or 200 with "
             "`{request}`, or its refusal with a `code`: "
             "`BOOKING_CHECKIN_WINDOW` (409, too early: `details.windowOpensAt`; "
@@ -203,13 +233,19 @@ class SelfCheckInView(APIView):
             422: OpenApiResponse(
                 response=_OUR_ENVELOPE,
                 description=(
-                    "`chair_token` blank (`blank`) or not text (`invalid`): a broken scan. "
+                    "`chair_token` blank (`blank`) or not text (`invalid`): a broken scan, "
+                    "while chair scanning is on (off: the 409 `BOOKING_CHAIR_SCAN_OFF`). "
                     "booking-api is not called."
                 ),
             ),
             404: OpenApiResponse(description="Not the caller's booking, a party's id, or the flag is off."),
             409: OpenApiResponse(
-                description="booking-api: too early, closed, not confirmed, rejected before, or not that chair.",
+                description=(
+                    "booking-api: too early, closed, not confirmed, rejected before, or not that "
+                    "chair. Or ours, in booking-api's shape: `BOOKING_CHAIR_SCAN_OFF`, a scan "
+                    "while chair scanning is off, with `details.fallback: WAIT_FOR_STAFF`; "
+                    "booking-api is not called."
+                ),
             ),
             503: OpenApiResponse(
                 response=_OUR_ENVELOPE,
@@ -224,6 +260,25 @@ class SelfCheckInView(APIView):
     def post(self, request, booking_id):
         if not settings.SELF_CHECK_IN_V1:
             raise Http404("Not found")
+        # SCANNING OFF: A BACKSTOP. While CHAIR_SCAN_V1 is off every booking's
+        # can_scan_chair is false, so the app should never have drawn Scan
+        # the chair, let alone sent this. It answers an app that ignores
+        # can_scan_chair, or a screen drawn before the switch went off.
+        #   * Refused, never raised without the chair: the customer scanned
+        #     to say "I am in this chair", and a plain request would queue
+        #     them as if they had chosen Wait for Staff.
+        #   * Any chair_token, an empty one too, and before _chair_token
+        #     checks it: the 422 is there so platform never records a scan
+        #     that cannot resolve, and with scanning off nothing is called;
+        #     its "scan again" would send the customer back to a scanner
+        #     that is off.
+        #   * 409, not 503: a switch turned off on purpose is not an outage
+        #     (5xx rates, alerts). Its own code, not BOOKING_CHAIR_REFUSED,
+        #     which is "not with that chair": no chair was looked at.
+        #     details.fallback is what the app offers Wait for Staff on.
+        # Wait for Staff (no chair_token, or null) goes on below as ever.
+        if not settings.CHAIR_SCAN_V1 and _sent_chair_token(request) is not None:
+            return Response(CHAIR_SCAN_OFF, status=409)
         # With no chair, the call is exactly the one before chairs: no
         # chair_token and no user_agent are passed at all.
         chair = {}

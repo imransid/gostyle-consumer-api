@@ -279,6 +279,14 @@ SINGLE_LOOKUP_TIMEOUT = env.int("SINGLE_LOOKUP_TIMEOUT", default=3)
 # own flag of the same name; both must be on. OFF here, both are the 404 this
 # path was before, and booking-api is not called.
 SELF_CHECK_IN_V1 = env.bool("SELF_CHECK_IN_V1", default=False)
+
+# Chair scanning, inside self check-in: Scan the chair is offered only while
+# this is on (`can_scan_chair`), and a POST with `chair_token` while it is off
+# is refused with 409 BOOKING_CHAIR_SCAN_OFF, never raised without the chair
+# (check_in_views.py). Wait for Staff does not depend on it. Turn it on only
+# once platform's chair cards and booking-api's chair check are live
+# (docs/MOBILE_SELF_CHECK_IN_FE.md §12.5). SELF_CHECK_IN_V1 off turns it off too.
+CHAIR_SCAN_V1 = env.bool("CHAIR_SCAN_V1", default=False)
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
