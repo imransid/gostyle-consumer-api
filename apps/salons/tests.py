@@ -2597,7 +2597,7 @@ class BookingReadCheckInTests(SimpleTestCase):
             self.assertEqual(self.read((200, self.soon())).data["can_check_in"], "the rule's answer")
             self.assertEqual(self.on_the_list(self.soon())["can_check_in"], "the rule's answer")
 
-    @override_settings(SELF_CHECK_IN_V1=True, GROUP_BOOKING_V2=True, ROUTINE_CONTRACT_V1=False)
+    @override_settings(SELF_CHECK_IN_V1=True, CHAIR_SCAN_V1=True, GROUP_BOOKING_V2=True, ROUTINE_CONTRACT_V1=False)
     def test_not_on_the_party_read(self):
         party = Response({"id": "grp-1", "booking_type": "GROUP", "participants": []})
         response = self.read((404, {"code": "not_found"}), **{
@@ -2605,7 +2605,7 @@ class BookingReadCheckInTests(SimpleTestCase):
         })
         self.assertEqual(response.data, {"id": "grp-1", "booking_type": "GROUP", "participants": []})
 
-    @override_settings(SELF_CHECK_IN_V1=True, GROUP_BOOKING_V2=False, ROUTINE_CONTRACT_V1=True)
+    @override_settings(SELF_CHECK_IN_V1=True, CHAIR_SCAN_V1=True, GROUP_BOOKING_V2=False, ROUTINE_CONTRACT_V1=True)
     def test_not_on_the_routine_read(self):
         routine = Response({"id": "rtn-1", "booking_type": "ROUTINE", "sessions": []})
         response = self.read((404, {"code": "not_found"}), **{
@@ -2613,7 +2613,7 @@ class BookingReadCheckInTests(SimpleTestCase):
         })
         self.assertEqual(response.data, {"id": "rtn-1", "booking_type": "ROUTINE", "sessions": []})
 
-    @override_settings(SELF_CHECK_IN_V1=True, GROUP_BOOKING_V2=False, ROUTINE_CONTRACT_V1=False)
+    @override_settings(SELF_CHECK_IN_V1=True, CHAIR_SCAN_V1=True, GROUP_BOOKING_V2=False, ROUTINE_CONTRACT_V1=False)
     def test_not_on_a_404(self):
         response = self.read((404, {"code": "not_found"}))
         self.assertEqual((response.status_code, response.data), (404, {"code": "not_found"}))
@@ -2678,6 +2678,63 @@ class BookingReadCheckInTests(SimpleTestCase):
             settings_ = {} if switch is None else {"SELF_CHECK_IN_V1": switch}
             with override_settings(**settings_), self.subTest(switch=switch):
                 self.assertEqual(self.opens_at(self.soon()), ("<no key>", "<no key>"))
+
+    # ------------------------------------------------------------ can_scan_chair
+    #
+    # Scan the chair: can_check_in, and chair scanning on (CHAIR_SCAN_V1).
+
+    def scan(self, row):
+        """The row's and the read's can_scan_chair, as a pair."""
+        return (self.on_the_list(row).get("can_scan_chair", "<no key>"),
+                self.read((200, dict(row))).data.get("can_scan_chair", "<no key>"))
+
+    def assertBoth(self, pair, expected):
+        self.assertEqual(pair, (expected, expected))
+        for value in pair:
+            self.assertIs(value, expected)
+
+    @override_settings(SELF_CHECK_IN_V1=True, CHAIR_SCAN_V1=True)
+    def test_chairs_on_it_is_can_check_in_on_the_row_and_the_read(self):
+        missing = self.soon()
+        del missing["booking_type"]
+        for name, row, expected in (
+            ("a single visit in the window", self.soon(), True),
+            ("a routine's visit in the window", self.soon(booking_type="ROUTINE"), True),
+            ("a party", self.soon(booking_type="GROUP"), False),
+            ("already checked in", self.soon(status="CHECKED_IN"), False),
+            ("two days out", self.row(), False),
+            ("no booking_type", missing, False),
+        ):
+            with self.subTest(name):
+                self.assertBoth(self.scan(row), expected)
+                self.assertIs(self.on_the_list(row)["can_check_in"], expected)
+
+    @override_settings(SELF_CHECK_IN_V1=True, CHAIR_SCAN_V1=False)
+    def test_chairs_off_false_on_both_while_i_am_here_still_shows(self):
+        self.assertIs(self.on_the_list(self.soon())["can_check_in"], True)
+        self.assertIs(self.read((200, self.soon())).data["can_check_in"], True)
+        self.assertBoth(self.scan(self.soon()), False)
+
+    @override_settings(SELF_CHECK_IN_V1=True)
+    def test_chairs_off_by_default(self):
+        self.assertBoth(self.scan(self.soon()), False)
+
+    @override_settings(SELF_CHECK_IN_V1=True, CHAIR_SCAN_V1=True)
+    def test_it_follows_can_check_in_and_has_no_rule_of_its_own(self):
+        # Swap the button's rule out: Scan the chair follows it on both.
+        with mock.patch("apps.salons.views._can_check_in", return_value=False):
+            self.assertBoth(self.scan(self.soon()), False)
+        with mock.patch("apps.salons.views._can_check_in", return_value=True):
+            self.assertBoth(self.scan(self.row()), True)
+
+    def test_self_check_in_off_no_key_on_either_whatever_chairs_say(self):
+        for chairs in (True, False):
+            for switch in (None, False):
+                settings_ = {"CHAIR_SCAN_V1": chairs}
+                if switch is not None:
+                    settings_["SELF_CHECK_IN_V1"] = switch
+                with override_settings(**settings_), self.subTest(chairs=chairs, switch=switch):
+                    self.assertEqual(self.scan(self.soon()), ("<no key>", "<no key>"))
 
 
 class BookingPatchMediaTypeTests(SimpleTestCase):

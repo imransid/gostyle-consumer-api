@@ -2117,8 +2117,11 @@ _PAYMENT_REQUEST = {
             "Bookings row's own rule, worked out by the same function, so the "
             "list and this screen never disagree. `check_in_opens_at`, the "
             "row's own too: when \"I am here\" opens, in UTC, or null when "
-            "self check-in does not apply to the booking. No key for either "
-            "while the switch is off. Not on a party's or a routine's read."
+            "self check-in does not apply to the booking. `can_scan_chair`, "
+            "the row's own too: whether to offer Scan the chair, "
+            "`can_check_in` with chair scanning (CHAIR_SCAN_V1) on, `false` "
+            "while it is off. No key for any of the three while the switch "
+            "is off. Not on a party's or a routine's read."
         ),
         responses={
             200: OpenApiResponse(
@@ -2609,8 +2612,12 @@ def _check_in_fields(row, now):
     can never say one thing on the list and another on its own screen.
 
       can_check_in        the judgement: may "I am here" be offered now
+                          (Wait for Staff, at a chair, is this button too)
       check_in_opens_at   the fact: when it opens (UTC), or null when self
                           check-in does not apply to this booking
+      can_scan_chair      may Scan the chair be offered now: can_check_in,
+                          and chair scanning on (CHAIR_SCAN_V1). Never true
+                          where can_check_in is false
 
     While SELF_CHECK_IN_V1 is off, nothing: no key at all. (The list row's
     own can_check_in predates that rule and stays false there; see the list.)
@@ -2618,9 +2625,11 @@ def _check_in_fields(row, now):
     if not settings.SELF_CHECK_IN_V1:
         return {}
     opens = _check_in_opens_at(row)
+    can_check_in = _can_check_in(row, now)
     return {
-        "can_check_in": _can_check_in(row, now),
+        "can_check_in": can_check_in,
         "check_in_opens_at": None if opens is None else _utc_iso(opens),
+        "can_scan_chair": can_check_in and bool(settings.CHAIR_SCAN_V1),
     }
 
 
@@ -2652,7 +2661,10 @@ def _check_in_fields(row, now):
         "the switch is off. While it is on, `check_in_opens_at` too: when "
         "\"I am here\" opens, in UTC (`2026-10-11T03:50:00.000Z`), or null "
         "for a party, a booking not CONFIRMED_BY_SALON, or no start time. A "
-        "fact, not the button: a closed window keeps its time. A salon that cannot be "
+        "fact, not the button: a closed window keeps its time. And "
+        "`can_scan_chair` (Scan the chair): `can_check_in` with chair "
+        "scanning (CHAIR_SCAN_V1) on, `false` while it is off; no key while "
+        "SELF_CHECK_IN_V1 is off. A salon that cannot be "
         "resolved gets `\"salon\": null` rather than an object with holes in "
         "it.\n\n"
         "`counts` carries all three tab badges, so the app does not make "

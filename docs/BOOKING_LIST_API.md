@@ -22,7 +22,7 @@ makes that a safe shape to expose.
 app ──GET /api/v1/bookings──▶ customer-api ──GET /v1/mobile-booking──▶ booking-api
                                     │
                                     └─ salon, can_cancel, can_reschedule, can_check_in,
-                                       check_in_opens_at
+                                       check_in_opens_at, can_scan_chair
                                        ← platform tables, read directly
 ```
 
@@ -40,6 +40,7 @@ not a bare proxy:
 | `can_cancel` / `can_reschedule` | Both answer the salon's cancellation policy, which the salon publishes into `storefront_policy` here. booking-api cannot see it, and a hardcoded `true` would be a promise nobody can keep. Which row types get each one is in §5. |
 | `can_check_in`                  | Whether "I am here" (`POST /booking/{id}/check-in`) may be offered, behind `SELF_CHECK_IN_V1`. Decided here from the row, so the app never works the rule out. See §5. |
 | `check_in_opens_at`             | When "I am here" opens for the booking, behind `SELF_CHECK_IN_V1`. Worked out by the same rule as `can_check_in`, so the time shown and the button cannot disagree. See §5. |
+| `can_scan_chair`                | Whether Scan the chair may be offered: `can_check_in`, with chair scanning (`CHAIR_SCAN_V1`) on. See §5. |
 
 See booking-api's own `docs/booking-list.md` §9, which records `salon`,
 `can_cancel` and `can_reschedule` as the parts it cannot answer.
@@ -100,9 +101,9 @@ reading — the rules that matter are there and are tested there:
 ### The Recurring rows
 
 Every row carries the short salon card (`id`, `name`, `logo_url`, `city`),
-like the other tabs, but no `can_cancel`, `can_reschedule`, `can_check_in` or
-`check_in_opens_at`: those are per visit, and a routine answers them per
-session.
+like the other tabs, but no `can_cancel`, `can_reschedule`, `can_check_in`,
+`check_in_opens_at` or `can_scan_chair`: those are per visit, and a routine
+answers them per session.
 
 - **`ROUTINE_CONTRACT_V1` off (today):** each row is the routine hub, the
   shape of the old `/booking/series` routes, with every time on the salon's
@@ -148,6 +149,7 @@ session.
       "can_reschedule": false,
       "can_check_in": false,
       "check_in_opens_at": "2026-09-20T15:30:00.000Z",
+      "can_scan_chair": false,
       "created_at": "2026-09-18T14:02:11+04:00"
     }
   ]
@@ -173,6 +175,7 @@ session.
 | `↳ can_reschedule`  | boolean        | See §5.                                                                           |
 | `↳ can_check_in`    | boolean        | See §5. Always `false` while `SELF_CHECK_IN_V1` is off.                           |
 | `↳ check_in_opens_at` | string \| null | See §5. UTC, `…000Z`. **No key** while `SELF_CHECK_IN_V1` is off.               |
+| `↳ can_scan_chair`  | boolean        | See §5. `false` while `CHAIR_SCAN_V1` is off. **No key** while `SELF_CHECK_IN_V1` is off. |
 
 Rows are summaries. Products, the tax breakdown, the promo code and the QR
 pass come from `GET /booking/<id>`.
@@ -300,6 +303,24 @@ row has **no key**: unlike `can_check_in`, it never shipped with the switch
 off, so there is no `false`-shaped contract to keep. How the app shows it and
 when it reads again: docs/MOBILE_SELF_CHECK_IN_FE.md §3.
 
+### `can_scan_chair`
+
+Scan the chair: the same `POST /booking/{id}/check-in`, with the scanned
+`chair_token` (docs/MOBILE_SELF_CHECK_IN_FE.md §12). It is `can_check_in`,
+with chair scanning on (the switch `CHAIR_SCAN_V1`, off by default), worked
+out in the same function, so it has no rule of its own to drift:
+
+| `SELF_CHECK_IN_V1` | `CHAIR_SCAN_V1` | `can_scan_chair` |
+| ------------------ | --------------- | ---------------- |
+| off                | either          | no key           |
+| on                 | off             | `false` on every row |
+| on                 | on              | `can_check_in`   |
+
+Wait for Staff (the same `POST` with no body) follows `can_check_in`, never
+this field: it works with chair scanning off. A scan sent while the switch
+is off is refused, `409 BOOKING_CHAIR_SCAN_OFF` with
+`details.fallback: "WAIT_FOR_STAFF"`, and nothing is raised (FE guide §12.5).
+
 ---
 
 ## 6. Errors
@@ -355,12 +376,13 @@ all read one shape. The shape is `BOOKING_CREATE_API.md` §8.
    once the booking is paid.
 4. **Money is echoed, never recomputed.** This reports what was agreed at
    creation.
-5. **`can_check_in` and `check_in_opens_at` are added here**, on a single
-   booking's `200`, by the same function as its My Bookings row (§5), so a
-   booking cannot say one thing on the list and another on its own screen.
-   While `SELF_CHECK_IN_V1` is off the read has **neither key** (a missing
-   `can_check_in` reads as `false`). Not on a party's or a routine's read,
-   which answer for themselves, and not on a `404`.
+5. **`can_check_in`, `check_in_opens_at` and `can_scan_chair` are added
+   here**, on a single booking's `200`, by the same function as its My
+   Bookings row (§5), so a booking cannot say one thing on the list and
+   another on its own screen. While `SELF_CHECK_IN_V1` is off the read has
+   **none of the three** (a missing `can_check_in` or `can_scan_chair` reads
+   as `false`). Not on a party's or a routine's read, which answer for
+   themselves, and not on a `404`.
 
 | Case                                 | Status | `code`      |
 | ------------------------------------ | ------ | ----------- |
