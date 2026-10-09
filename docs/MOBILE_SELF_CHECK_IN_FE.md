@@ -52,7 +52,9 @@ session row's id. **Not a `GROUP` row** (§9).
 
 ## 3. When to show "I am here"
 
-**Show it only when the My Bookings row's `can_check_in` is `true`.** The
+**Show it only when `can_check_in` is `true`**: on the My Bookings row, and on
+the booking's own screen from `GET /booking/{id}`, which carries the same
+field worked out by the same function, so the two can never disagree. The
 server works it out (docs/BOOKING_LIST_API.md §5), the same way it does
 `can_cancel` and `can_reschedule`. For reference only, never to compute in the
 app, it is `true` when:
@@ -62,9 +64,13 @@ app, it is `true` when:
 - `status` is `CONFIRMED_BY_SALON`;
 - now is between 30 minutes before `start_time` and `end_time`.
 
-The field is a snapshot from when the list was loaded. **Refresh My Bookings
-when the screen comes back to the foreground**, so a booking that was 40
-minutes away gets its button once the window opens.
+The field is a snapshot from when it was read. **Refresh My Bookings, or the
+booking, when the screen comes back to the foreground**, so a booking that was
+40 minutes away gets its button once the window opens.
+
+**While `SELF_CHECK_IN_V1` is off,** the row still says `can_check_in: false`
+(it always has), and `GET /booking/{id}` has no `can_check_in` key at all.
+Treat a missing key as `false`.
 
 **The row cannot know one thing:** whether the desk already said no for this
 booking. So on the booking screen, also `GET /booking/{id}/check-in` once (§6):
@@ -133,9 +139,10 @@ export interface BookingCheckIn {
   by_name: string | null;         // snake_case here: "Layla R.", best effort
 }
 
-// GET /booking/{id} gains, while SELF_CHECK_IN_V1 is on (§14.3):
+// GET /booking/{id} gains, while SELF_CHECK_IN_V1 is on (absent while off):
 export interface BookingWithCheckIn {
-  check_in?: BookingCheckIn | null;  // absent: off; null: nobody checked in; object: checked in
+  check_in?: BookingCheckIn | null;  // absent: off; null: nobody checked in; object: checked in (§14.3)
+  can_check_in?: boolean;            // the row's rule, the same function (§3)
 }
 
 // The My Bookings row (GET /bookings) gains one field (§3).
@@ -264,6 +271,12 @@ Chair scanning has its own order: §12.5.
 
 **Do not build against them until the server team says all three are done.** Before step 2, Cancel Request answers `404`.
 Until step 3, `GET /booking/{id}` carries no `check_in` key, whatever booking-api's switch says (§14.3).
+
+**`can_check_in` on `GET /booking/{id}` (§3) needs booking-api first:**
+booking-api's `feat/single-read-booking-type` (the single read always carries
+`booking_type`), then customer-api's `feat/check-in-fe-gaps`. The rule needs
+the booking's type: in the other order, the booking screen would say `false`
+where the list says `true`.
 
 ---
 

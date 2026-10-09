@@ -1,3 +1,4 @@
+import contextlib
 import json
 import math
 import types
@@ -11,6 +12,7 @@ from urllib.parse import parse_qsl, urlencode
 from django.http import QueryDict
 from django.test import SimpleTestCase, override_settings
 
+from rest_framework.response import Response
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from apps.salons import booking_api, skills, slots, timezones, translate
@@ -2525,6 +2527,96 @@ class BookingListViewTests(SimpleTestCase):
             response = BookingListView.as_view()(request)
         self.assertEqual(response.status_code, 401)
         client.assert_not_called()
+
+
+class BookingReadCheckInTests(SimpleTestCase):
+    """
+    GET /booking/<id> and its self check-in fields: the SAME function as the
+    My Bookings row (_check_in_fields), so a booking cannot say one thing on
+    the list and another on its own screen. The list's own harness and rows
+    are borrowed so both are asked about exactly the same booking.
+    """
+
+    NOW = BookingListViewTests.NOW
+    CARD = BookingListViewTests.CARD
+    row = BookingListViewTests.row
+    page = BookingListViewTests.page
+    soon = BookingListViewTests.soon
+    get = BookingListViewTests.get  # the list
+
+    def read(self, upstream, **patches):
+        """GET /booking/<id> with booking-api answering `upstream`, on NOW's clock."""
+        request = APIRequestFactory().get("/api/v1/booking/bkg-1")
+        force_authenticate(request, user=Customer())
+        fakes = {
+            "apps.salons.views.read_booking": mock.Mock(return_value=upstream),
+            "apps.salons.views.salon_cards_for_refs": mock.Mock(return_value={}),
+            **patches,
+        }
+        with contextlib.ExitStack() as stack:
+            for target, fake in fakes.items():
+                stack.enter_context(mock.patch(target, fake))
+            clock = stack.enter_context(mock.patch("apps.salons.views.datetime"))
+            clock.now.return_value = self.NOW
+            clock.fromisoformat = datetime.fromisoformat
+            return BookingDetailView.as_view()(request, booking_id=uuid.uuid4())
+
+    def on_the_list(self, row):
+        return self.get("filter=upcoming", upstream=(200, self.page([dict(row)]))).data["results"][0]
+
+    def test_switch_off_no_key_on_the_read_and_the_row_s_false_as_it_shipped(self):
+        for switch in (None, False):
+            settings_ = {} if switch is None else {"SELF_CHECK_IN_V1": switch}
+            with override_settings(**settings_), self.subTest(switch=switch):
+                self.assertNotIn("can_check_in", self.read((200, self.soon())).data)
+                self.assertIs(self.on_the_list(self.soon())["can_check_in"], False)
+
+    @override_settings(SELF_CHECK_IN_V1=True)
+    def test_the_list_and_the_read_say_the_same_for_the_same_booking(self):
+        missing = self.soon()
+        del missing["booking_type"]
+        cases = (
+            ("a single visit in the window", self.soon(), True),
+            ("a routine's visit in the window", self.soon(booking_type="ROUTINE"), True),
+            ("already checked in", self.soon(status="CHECKED_IN"), False),
+            ("two days out", self.row(), False),
+            ("no start time", self.soon(start_time=None), False),
+            # booking-api before its single read carried booking_type.
+            ("no booking_type", missing, False),
+        )
+        for name, row, expected in cases:
+            with self.subTest(name):
+                on_read = self.read((200, dict(row))).data["can_check_in"]
+                self.assertIs(on_read, expected)
+                self.assertIs(on_read, self.on_the_list(row)["can_check_in"])
+
+    @override_settings(SELF_CHECK_IN_V1=True)
+    def test_one_function_answers_both(self):
+        # Swap the rule out: both surfaces answer whatever it says.
+        with mock.patch("apps.salons.views._can_check_in", return_value="the rule's answer"):
+            self.assertEqual(self.read((200, self.soon())).data["can_check_in"], "the rule's answer")
+            self.assertEqual(self.on_the_list(self.soon())["can_check_in"], "the rule's answer")
+
+    @override_settings(SELF_CHECK_IN_V1=True, GROUP_BOOKING_V2=True, ROUTINE_CONTRACT_V1=False)
+    def test_not_on_the_party_read(self):
+        party = Response({"id": "grp-1", "booking_type": "GROUP", "participants": []})
+        response = self.read((404, {"code": "not_found"}), **{
+            "apps.salons.group_views.read_group_response": mock.Mock(return_value=party),
+        })
+        self.assertEqual(response.data, {"id": "grp-1", "booking_type": "GROUP", "participants": []})
+
+    @override_settings(SELF_CHECK_IN_V1=True, GROUP_BOOKING_V2=False, ROUTINE_CONTRACT_V1=True)
+    def test_not_on_the_routine_read(self):
+        routine = Response({"id": "rtn-1", "booking_type": "ROUTINE", "sessions": []})
+        response = self.read((404, {"code": "not_found"}), **{
+            "apps.salons.routine_views.read_as_routine": mock.Mock(return_value=routine),
+        })
+        self.assertEqual(response.data, {"id": "rtn-1", "booking_type": "ROUTINE", "sessions": []})
+
+    @override_settings(SELF_CHECK_IN_V1=True, GROUP_BOOKING_V2=False, ROUTINE_CONTRACT_V1=False)
+    def test_not_on_a_404(self):
+        response = self.read((404, {"code": "not_found"}))
+        self.assertEqual((response.status_code, response.data), (404, {"code": "not_found"}))
 
 
 class BookingPatchMediaTypeTests(SimpleTestCase):

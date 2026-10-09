@@ -2112,7 +2112,11 @@ _PAYMENT_REQUEST = {
             "desk on its own, e.g. the pass scanned) or null (before this was "
             "recorded); `by_name` (\"Layla R.\") is best effort and may be "
             "null. A routine session's id carries it; the routine's own read "
-            "does not."
+            "does not.\n\n"
+            "THE BUTTON, behind SELF_CHECK_IN_V1: `can_check_in`, the My "
+            "Bookings row's own rule, worked out by the same function, so the "
+            "list and this screen never disagree. No key while the switch is "
+            "off. Not on a party's or a routine's read."
         ),
         responses={
             200: OpenApiResponse(
@@ -2314,6 +2318,15 @@ class BookingDetailView(APIView):
             # and routine reads carry none), and never looked inside.
             if not settings.SELF_CHECK_IN_V1:
                 body.pop("check_in", None)
+
+            # THE BUTTON, as on the booking's My Bookings row: the same
+            # _check_in_fields, so the list and this screen cannot disagree.
+            # Off, no key. Only on this single booking's 200: the party and
+            # routine reads above answer for themselves. The rule needs
+            # booking_type, which booking-api's read carries from its
+            # single-read-booking-type change on; before that deploy the
+            # read has none and the rule says false, so this ships after it.
+            body.update(_check_in_fields(body, datetime.now(dt_timezone.utc)))
 
         return Response(body, status=upstream_status)
 
@@ -2556,6 +2569,20 @@ def _can_check_in(row, now):
         # Nothing to measure against: "yes" would be a button that fails.
         return False
     return start - timedelta(minutes=CHECK_IN_OPENS_MINUTES) <= now < end
+
+
+def _check_in_fields(row, now):
+    """
+    The self check-in fields one booking carries, THE SAME on a My Bookings
+    row and on its own read (GET /booking/<id>): one function, so a booking
+    can never say one thing on the list and another on its own screen.
+
+    While SELF_CHECK_IN_V1 is off, nothing: no key at all. (The list row's
+    own can_check_in predates that rule and stays false there; see the list.)
+    """
+    if not settings.SELF_CHECK_IN_V1:
+        return {}
+    return {"can_check_in": _can_check_in(row, now)}
 
 
 @extend_schema(
@@ -2830,8 +2857,12 @@ class BookingListView(APIView):
                 and _can_still_move(row, card, now)
             )
             # "I am here", behind SELF_CHECK_IN_V1: the check-in window, not
-            # the salon's cancellation window.
+            # the salon's cancellation window. The row's can_check_in is there
+            # with the switch off too, as false: it shipped that way and the
+            # app hides the button on it (MOBILE_SELF_CHECK_IN_FE.md §10).
+            # Everything else comes from _check_in_fields, as on the read.
             row["can_check_in"] = _can_check_in(row, now)
+            row.update(_check_in_fields(row, now))
 
         count = body.get("count") or 0
         return {
