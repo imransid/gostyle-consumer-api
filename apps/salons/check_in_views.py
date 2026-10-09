@@ -20,13 +20,35 @@ NO LOOKUP FIRST. Unlike the cancel, nothing here depends on the booking's
 type: booking-api answers for the booking itself, so asking the Upcoming
 shelf first would be a round trip that decides nothing.
 
-NO BODY AND NO X-Tenant-Id are forwarded. booking-api's route takes no body,
-and it takes the tenant from the booking, so a header the app sends can
-never be the tenant a request is filed under.
+AT A CHAIR (gostyle-booking-api, docs/chair-check-in.md). The app scans the
+QR card on the chair and sends `chair_token`, exactly as scanned. It goes on
+to booking-api as `chairToken`, with the app's own User-Agent as
+`userAgent`. booking-api asks platform which chair it is and decides; this
+module never looks at the chair. A blank or non-string `chair_token` is a
+broken scan, not a chair to look up: refused here (the project's field-level
+422), so platform never records a scan of a token that could not resolve.
+
+NO CHAIR is Wait for Staff: no `chair_token`, and the call to booking-api is
+byte for byte the one it was before chairs (no body). The rest of the app's
+body is never forwarded, and neither is X-Tenant-Id: booking-api takes the
+tenant from the booking, so a header the app sends can never be the tenant
+a request is filed under.
+
+TWO 503s, AND THEY MEAN DIFFERENT THINGS. booking-api's own
+(`DEPENDENCY_UNAVAILABLE`, `details.fallback: WAIT_FOR_STAFF`) means the
+chair could not be checked: scanning is off, the desk still works. It comes
+back unchanged. Ours (`booking_api_unavailable`) means booking-api itself
+could not be reached, and Wait for Staff would fail the same way. Never
+turn one into the other. booking-api also says `DEPENDENCY_UNAVAILABLE`
+with NO fallback when it cannot check the customer's own token, and Wait
+for Staff fails there too: `details.fallback` is the switch, not the code.
 """
+from collections.abc import Mapping
+
 from django.conf import settings
 from django.http import Http404
 from drf_spectacular.utils import OpenApiResponse, extend_schema
+from rest_framework.exceptions import ErrorDetail, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -42,9 +64,53 @@ _REQUEST = {
         "state": {"type": "string", "enum": ["WAITING", "APPROVED", "REJECTED", "EXPIRED", "CLOSED"]},
         "raisedAt": {"type": "string"},
         "decidedAt": {"type": "string", "nullable": True},
+        "chair": {
+            "type": "object",
+            "nullable": True,
+            "description": "The chair scanned with this request, as it was then. Null: no chair.",
+            "properties": {
+                "number": {"type": "string"},
+                "zoneName": {"type": "string", "nullable": True},
+            },
+        },
     },
 }
 _ANSWER = {"type": "object", "properties": {"request": {**_REQUEST, "nullable": True}}}
+_RAISE = {
+    "type": "object",
+    "properties": {
+        "chair_token": {
+            "type": "string",
+            "description": (
+                "AT A CHAIR: the text of the chair's QR card, exactly as "
+                "scanned. Leave it out for Wait for Staff."
+            ),
+            "example": "q7Xk2mP9rT4vW8yZ1aB3cD",
+        },
+    },
+}
+
+
+def _chair_token(request):
+    """
+    The scanned token, or None for no chair (Wait for Staff). Absent and
+    null are both no chair. Anything else must be a string with something in
+    it, and goes on exactly as scanned, never trimmed: the token is
+    platform's, and a changed one is a different card.
+    """
+    data = request.data
+    token = data.get("chair_token") if isinstance(data, Mapping) else None
+    if token is None:
+        return None
+    if not isinstance(token, str):
+        raise ValidationError({"chair_token": [
+            ErrorDetail("The chair scan must be text.", code="invalid"),
+        ]})
+    if not token.strip():
+        raise ValidationError({"chair_token": [
+            ErrorDetail("The chair scan was empty. Please scan the card again.", code="blank"),
+        ]})
+    return token
 
 
 class SelfCheckInView(APIView):
@@ -56,34 +122,74 @@ class SelfCheckInView(APIView):
         summary="I am here: ask the desk to check me in",
         description=(
             "Behind SELF_CHECK_IN_V1 (off: 404, booking-api is not called). "
-            "No body. Raises a check-in request on the caller's own booking; "
-            "the desk approves or rejects it. Opens 30 minutes before the "
-            "start and closes at the end time. While it waits, the booking is "
-            "never marked a no-show automatically. A second tap answers 200 "
-            "with the request already waiting.\n\n"
+            "Raises a check-in request on the caller's own booking; the desk "
+            "approves or rejects it. Opens 30 minutes before the start and "
+            "closes at the end time. While it waits, the booking is never "
+            "marked a no-show automatically. A second tap answers 200 with "
+            "the request already waiting.\n\n"
+            "AT A CHAIR: send `chair_token`, the chair card's text exactly as "
+            "scanned, and the request carries the chair (`request.chair`). "
+            "WAIT FOR STAFF: no body (or no `chair_token`); the request "
+            "carries no chair.\n\n"
             "booking-api's answer comes back as it came: 201 or 200 with "
             "`{request}`, or its refusal with a `code`: "
             "`BOOKING_CHECKIN_WINDOW` (409, too early: `details.windowOpensAt`; "
             "or closed: `details.windowClosed`), `BOOKING_STATE_INVALID` (409, "
             "the booking is not confirmed: `details.status`), "
             "`BOOKING_CHECKIN_REJECTED` (409, the desk said no: send the "
-            "customer to the desk), `BOOKING_NOT_FOUND` (404)."
+            "customer to the desk), `BOOKING_CHAIR_REFUSED` (409, not with "
+            "that chair: show `message`; `details.reason` is CARD_OUT_OF_DATE, "
+            "OTHER_SALON, CHAIR_NOT_AVAILABLE or UNKNOWN_CARD), "
+            "`BOOKING_NOT_FOUND` (404).\n\n"
+            "TWO 503s. `DEPENDENCY_UNAVAILABLE` with `details.fallback: "
+            "WAIT_FOR_STAFF` is booking-api's: the chair could not be checked, "
+            "the desk still works, so offer Wait for Staff. "
+            "`booking_api_unavailable` is ours: booking-api itself is down, "
+            "and Wait for Staff will fail too. Offer Wait for Staff only on "
+            "`details.fallback` = WAIT_FOR_STAFF, never on the status or the "
+            "code alone: booking-api's other `DEPENDENCY_UNAVAILABLE` (no "
+            "fallback) means it could not check the customer's token."
         ),
-        request=None,
+        request={"application/json": _RAISE},
         responses={
             201: OpenApiResponse(response=_ANSWER, description="Raised: WAITING."),
             200: OpenApiResponse(response=_ANSWER, description="One was already waiting: the same request."),
+            422: OpenApiResponse(
+                response=_OUR_ENVELOPE,
+                description=(
+                    "`chair_token` blank (`blank`) or not text (`invalid`): a broken scan. "
+                    "booking-api is not called."
+                ),
+            ),
             404: OpenApiResponse(description="Not the caller's booking, a party's id, or the flag is off."),
-            409: OpenApiResponse(description="booking-api: too early, closed, not confirmed, or rejected before."),
-            503: OpenApiResponse(response=_OUR_ENVELOPE, description="booking-api unreachable."),
+            409: OpenApiResponse(
+                description="booking-api: too early, closed, not confirmed, rejected before, or not that chair.",
+            ),
+            503: OpenApiResponse(
+                response=_OUR_ENVELOPE,
+                description=(
+                    "Ours (`booking_api_unavailable`): booking-api unreachable, nothing works. "
+                    "Or booking-api's (`DEPENDENCY_UNAVAILABLE`, `details.fallback: "
+                    "WAIT_FOR_STAFF`): the chair could not be checked, the desk still works."
+                ),
+            ),
         },
     )
     def post(self, request, booking_id):
         if not settings.SELF_CHECK_IN_V1:
             raise Http404("Not found")
+        # With no chair, the call is exactly the one before chairs: no
+        # chair_token and no user_agent are passed at all.
+        chair = {}
+        chair_token = _chair_token(request)
+        if chair_token is not None:
+            chair = {
+                "chair_token": chair_token,
+                "user_agent": request.META.get("HTTP_USER_AGENT", ""),
+            }
         try:
             code, answer = raise_check_in(
-                booking_id, authorization=request.META.get("HTTP_AUTHORIZATION", ""),
+                booking_id, authorization=request.META.get("HTTP_AUTHORIZATION", ""), **chair,
             )
         except BookingApiUnavailable as exc:
             raise BookingApiDown() from exc
