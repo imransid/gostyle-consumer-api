@@ -2542,7 +2542,9 @@ CHECK_IN_OPENS_MINUTES = 30
 # POST /booking/<id>/check-in (check_in_views.py). A SINGLE row is one visit,
 # and a ROUTINE row's id is that one session's booking id, which is exactly
 # what the check-in takes (unlike the cancel and the move, which go through
-# the routine). A party has no party-wide request in v1. A tuple, as above.
+# the routine). A party's row is not one of these: its id is the group's, and
+# its button is POST /booking/group/<id>/check-in, for the booker only
+# (_check_in_applies). A tuple, as above.
 CHECK_IN_BOOKING_TYPES = ("SINGLE", "ROUTINE")
 
 
@@ -2572,6 +2574,25 @@ def _can_check_in(row, now):
     return opens <= now < end
 
 
+def _check_in_applies(row):
+    """
+    Whether self check-in applies to this row by its type: a SINGLE or ROUTINE
+    row always (CHECK_IN_BOOKING_TYPES), and a GROUP row only for its booker
+    (`is_booker`, from booking-api) while GROUP_CHECK_IN_V1 is on: that row's
+    button is POST /booking/group/<id>/check-in, which answers the booker
+    only. A member's row, and every GROUP row while the switch is off, is
+    what it was: no button, no opening time.
+    """
+    kind = row.get("booking_type")
+    if kind in CHECK_IN_BOOKING_TYPES:
+        return True
+    return (
+        kind == "GROUP"
+        and bool(settings.GROUP_CHECK_IN_V1)
+        and row.get("is_booker") is True
+    )
+
+
 def _check_in_opens_at(row):
     """
     When "I am here" opens for this booking: CHECK_IN_OPENS_MINUTES before its
@@ -2585,7 +2606,7 @@ def _check_in_opens_at(row):
     A FACT, NOT A JUDGEMENT. A window that has closed still opened at this
     time; whether the button shows now is _can_check_in's question.
     """
-    if row.get("booking_type") not in CHECK_IN_BOOKING_TYPES:
+    if not _check_in_applies(row):
         return None
     if row.get("status") != "CONFIRMED_BY_SALON":
         return None
@@ -2629,7 +2650,12 @@ def _check_in_fields(row, now):
     return {
         "can_check_in": can_check_in,
         "check_in_opens_at": None if opens is None else _utc_iso(opens),
-        "can_scan_chair": can_check_in and bool(settings.CHAIR_SCAN_V1),
+        # Never for a party: its check-in carries no chair (group_check_in_views.py).
+        "can_scan_chair": (
+            can_check_in
+            and bool(settings.CHAIR_SCAN_V1)
+            and row.get("booking_type") != "GROUP"
+        ),
     }
 
 
