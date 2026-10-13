@@ -341,6 +341,45 @@ def _check_in_path(booking_id):
     return f"/v1/bookings/{urllib.parse.quote(str(booking_id), safe='')}/check-in-request"
 
 
+def raise_group_check_in(group_id, *, authorization, booking_ids=None):
+    """
+    POST /v1/mobile-booking/group/<id>/check-in: the booker says "we are
+    here" for their app party (GROUP_CHECK_IN_V1). booking-api raises the
+    single check-in request on each lane, or only on `booking_ids`. Returns
+    (status, parsed body) as given: 201 when a lane raised, 200 when nothing
+    is new but one is waiting, 409 with the lanes' shared refusal or
+    BOOKING_GROUP_CHECKIN_NONE (`details.lanes`), 404 for anyone but the
+    booker (never 403), 422 for a booking id that is not in the party.
+
+    NO LIST, NO BODY: every lane, and the token is all that is sent.
+
+    WITH A LIST, the body is one this service BUILT, never the app's:
+    booking-api reads only `bookingIds`.
+
+    NO X-Tenant-Id, either way: booking-api reads the party itself.
+    """
+    path = _group_check_in_path(group_id)
+    if not booking_ids:
+        return _send("POST", path, headers={"Authorization": authorization})
+    body = {"bookingIds": [str(b) for b in booking_ids]}
+    return _send("POST", path, headers=_group_headers(authorization, None), body=_encode(body))
+
+
+def read_group_check_in(group_id, *, authorization):
+    """
+    GET /v1/mobile-booking/group/<id>/check-in: each lane of the booker's app
+    party with its latest check-in request, or null (GROUP_CHECK_IN_V1).
+    Returns (status, parsed body) as given: 200, or 404 for anyone but the
+    booker. The token only, as read_check_in.
+    """
+    return _send("GET", _group_check_in_path(group_id), headers={"Authorization": authorization})
+
+
+def _group_check_in_path(group_id):
+    """booking-api's path for a party's check-in: one spelling."""
+    return f"/v1/mobile-booking/group/{urllib.parse.quote(str(group_id), safe='')}/check-in"
+
+
 def get_branch_services(tenant_id, branch_id):
     """
     Services a branch offers, as booking-api reads them from the platform.

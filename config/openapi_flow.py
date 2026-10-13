@@ -125,6 +125,16 @@ FLOW = (
                 "/api/v1/booking/{booking_id}/check-in/withdraw",
                 "Cancel Request: take back my waiting check-in (SELF_CHECK_IN_V1)",
             ),
+            (
+                "POST",
+                "/api/v1/booking/group/{group_id}/check-in",
+                "We are here: check in my whole party (GROUP_CHECK_IN_V1)",
+            ),
+            (
+                "GET",
+                "/api/v1/booking/group/{group_id}/check-in",
+                "My party's check-in, member by member (GROUP_CHECK_IN_V1)",
+            ),
         ),
     ),
     (

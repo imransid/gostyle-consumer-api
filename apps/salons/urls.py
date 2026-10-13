@@ -3,6 +3,7 @@ from django.urls import path
 from . import (
     check_in_views,
     expert_profile_views,
+    group_check_in_views,
     group_views,
     routine_views,
     series_views,
@@ -94,6 +95,14 @@ urlpatterns = [
         "booking/<uuid:booking_id>/check-in/withdraw",
         check_in_views.SelfCheckInWithdrawView.as_view(),
         name="booking-check-in-withdraw",
+    ),
+    # Group check-in (GROUP_CHECK_IN_V1): the booker's "we are here" for an app
+    # party. `group` is not a uuid, so booking/<uuid> cannot take it. Off, it is
+    # the 404 this path was before.
+    path(
+        "booking/group/<uuid:group_id>/check-in",
+        group_check_in_views.GroupCheckInView.as_view(),
+        name="booking-group-check-in",
     ),
     # Routines (SERIES_BOOKING_V1). `series` is not a uuid, so booking/<uuid> cannot take it.
     path("booking/series", series_views.SeriesBookingCreateView.as_view(), name="booking-series"),
