@@ -41,6 +41,7 @@ not a bare proxy:
 | `can_check_in`                  | Whether "I am here" (`POST /booking/{id}/check-in`) may be offered, behind `SELF_CHECK_IN_V1`. Decided here from the row, so the app never works the rule out. See §5. |
 | `check_in_opens_at`             | When "I am here" opens for the booking, behind `SELF_CHECK_IN_V1`. Worked out by the same rule as `can_check_in`, so the time shown and the button cannot disagree. See §5. |
 | `can_scan_chair`                | Whether Scan the chair may be offered: `can_check_in`, with chair scanning (`CHAIR_SCAN_V1`) on. See §5. |
+| `is_booker`                     | `GROUP` rows only, while booking-api's `MOBILE_GROUP_CHECK_IN` is on: `true` on the booker's own row, `false` on a member's. Passed through from booking-api. See §5. |
 
 See booking-api's own `docs/booking-list.md` §9, which records `salon`,
 `can_cancel` and `can_reschedule` as the parts it cannot answer.
@@ -264,7 +265,7 @@ these hold:
 
 | Rule | Why |
 | ---- | --- |
-| `booking_type` is `SINGLE` or `ROUTINE` | One visit each. A `ROUTINE` row's `id` is that session's own booking id, which is what the check-in takes. A party (`GROUP`) has no party-wide check-in in v1. A missing or unknown type is `false`. |
+| `booking_type` is `SINGLE` or `ROUTINE` | One visit each. A `ROUTINE` row's `id` is that session's own booking id, which is what the check-in takes. A party (`GROUP`) row: only its booker's (`is_booker: true`), while `GROUP_CHECK_IN_V1` is on; its button is `POST /booking/group/{id}/check-in` (docs/MOBILE_SELF_CHECK_IN_FE.md §15). A member's row is `false`. A missing or unknown type is `false`. |
 | `status` is `CONFIRMED_BY_SALON` | booking-api checks in only a confirmed booking. `BOOKED` is not confirmed or paid yet; `CHECKED_IN` is done. |
 | from 30 minutes before `start_time` until `end_time` | booking-api's own check-in window: it opens when the desk's check-in opens and closes when the visit ends. Compared on the salon's clock, the offset both times carry. |
 
@@ -314,7 +315,7 @@ out in the same function, so it has no rule of its own to drift:
 | ------------------ | --------------- | ---------------- |
 | off                | either          | no key           |
 | on                 | off             | `false` on every row |
-| on                 | on              | `can_check_in`   |
+| on                 | on              | `can_check_in`, but `false` on a `GROUP` row (a party has no chair) |
 
 Wait for Staff (the same `POST` with no body) follows `can_check_in`, never
 this field: it works with chair scanning off. A scan sent while the switch
