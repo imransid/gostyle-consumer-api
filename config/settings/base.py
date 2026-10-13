@@ -287,6 +287,16 @@ SELF_CHECK_IN_V1 = env.bool("SELF_CHECK_IN_V1", default=False)
 # once platform's chair cards and booking-api's chair check are live
 # (docs/MOBILE_SELF_CHECK_IN_FE.md §12.5). SELF_CHECK_IN_V1 off turns it off too.
 CHAIR_SCAN_V1 = env.bool("CHAIR_SCAN_V1", default=False)
+
+# Group check-in: POST /api/v1/booking/group/{group_id}/check-in says "we are
+# here" for every member of an app party, and GET reads each lane's answer,
+# forwarded to booking-api's /v1/mobile-booking/group/{group_id}/check-in
+# (group_check_in_views.py). The booker only. booking-api's
+# MOBILE_GROUP_CHECK_IN, SELF_CHECK_IN_V1 and MOBILE_GROUP_BOOKING must be on
+# too. OFF here, both are the 404 this path was before, booking-api is not
+# called, and the GROUP row offers no button. SELF_CHECK_IN_V1 off turns it
+# off too.
+GROUP_CHECK_IN_V1 = env.bool("GROUP_CHECK_IN_V1", default=False)
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
