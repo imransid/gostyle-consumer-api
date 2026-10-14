@@ -1,6 +1,6 @@
 # Mobile Self Check-in: FE Guide
 
-Date: 2026-10-08, updated 2026-10-09 (chair check-in, §12; Cancel Request, §13; the welcome, §14) and 2026-10-10 (`can_check_in` and `check_in_opens_at` on the booking read, §3; `can_scan_chair` and the server's chair switch, §12.5; **`offersWaitForStaff` changed, §12.3**) and 2026-10-14 (parties moved to their own guide, `docs/MOBILE_GROUP_CHECK_IN_FE.md`, §15). For: the mobile app team.
+Date: 2026-10-08, updated 2026-10-09 (chair check-in, §12; Cancel Request, §13; the welcome, §14) and 2026-10-10 (`can_check_in` and `check_in_opens_at` on the booking read, §3; `can_scan_chair` and the server's chair switch, §12.5; **`offersWaitForStaff` changed, §12.3**) and 2026-10-14 (parties moved to their own guide, `docs/MOBILE_GROUP_CHECK_IN_FE.md`, §15); and 2026-10-15 (a push when the desk answers, §16). For: the mobile app team.
 
 The customer arrives at the salon, opens their booking and taps **"I am
 here"**. The salon's desk sees them on its reception list and approves or
@@ -248,7 +248,7 @@ The desk's own reason for a rejection is never sent to the app. Use your own wor
 - While the screen is open and the state is `WAITING`, `GET` every **10 seconds**.
 - Stop as soon as the state is anything but `WAITING`, or the screen closes.
 - Also `GET` once when the booking screen opens, to draw the right state.
-- There is **no push** when the desk answers (yet).
+- A **push** when the desk answers is built, behind a switch that is off until the server team turns it on (§16). Keep reading as above even then.
 
 ---
 
@@ -283,7 +283,7 @@ Two shapes, as on the single cancel and reschedule:
 - **Pass QR.** The pass keeps showing `pass_qr_code` from `GET /booking/{id}`, the booking's own code (for example `GS-1403`). The desk may scan it. The app does not scan the pass.
 - **Chair QR.** The app scans the card on the chair: §12.
 - **Parties (`GROUP` rows).** "We are here" for the whole party, by the booker only, on its own route: §15. A party's id is still `404` on `/booking/{id}/check-in`.
-- **Not here yet:** a push when the desk answers (read it, §7).
+- **A push when the desk answers:** §16 (behind a switch, off until turned on).
 
 ---
 
@@ -720,3 +720,45 @@ In short: the booker taps **We are here** once
 (`POST /booking/group/{group_id}/check-in`, no body), the desk gets this
 guide's ordinary request for each member, and approves or rejects each one.
 Members see the party with no button. A party has no Scan the chair.
+
+---
+
+## 16. A push when the desk answers
+
+**Behind booking-api's switch `CHECK_IN_PUSH_V1`, OFF until the server team
+turns it on.** Until then nothing changes: read the answer as in §7. Keep
+reading as in §7 even once it is on: a push can be late, turned off, or never
+arrive (no devices), and the screen must still show the answer.
+
+When the desk **approves** or **rejects** the request, or it **expires**
+because nobody answered in time, booking-api sends one push, through the same
+push service as the booking reminders, to **the customer who tapped**.
+
+| `data.type` | When | Title | Body |
+| ----------- | ---- | ----- | ---- |
+| `check_in_request.approved` | The desk said yes | You are checked in | Welcome! Booking GS-1417. |
+| `check_in_request.rejected` | The desk said no | Please speak to the desk | The salon could not confirm your arrival. Booking GS-1417. |
+| `check_in_request.expired` | Nobody answered before the end | Please speak to the desk | The salon did not answer your check-in in time. Booking GS-1417. |
+
+The push's `data` (all strings):
+
+```ts
+export interface CheckInPushData {
+  type: 'check_in_request.approved' | 'check_in_request.rejected' | 'check_in_request.expired';
+  bookingId: string;   // the booking the request is on: GET /booking/{bookingId}/check-in
+  code: string;        // "GS-1417"
+  requestId: string;   // the request's own id, as in CheckInRequest.requestId (§4)
+  groupId?: string;    // only when the booking is one member's lane of a party
+}
+```
+
+**On tap** (or when it arrives while the app is open): read
+`GET /booking/{bookingId}/check-in` (§6) and draw the screen from that read,
+never from the push. The read is the truth; the push only says "look now".
+If `groupId` is there, open the party instead (group guide
+`docs/MOBILE_GROUP_CHECK_IN_FE.md` §17).
+
+- **Never twice** for the same answer, even if the server re-sends it.
+- **Not sent** when the request is `CLOSED` (the desk used its own button, or the booking was cancelled or moved: each of those is its own news) or `WITHDRAWN` (the customer did it in the app).
+- **The customer's push switch wins:** with push turned off in their settings, nothing is sent.
+- **The desk's reason for a rejection is never in the push.**
