@@ -297,6 +297,15 @@ CHAIR_SCAN_V1 = env.bool("CHAIR_SCAN_V1", default=False)
 # called, and the GROUP row offers no button. SELF_CHECK_IN_V1 off turns it
 # off too.
 GROUP_CHECK_IN_V1 = env.bool("GROUP_CHECK_IN_V1", default=False)
+
+# Group self check-in: a member of an app party says "I am here" for their own
+# lane, with the single check-in route (POST /api/v1/booking/{id}/check-in,
+# check_in_views.py) and the lane's booking_id from the party read. On, the
+# member's own row of the party read (is_me true) carries can_check_in and
+# check_in_opens_at. booking-api's MOBILE_GROUP_SELF_CHECK_IN must be on too
+# (it gives the row is_me and booking_id), and SELF_CHECK_IN_V1 here (the
+# route the member uses). OFF here, the party read is exactly what it was.
+GROUP_SELF_CHECK_IN_V1 = env.bool("GROUP_SELF_CHECK_IN_V1", default=False)
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
