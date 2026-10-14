@@ -68,6 +68,7 @@ from .selectors import (
 from .views import (
     _OUR_ENVELOPE,
     BookingApiDown,
+    _check_in_fields,
     _idempotency_key,
     _member_check_in_fields,
     _open_span,
@@ -984,8 +985,9 @@ def _member_check_in(party, now):
     on every row or on none). Without it this service does not guess which
     row is the caller's.
 
-    Then EVERY member row gets both keys, one shape for all: the rule's
-    answer on the `is_me` row (views._member_check_in_fields), false and null
+    Then EVERY member row gets all three keys (can_check_in,
+    check_in_opens_at, can_scan_chair), one shape for all: the rule's answer
+    on the `is_me` row (views._member_check_in_fields), false, null and false
     on the rest. `is_me` is read strictly, `is True`, as `is_booker` is.
 
     NEVER THE BOOKER'S OWN ROW (`kind: "self"`): false and null there,
@@ -1007,7 +1009,42 @@ def _member_check_in(party, now):
         if m.get("is_me") is True and m.get("kind") != "self":
             m.update(_member_check_in_fields(m, now))
         else:
-            m.update({"can_check_in": False, "check_in_opens_at": None})
+            m.update({"can_check_in": False, "check_in_opens_at": None, "can_scan_chair": False})
+    return party
+
+
+def _booker_check_in(party, caller_id, now):
+    """
+    GROUP CHECK-IN at the top of the party's read (GROUP_CHECK_IN_V1): the
+    booker's We are here, so the party screen can draw it however it was
+    opened (from My Bookings, a push, a deep link, after the app was killed).
+
+    `is_booker`: the caller is the party's `self` member, the one booking-api
+    files as the organiser, which is what the My Bookings GROUP row's
+    `is_booker` says too. Worked out here: booking-api's party read carries no
+    such key. Read strictly: exactly one `self` row, with the caller's id.
+
+    Then can_check_in, check_in_opens_at and can_scan_chair from THE SAME
+    function as that row (views._check_in_fields), fed the same facts: the
+    party's status (the booker's own lane), its start and its end. So the
+    list and this screen agree, and can_scan_chair is always false for a
+    party (it has no chair).
+
+    OFF unless SELF_CHECK_IN_V1 and GROUP_CHECK_IN_V1, the two switches the
+    booker's route needs here: no key at all, the read exactly as it was.
+    """
+    if not (settings.SELF_CHECK_IN_V1 and settings.GROUP_CHECK_IN_V1):
+        return party
+    members = party.get("members")
+    selves = [
+        m for m in (members if isinstance(members, list) else [])
+        if isinstance(m, dict) and m.get("kind") == "self"
+    ]
+    party["is_booker"] = (
+        len(selves) == 1
+        and str(selves[0].get("user_id") or "").lower() == str(caller_id).lower()
+    )
+    party.update(_check_in_fields(party, now))
     return party
 
 
@@ -1025,8 +1062,10 @@ def read_group_response(request, group_id):
     if code != status.HTTP_200_OK or not isinstance(body, dict):
         return Response(body, status=code)
     # Only this read: the cancel's answer is the same party, but no button
-    # belongs on it.
-    return Response(_member_check_in(_stored_party(body), datetime.now(dt_timezone.utc)))
+    # belongs on it. One clock for the member rows and the party's own keys.
+    now = datetime.now(dt_timezone.utc)
+    party = _member_check_in(_stored_party(body), now)
+    return Response(_booker_check_in(party, request.user.id, now))
 
 
 @extend_schema(

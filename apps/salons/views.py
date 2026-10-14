@@ -2677,7 +2677,10 @@ def _member_check_in_fields(member, now):
     _check_in_fields, fed the MEMBER's own status, start_time and end_time,
     never the party's and never the booker's. Nothing else is decided here.
 
-    Only those two keys: a member scans no chair in v1, so no can_scan_chair.
+    Three keys: can_check_in, check_in_opens_at, and can_scan_chair. A member
+    scanning the card on their chair is one person in one chair, so the single
+    route takes the scan on their lane as on any booking, and the row says so
+    by the same rule: can_check_in with CHAIR_SCAN_V1 on.
     """
     lane = {
         "booking_type": "SINGLE",
@@ -2686,7 +2689,11 @@ def _member_check_in_fields(member, now):
         "end_time": member.get("end_time"),
     }
     fields = _check_in_fields(lane, now)
-    return {key: fields[key] for key in ("can_check_in", "check_in_opens_at") if key in fields}
+    return {key: fields[key] for key in MEMBER_CHECK_IN_KEYS if key in fields}
+
+
+# The keys a member row of a party's read carries (group_views._member_check_in).
+MEMBER_CHECK_IN_KEYS = ("can_check_in", "check_in_opens_at", "can_scan_chair")
 
 
 @extend_schema(
