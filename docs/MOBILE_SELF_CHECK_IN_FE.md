@@ -1,6 +1,6 @@
 # Mobile Self Check-in: FE Guide
 
-Date: 2026-10-08, updated 2026-10-09 (chair check-in, §12; Cancel Request, §13; the welcome, §14) and 2026-10-10 (`can_check_in` and `check_in_opens_at` on the booking read, §3; `can_scan_chair` and the server's chair switch, §12.5; **`offersWaitForStaff` changed, §12.3**). For: the mobile app team.
+Date: 2026-10-08, updated 2026-10-09 (chair check-in, §12; Cancel Request, §13; the welcome, §14) and 2026-10-10 (`can_check_in` and `check_in_opens_at` on the booking read, §3; `can_scan_chair` and the server's chair switch, §12.5; **`offersWaitForStaff` changed, §12.3**) and 2026-10-14 (parties moved to their own guide, `docs/MOBILE_GROUP_CHECK_IN_FE.md`, §15). For: the mobile app team.
 
 The customer arrives at the salon, opens their booking and taps **"I am
 here"**. The salon's desk sees them on its reception list and approves or
@@ -62,7 +62,7 @@ server works it out (docs/BOOKING_LIST_API.md §5), the same way it does
 app, it is `true` when:
 
 - the switch `SELF_CHECK_IN_V1` is on;
-- `booking_type` is `SINGLE` or `ROUTINE` (never `GROUP`);
+- `booking_type` is `SINGLE` or `ROUTINE` (a party's `GROUP` row has its own button: §15);
 - `status` is `CONFIRMED_BY_SALON`;
 - now is between 30 minutes before `start_time` and `end_time`.
 
@@ -282,7 +282,7 @@ Two shapes, as on the single cancel and reschedule:
 
 - **Pass QR.** The pass keeps showing `pass_qr_code` from `GET /booking/{id}`, the booking's own code (for example `GS-1403`). The desk may scan it. The app does not scan the pass.
 - **Chair QR.** The app scans the card on the chair: §12.
-- **Parties (`GROUP` rows).** "We are here" for the whole party, by theer only, on its own route: §15. A party's id is still `404` on `/booking/{id}/check-in`.
+- **Parties (`GROUP` rows).** "We are here" for the whole party, by the booker only, on its own route: §15. A party's id is still `404` on `/booking/{id}/check-in`.
 - **Not here yet:** a push when the desk answers (read it, §7).
 
 ---
@@ -711,106 +711,12 @@ three shapes mean three different things:
 
 ## 15. A party: "We are here"
 
-The booker of a party taps **We are here** once. The desk gets the ordinary
-check-in request for **each member**, and approves or rejects each one, exactly
-as for one booking. Members see the party on their own My Bookings, but no
-button.
+**Moved to its own guide: `docs/MOBILE_GROUP_CHECK_IN_FE.md`** (2026-10-14).
+It covers when to show the button on a `GROUP` row, the call, each member's
+answer, the read, errors, rollout and the QA checklist, with real answers from
+an end to end run.
 
-Behind `GROUP_CHECK_IN_V1` (and `SELF_CHECK_IN_V1`). Off: both routes are `404`,
-and every `GROUP` row has `can_check_in: false`, as before.
-
-### 15.1 When to show "We are here"
-
-On a `GROUP` row in My Bookings, the same three fields as §3:
-
-| Field | On a `GROUP` row |
-| ----- | ---------------- |
-| `can_check_in` | Show the button. `true` only for the **booker** (`is_booker: true`), a party that is `CONFIRMED_BY_SALON`, from 30 minutes before `start_time` until `end_time`. |
-| `check_in_openst` | When it opens (UTC). Null on a member's row. |
-| `can_scan_chair` | Always `false`. A party has no Scan the chair: everyone is Wait for Staff. |
-
-`is_booker` is on every `GROUP` row while the switch is on. Use `can_check_in`
-for the button; use `is_booker` only to show members something different.
-
-### 15.2 The call: `POST /booking/group/{group_id}/check-in`
-
-`{group_id}` is the `GROUP` row's `id`.
-
-- **No body**: everyone in the party.
-- `{"booking_ids": ["..."]}`: only these members (each member's `bookingId`, from `lanes`).
-- **Never** `chair_token`: that is a `422`.
-
-Sending it again is safe: members already waiting stay waiting.
-
-### 15.3 The answer, member by member
-
-```json
-{
-  "groupId": "...",
-  "lanes": [
-    {
-      "bookingId": "...",
-      "bookingCode": "GS-1403",
-      "memberKind": "self",
-      "outcome": "RAISED",
-      "request": { "requestId": "...", "state": "WAITING", "...": "as in §4" },
-      "error": null
-    }
-  ]
-}
-```
-
-One lane per member, in party order. `memberKind` is `slf` (the booker),
-`registered`, or `guest`.
-
-| `outcome` | What happened | `request` | `error` |
-| --------- | ------------- | --------- | ------- |
-| `RAISED` | Asked the desk now | the request, `WAITING` | `null` |
-| `WAITING` | Already waiting from before | the request | `null` |
-| `CHECKED_IN` | Already in (checked in, in service, or done) | `null` | `null` |
-| `LEFT` | Not a visit today any more (cancelled, no-show) | `null` | `null` |
-| `REFUSED` | This member cannot now | `null` | the single route's own error (§8), for example `BOOKING_CHECKIN_WINDOW` with `windowOpensAt` |
-
-A member refused does **not** stop the others.
-
-```ts
-type GroupCheckInLane = {
-  bookingId: string;
-  bookingCode: string;
-  memberKind: "self" | "registered" | "guest";
-  outcome: "RAISED" | "WAITING" | "CHECKED_IN" | "LEFT" | "REFUSED";
-  request: CheckInRequest | null;   // §4
-  error: { statusCode: number; code: string; message: string; details?: Record<string, unknown> } | null;
-};
-type GroupCheckIn = { groupId: string; lanes: GroupCheckInLane[] };
-```
-
-| Status | When |
-| ------ | ---- |
-| `201` | At least one member `RAISED` |
-| `200` | Nothing new, at least one `WAITING` (a second tap) |
-| `409` | Nothing to do for anyone. Every member refused for the same reason: that error, as for one booking (§8). Otherwise `BOOKING_GROUP_CHECKIN_NONE`, with every lane in `details.lanes` |
-| `404` | Not the booker, no such party, or switched off |
-| `422` | `chair_token` sent, `booking_ids` not a list of ids, or (field `bookingIds`) an id that is not a member of this party |
-| `503` | `booking_api_unavailable` |
-
-### 15.4 Read it again: `GET /booking/group/{group_id}/check-in`
-
-`{ groupId, lanes: [{ bookingId, bookingCode, memberKind, request }] }`, where
-`request` is that member's latest request (as in §6), or `null`. Read it while
-the party waits (§7): each member moves to `APPROVED` or `REJECTED` on its own.
-
-### 15.5 What the app shows
-
-- After `201` or `200`: one line per member. `RAISED` or `WAITING`: "Waiting for the desk". `CHECKED_IN`: "Checked in". `LEFT`: leave the member out. `REFUSED`: that error's `message`.
-- A member `REJECTED` later: that member speaks to the desk (§8). The others go on.
-- `409` with one shared reason: show it as for one booking (for example "check-in opens at").
-
-### 15.6 QA checklist (parties)
-
-- [ ] Booker, inside the window: the button shows. A member's row: no button.
-- [ ] Tap: `201`, every member `WAITING`; the desk sees one request per member.
-- [ ] Tap again: `200`, nothing new.
-- [ ] Everyone already checked in: `409 BOOKING_GROUP_CHECKIN_NONE`.
-- [ ] A member's own token on the route: `404`.
-- [ ] `GROUP_CHECK_IN_V1` off: `404`, and no button on any `GROUP` row.
+In short: the booker taps **We are here** once
+(`POST /booking/group/{group_id}/check-in`, no body), the desk gets this
+guide's ordinary request for each member, and approves or rejects each one.
+Members see the party with no button. A party has no Scan the chair.

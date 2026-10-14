@@ -265,7 +265,7 @@ these hold:
 
 | Rule | Why |
 | ---- | --- |
-| `booking_type` is `SINGLE` or `ROUTINE` | One visit each. A `ROUTINE` row's `id` is that session's own booking id, which is what the check-in takes. A party (`GROUP`) row: only its booker's (`is_booker: true`), while `GROUP_CHECK_IN_V1` is on; its button is `POST /booking/group/{id}/check-in` (docs/MOBILE_SELF_CHECK_IN_FE.md §15). A member's row is `false`. A missing or unknown type is `false`. |
+| `booking_type` is `SINGLE` or `ROUTINE` | One visit each. A `ROUTINE` row's `id` is that session's own booking id, which is what the check-in takes. A party (`GROUP`) row: only its booker's (`is_booker: true`), while `GROUP_CHECK_IN_V1` is on; its button is `POST /booking/group/{id}/check-in` (docs/MOBILE_GROUP_CHECK_IN_FE.md). A member's row is `false`. A missing or unknown type is `false`. |
 | `status` is `CONFIRMED_BY_SALON` | booking-api checks in only a confirmed booking. `BOOKED` is not confirmed or paid yet; `CHECKED_IN` is done. |
 | from 30 minutes before `start_time` until `end_time` | booking-api's own check-in window: it opens when the desk's check-in opens and closes when the visit ends. Compared on the salon's clock, the offset both times carry. |
 
