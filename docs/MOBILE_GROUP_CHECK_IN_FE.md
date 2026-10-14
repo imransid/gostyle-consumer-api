@@ -688,8 +688,8 @@ one shape for all rows:
 | ----- | ---- | --------------------------------------- | ------------------ |
 | `is_me` | booking-api | `true` | `false`. A guest's row is always `false`. |
 | `booking_id` | booking-api | The caller's own lane id: the id the single route takes. | `null` |
-| `can_check_in` | customer-api | **The button.** `true` while the lane is `CONFIRMED_BY_SALON`, from 30 minutes before its `start_time` until its `end_time`. | `false` |
-| `check_in_opens_at` | customer-api | When it opens, in UTC (`"...Z"`). `null` when the lane is not `CONFIRMED_BY_SALON`. Still set after the window has closed: it is a fact, as on a single booking. | `null` |
+| `can_check_in` | customer-api | **The button.** `true` while the lane is `CONFIRMED_BY_SALON`, from 30 minutes before its `start_time` until its `end_time`. Always `false` on the booker's own row (§15.4). | `false` |
+| `check_in_opens_at` | customer-api | When it opens, in UTC (`"...Z"`). `null` when the lane is not `CONFIRMED_BY_SALON`. Still set after the window has closed: it is a fact, as on a single booking. Always `null` on the booker's own row (§15.4). | `null` |
 
 - `can_check_in` and `check_in_opens_at` follow the **member's own lane**: that row's own `status`, `start_time` and `end_time`. Not the party's, not the booker's. It is the same rule as a single booking's row, worked out by the same code.
 - `booking_id` is **not** `members[].id`. `members[].id` is the member's place in the party: never send it anywhere (§7).
@@ -762,8 +762,8 @@ Rana taps: `POST /booking/c2d7a4e9-1b6f-4e3c-9a8d-5f0e2b7c4a16/check-in`.
 export interface PartyMemberSelfCheckIn {
   is_me?: boolean;                    // only `true` counts
   booking_id?: string | null;         // the caller's own lane; null on other rows
-  can_check_in?: boolean;             // the button; false on other rows
-  check_in_opens_at?: string | null;  // UTC ISO; null on other rows
+  can_check_in?: boolean;             // the button; false on other rows and on the booker's own
+  check_in_opens_at?: string | null;  // UTC ISO; null on other rows and on the booker's own
 }
 ```
 
@@ -782,12 +782,16 @@ already waiting. Then read `GET /booking/{booking_id}/check-in` while it is
 ### 15.4 The booker's own row
 
 When the **booker** opens the party, their own row (`kind: "self"`) is the
-`is_me` row, with its own `booking_id` and `can_check_in`. The booker's way is
-still **We are here** (§2): one tap asks the desk for everyone, guests
-included. A tap on the booker's own row would ask for the booker alone, and
-once the desk checks the booker in, the `GROUP` row's button goes (§3), so the
-guests would be left to the desk. **Use this section's button for members
-whose `kind` is not `"self"`.**
+`is_me` row, with their own `booking_id`. **The server never offers the booker
+this button:** on that row `can_check_in` is always `false` and
+`check_in_opens_at` is always `null`, whatever the window says. Draw the button
+from `can_check_in` as everywhere; the app checks nothing else.
+
+Why: the booker's way is still **We are here** (§2), one tap that asks the desk
+for everyone, guests included. A tap on the booker's own lane alone would, once
+the desk approved it, take the `GROUP` row's button away (it follows the
+booker's own booking, §3), and the guests could not be checked in from the app
+at all.
 
 ### 15.5 What has NOT changed
 
@@ -825,6 +829,6 @@ In every case: no button, or a harmless `404`.
 ### 15.7 How this was checked
 
 - **booking-api unit tests** (3384 passed): `is_me` and `booking_id` on each member row (exactly one `is_me`, a guest always `false`, staff `false` on every row, no keys with the switch off); and the single route on a party lane (the member's own lane `201`; another member's lane `404` with nothing written; a guest's lane `404` even for the booker).
-- **customer-api unit tests** (1382 passed): the member row's `can_check_in` and `check_in_opens_at` (in the window, before, after, not confirmed, other rows, each switch off, `is_me` missing, `is_me` read strictly, `booking_id` untouched, no `can_scan_chair`, the member's own lane and never the party's or the booker's).
+- **customer-api unit tests** (1386 passed): the member row's `can_check_in` and `check_in_opens_at` (in the window, before, after, not confirmed, other rows, each switch off, `is_me` missing, `is_me` read strictly, `booking_id` untouched, no `can_scan_chair`, the member's own lane and never the party's or the booker's, the booker's own row `false` and `null` in the window).
 - **The example in §15.2:** booking-api's real party read for Rana, from its own code, passed through customer-api's real read path at 10 minutes before the start.
 - **Not yet run end to end** on a running system, and not yet live.

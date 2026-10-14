@@ -2126,7 +2126,9 @@ _PAYMENT_REQUEST = {
             "SELF_CHECK_IN_V1), only when booking-api marks the caller's own "
             "row with `is_me`: every member row gets `can_check_in` and "
             "`check_in_opens_at`, the rule above on that member's own lane for "
-            "the `is_me` row, `false` and `null` on the rest. The member checks "
+            "the `is_me` row, `false` and `null` on the rest. Always `false` and "
+            "`null` on the booker's own row (`kind: \"self\"`): the booker's way "
+            "is the party's We are here. The member checks "
             "in with POST /booking/{booking_id}/check-in, `booking_id` from "
             "the same row. No `can_scan_chair` on a member row."
         ),

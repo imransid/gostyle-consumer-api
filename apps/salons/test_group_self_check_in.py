@@ -61,6 +61,7 @@ LATER = ("2026-10-11T19:00:00+06:00", "2026-10-11T19:45:00+06:00")
 OVER = ("2026-10-11T16:00:00+06:00", "2026-10-11T16:45:00+06:00")
 
 RANA_LANE = "c2d7a4e9-1b6f-4e3c-9a8d-5f0e2b7c4a16"
+BOOKER_LANE = "5b8e1f2a-7c3d-4a9e-b6f0-2d4c8e1a3b57"
 KEYS = ("can_check_in", "check_in_opens_at")
 
 
@@ -91,19 +92,21 @@ ALL_ON = dict(GROUP_BOOKING_V2=True, ROUTINE_CONTRACT_V1=False,
 
 
 class PartyReadSeams(ReadSeams):
-    """GET /booking/<group_id> as Rana, with booking-api answering `answer`, at NOW."""
+    """GET /booking/<group_id> as Rana (or `user`), with booking-api answering `answer`, at NOW."""
 
-    def read(self, answer, **over):
+    def read(self, answer, user=None, **over):
         fake = mock.Mock(return_value=(200, copy.deepcopy(answer)))
+        caller = user or Customer(id=uuid.UUID(RANA), full_name="Rana")
         response, _ = self.run_with(
-            self.as_rana, **{"apps.salons.group_views.read_group_booking": fake, **over})
+            lambda: self.as_caller(caller),
+            **{"apps.salons.group_views.read_group_booking": fake, **over})
         self.assertEqual(response.status_code, 200, response.data)
         return response.data["members"]
 
-    def as_rana(self):
+    def as_caller(self, user):
         request = APIRequestFactory().get(f"/api/v1/booking/{GROUP_ID}",
                                           HTTP_AUTHORIZATION="Bearer customer-token")
-        force_authenticate(request, user=Customer(id=uuid.UUID(RANA), full_name="Rana"))
+        force_authenticate(request, user=user)
         with contextlib.ExitStack() as stack:
             clock = stack.enter_context(mock.patch("apps.salons.group_views.datetime"))
             clock.now.return_value = NOW
@@ -228,6 +231,40 @@ class MemberRowShapeTests(PartyReadSeams, SimpleTestCase):
             self.assertEqual(self.fields(m), {}, m["ref"])
 
 
+def as_the_booker_sees_it():
+    """The same party, read by the booker: their own row is `is_me`, with their own lane."""
+    return party(
+        booker=member(0, "self", str(USER_ID), is_me=True, booking_id=BOOKER_LANE),
+        rana=member(1, "registered", RANA),
+    )
+
+
+@override_settings(**ALL_ON)
+class BookerRowTests(PartyReadSeams, SimpleTestCase):
+    """The booker's own row never gets the member button: the booker's way is We are here."""
+
+    def test_the_booker_in_the_window_gets_false_and_null_on_their_own_row(self):
+        members = self.read(as_the_booker_sees_it(), user=Customer())
+        booker = members[0]
+        # booking-api's facts about the caller, left as they came.
+        self.assertEqual((booker["kind"], booker["is_me"], booker["booking_id"]),
+                         ("self", True, BOOKER_LANE))
+        # In the window, and still no button.
+        self.assertEqual(self.fields(booker), {"can_check_in": False, "check_in_opens_at": None})
+
+    def test_every_row_still_carries_both_keys_when_the_booker_reads(self):
+        members = self.read(as_the_booker_sees_it(), user=Customer())
+        self.assertEqual([self.fields(m) for m in members],
+                         [{"can_check_in": False, "check_in_opens_at": None}] * 3)
+
+    def test_a_member_reading_the_same_party_still_gets_true_and_their_lane(self):
+        rana = self.read(party())[1]
+        self.assertEqual((rana["kind"], rana["is_me"], rana["booking_id"]),
+                         ("registered", True, RANA_LANE))
+        self.assertEqual(self.fields(rana),
+                         {"can_check_in": True, "check_in_opens_at": "2026-10-11T11:40:00.000Z"})
+
+
 @override_settings(SELF_CHECK_IN_V1=True, CHAIR_SCAN_V1=True)
 class MemberShimTests(SimpleTestCase):
     """_member_check_in_fields: the SINGLE rule's two keys, fed the member's own lane."""
@@ -249,6 +286,14 @@ class MemberShimTests(SimpleTestCase):
                    payment_status="PAY_AFTER_CHECK_IN")
         self.assertEqual(_member_check_in_fields(m, NOW),
                          {"can_check_in": True, "check_in_opens_at": "2026-10-11T11:40:00.000Z"})
+
+    def test_the_shim_is_unchanged_it_knows_nothing_of_kind(self):
+        # The booker rule is the party read's (group_views._member_check_in),
+        # not the single booking's: fed a "self" row, the shim answers as ever.
+        expected = {"can_check_in": True, "check_in_opens_at": "2026-10-11T11:40:00.000Z"}
+        for kind, user_id in (("self", str(USER_ID)), ("registered", RANA)):
+            with self.subTest(kind=kind):
+                self.assertEqual(_member_check_in_fields(member(0, kind, user_id), NOW), expected)
 
     @override_settings(SELF_CHECK_IN_V1=False)
     def test_nothing_with_self_check_in_off(self):
