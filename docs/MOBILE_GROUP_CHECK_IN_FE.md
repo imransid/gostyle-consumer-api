@@ -2,7 +2,7 @@
 
 Date: 2026-10-14. For: the mobile app team.
 Server code: customer-api `main` 3a8c7d6, booking-api `main` 46907d2. Tested end
-to end on 2026-10-14 (§13).
+to end on 2026-10-14, locally and live on `api.gostyle.uk` (§13).
 
 The booker of a party arrives at the salon and taps **We are here** once. The
 desk gets the ordinary check-in request for **each member** of the party, and
@@ -14,10 +14,10 @@ is in `docs/MOBILE_SELF_CHECK_IN_FE.md` (the single guide). This guide reuses
 its `CheckInRequest` type (single guide §4) and its request states (single
 guide §6).
 
-**Everything here is behind the server switch `GROUP_CHECK_IN_V1`, and it is
-OFF on production today.** Until it is on, both routes answer `404` and no
-party row offers the button. Build against this guide; the server team turns
-the switch on (§12).
+**Everything here is behind server switches. They were turned ON on
+production on 2026-10-14**, and a real party was checked in live the same day
+(§13). If a switch is ever off, both routes answer `404` and no party row
+offers the button (§12).
 
 ---
 
@@ -570,10 +570,9 @@ The feature needs five switches, all on: customer-api `SELF_CHECK_IN_V1` and
 `GROUP_CHECK_IN_V1`; booking-api `SELF_CHECK_IN_V1`, `MOBILE_GROUP_BOOKING` and
 `MOBILE_GROUP_CHECK_IN`.
 
-**Production today (2026-10-14):** the code is deployed, single self check-in
-is on, `GROUP_CHECK_IN_V1` is **off**. So both party routes answer `404`
-("Not found"), and every `GROUP` row has `can_check_in: false` and
-`check_in_opens_at: null`.
+**Production (since 2026-10-14):** all five are **on**. booking-api's
+`MOBILE_GROUP_CHECK_IN` and customer-api's `GROUP_CHECK_IN_V1` were added to the
+running services that day (they stay on across restarts and rebuilds).
 
 What the app sees while a switch is off (each one tested, §13):
 
@@ -590,6 +589,24 @@ switch of its own.
 ---
 
 ## 13. How this was tested (2026-10-14)
+
+**Live, on `api.gostyle.uk`**, with a real app account and a real party at a
+test salon (you plus one guest, booked through `POST /booking/group`):
+
+| Step | Live answer |
+| ---- | ----------- |
+| My Bookings, 15 minutes before the window | `is_booker: true`, `can_check_in: false`, `check_in_opens_at` set |
+| Tap before the window | `409 BOOKING_CHECKIN_WINDOW`, `windowOpensAt` |
+| `chair_token`; an id not in the party; `booking_ids` not a list | `422` each, nothing asked |
+| My Bookings inside the window | `can_check_in: true`, `can_scan_chair: false` |
+| Tap | `201`, both members `RAISED`, `WAITING` |
+| Tap again | `200`, both `WAITING`, the same `requestId`s |
+| The desk approves the booker | the booker `APPROVED`; the welcome on their own booking says `via: SELF` and the receptionist's name; the party read shows them `CHECKED_IN`; the row says `CHECKED_IN`, no button (§3) |
+| Nobody answers the guest before the end | the guest's request turns `EXPIRED` by itself |
+| Tap after the end | `409 BOOKING_GROUP_CHECKIN_NONE`: booker `CHECKED_IN`, guest `REFUSED` `BOOKING_CHECKIN_WINDOW` |
+| My Bookings after the end | the party is under Archive, `CHECKED_IN`, `can_check_in: false` |
+
+**Locally, before that:**
 
 All four services on one machine (platform, booking-api `main`, customer-api
 `main`, customer-api's sign-in gRPC), every switch on. Each party was seeded in
