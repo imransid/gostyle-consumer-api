@@ -18,7 +18,7 @@ here, and the helpers it shares are imported from there untouched.
 import hashlib
 import logging
 import uuid
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone as dt_timezone
 
 from django.conf import settings
 from django.core.cache import cache
@@ -65,7 +65,14 @@ from .selectors import (
     service_timing_rows,
     stylist_service_coverage,
 )
-from .views import _OUR_ENVELOPE, BookingApiDown, _idempotency_key, _open_span, _salon_card
+from .views import (
+    _OUR_ENVELOPE,
+    BookingApiDown,
+    _idempotency_key,
+    _member_check_in_fields,
+    _open_span,
+    _salon_card,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -964,6 +971,38 @@ def _stored_party(body):
     return out
 
 
+def _member_check_in(party, now):
+    """
+    GROUP SELF CHECK-IN on the party's read (GROUP_SELF_CHECK_IN_V1): may the
+    caller check in on their own lane now, and when does that open. The
+    lane's id is booking-api's `booking_id` on the same row, passed through
+    as it came.
+
+    ALL THREE, or nothing is added: SELF_CHECK_IN_V1 (the route the member
+    uses), GROUP_SELF_CHECK_IN_V1, and booking-api's own switch, seen as
+    `is_me` on every member row (its MOBILE_GROUP_SELF_CHECK_IN puts the key
+    on every row or on none). Without it this service does not guess which
+    row is the caller's.
+
+    Then EVERY member row gets both keys, one shape for all: the rule's
+    answer on the `is_me` row (views._member_check_in_fields), false and null
+    on the rest. `is_me` is read strictly, `is True`, as `is_booker` is.
+    """
+    if not (settings.SELF_CHECK_IN_V1 and settings.GROUP_SELF_CHECK_IN_V1):
+        return party
+    members = party.get("members")
+    if not isinstance(members, list) or not members:
+        return party
+    if not all(isinstance(m, dict) and "is_me" in m for m in members):
+        return party
+    for m in members:
+        if m.get("is_me") is True:
+            m.update(_member_check_in_fields(m, now))
+        else:
+            m.update({"can_check_in": False, "check_in_opens_at": None})
+    return party
+
+
 def read_group_response(request, group_id):
     """
     GET /api/v1/booking/<id> for a party (GROUP_BOOKING_V2). Called by
@@ -977,7 +1016,9 @@ def read_group_response(request, group_id):
         raise BookingApiDown() from exc
     if code != status.HTTP_200_OK or not isinstance(body, dict):
         return Response(body, status=code)
-    return Response(_stored_party(body))
+    # Only this read: the cancel's answer is the same party, but no button
+    # belongs on it.
+    return Response(_member_check_in(_stored_party(body), datetime.now(dt_timezone.utc)))
 
 
 @extend_schema(
