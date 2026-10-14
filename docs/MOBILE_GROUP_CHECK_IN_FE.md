@@ -1,8 +1,10 @@
 # Mobile Group Check-in ("We are here"): FE Guide
 
-Date: 2026-10-14. For: the mobile app team.
-Server code: customer-api `main` 3a8c7d6, booking-api `main` 46907d2. Tested end
-to end on 2026-10-14, locally and live on `api.gostyle.uk` (§13).
+Date: 2026-10-14, updated the same evening: the backend's answers to the app
+team's asks (§16). For: the mobile app team.
+Server code: customer-api `main` 47cb6ba plus `feat/group-check-in-follow-ups`
+(§16), booking-api `main` 2f72f0a. Tested end to end on 2026-10-14, locally
+and live on `api.gostyle.uk` (§13, §16.5).
 
 The booker of a party arrives at the salon and taps **We are here** once. The
 desk gets the ordinary check-in request for **each member** of the party, and
@@ -19,10 +21,14 @@ production on 2026-10-14**, and a real party was checked in live the same day
 (§13). If a switch is ever off, both routes answer `404` and no party row
 offers the button (§12).
 
-**New: a member checks in on their own lane (§15).** A member who is not the
-booker can now say "I am here" for themselves, from the party read, with the
-single check-in route. It has two more switches of its own, **off by default**
-(§15.6); "ON on production" above is about the booker's We are here only.
+**A member checks in on their own lane (§15).** A member who is not the
+booker can say "I am here" for themselves, from the party read, with the
+single check-in route. Its switches are on in production too (seen live on
+2026-10-14: the member rows carry `is_me`, `booking_id` and `can_check_in`).
+
+**New in §16:** the party read's own button for the booker (no more taking it
+from My Bookings), a member's chair scan, a member reading their own lane, and
+a member's own Cancel Request.
 
 ---
 
@@ -33,7 +39,7 @@ single check-in route. It has two more switches of its own, **off by default**
 3. **The button comes from the server.** Show **We are here** only when the `GROUP` row's `can_check_in` is `true` (§3). Never work the rule out in the app.
 4. **One tap, no body: everyone.** That is the whole v1 feature. (`booking_ids` exists, but do not build "pick members" in v1: §5.2.)
 5. **Answers are `camelCase`** (`groupId`, `bookingId`, `memberKind`). They are booking-api's own, passed through as they came, like the single check-in. The My Bookings row stays `snake_case`.
-6. **No chair scan for a party.** Every member is "Wait for Staff". Never send `chair_token`: it is a `422`.
+6. **No chair scan on the party's We are here.** Everyone it asks for is "Wait for Staff". Never send `chair_token` on the party route: it is a `422`. (A member scanning their own chair on their own lane is built: §16.2.)
 7. **Sending it again is always safe.** Members already waiting stay waiting; nobody gets a second request. Retry freely after a `503` or a lost connection.
 8. **Each member's request is the same object as one booking's** (`CheckInRequest`), with the same states: `WAITING`, `APPROVED`, `REJECTED`, `EXPIRED`, `CLOSED`, `WITHDRAWN`.
 
@@ -128,7 +134,7 @@ Things to know:
 - **The window.** `start_time` is when the party starts (everyone in an app party starts together). `end_time` is when the last member finishes. The button is on from 30 minutes before `start_time` until `end_time`.
 - **The row is a snapshot.** Refresh My Bookings when the app comes back to the foreground, so a party that was 40 minutes away gets its button once `check_in_opens_at` passes. The server checks everything again on the tap anyway.
 - **The row follows the booker's own booking.** The row's `status` is the booker's own. Once the desk checks the booker in (by approving the request, or by scanning the party pass, which is the booker's code), the row says `CHECKED_IN` and `can_check_in` is `false`, even if other members are not in yet. With the v1 tap (no body, everyone is asked at once) this does not matter. If the desk scans the party pass before anyone taps, the party is already at the desk, and the desk checks the others in by hand. It is also the reason not to build "pick members" yet (§5.2).
-- **The party screen (`GET /booking/{group_id}`) does not carry these fields at its top level.** It has no party `can_check_in`, `check_in_opens_at` or `is_booker`. Take them from the My Bookings row: pass the row's values into the party screen, and refresh My Bookings when that screen comes to the foreground. Its **member rows** can now carry a `can_check_in` and `check_in_opens_at` of their own: that is a member's own check-in, not the party's (§15).
+- **The party screen (`GET /booking/{group_id}`) carries the same four fields at its top level** (§16.1): `is_booker`, `can_check_in`, `check_in_opens_at`, `can_scan_chair`, worked out by the same function as this row. Draw the booker's button on the party screen from them, so a party opened from a push or a deep link works. Until that release is deployed the keys are not there: a missing key is `false`. Its **member rows** carry a member's own check-in, not the party's (§15).
 
 ---
 
@@ -557,8 +563,8 @@ Real bodies:
 
 ## 10. Not in v1
 
-- **Scan the chair for a party.** Every member is Wait for Staff.
-- **Cancel Request for a party.** There is no party route for it. Do not offer it. (The single `POST /booking/{bookingId}/check-in/withdraw` works on the booker's own `bookingId` only; on any other member's it is `404`. Do not build on that.)
+- **Scan the chair for the party's We are here.** The booker's one tap asks for everyone as Wait for Staff. (A member scanning their **own** chair is built: §16.2.)
+- **Cancel Request for the whole party.** There is no party route for it: do not offer one on the party's We are here. A member takes back **their own** waiting request on their own lane (§16.4). The booker cannot take back another member's: that is `404`.
 - **A second try after a rejection.** A `REJECTED` member speaks to the desk.
 - **A welcome per member in this read** (`checkIn`): only the booker's own, §6. A member who checks in on their own lane reads their own welcome with `GET /booking/{booking_id}/check-in` (§15).
 
@@ -656,10 +662,10 @@ desk's through booking-api, as the business web.
 
 ## 15. A member checks in on their own lane
 
-**Status:** built (booking-api `main` 2f72f0a; customer-api
-`feat/group-self-check-in` 17e469d). Behind switches that are **off by
-default** (§15.6). Proven by unit tests on both sides (§15.7). Not yet run end
-to end.
+**Status:** built and merged (booking-api `main` 2f72f0a; customer-api `main`
+47cb6ba). Its switches are **on in production** (§15.6 lists them; seen live
+2026-10-14). Run end to end locally on 2026-10-14 with a real chair scan
+(§16.5).
 
 A member who is not the booker (a friend with an account, `kind:
 "registered"`) can say "I am here" for **themselves**. There is no new check-in
@@ -694,7 +700,7 @@ one shape for all rows:
 - `can_check_in` and `check_in_opens_at` follow the **member's own lane**: that row's own `status`, `start_time` and `end_time`. Not the party's, not the booker's. It is the same rule as a single booking's row, worked out by the same code.
 - `booking_id` is **not** `members[].id`. `members[].id` is the member's place in the party: never send it anywhere (§7).
 - **Find the row by `is_me`, never by name or `user_id`.** Only `true` counts.
-- No `can_scan_chair` on a member row.
+- `can_scan_chair` is on every member row too: `true` only on the caller's own row, in its window, with chair scanning on (§16.2).
 - **Treat a missing key as `false`** (`null` for `booking_id` and `check_in_opens_at`). While a switch is off, some or all of these keys are not there (§15.6).
 
 Rana, a registered member, opens the party 10 minutes before it starts. This is
@@ -764,6 +770,7 @@ export interface PartyMemberSelfCheckIn {
   booking_id?: string | null;         // the caller's own lane; null on other rows
   can_check_in?: boolean;             // the button; false on other rows and on the booker's own
   check_in_opens_at?: string | null;  // UTC ISO; null on other rows and on the booker's own
+  can_scan_chair?: boolean;           // Scan the chair on the caller's own row (§16.2); false elsewhere
 }
 ```
 
@@ -774,7 +781,7 @@ are the single guide's (§5): `201` with `{ request }`, or `200` when one was
 already waiting. Then read `GET /booking/{booking_id}/check-in` while it is
 `WAITING` (single guide §6 and §7).
 
-- **Never send `chair_token`** on a member's lane. There is no chair scan for a member in v1.
+- **At a chair** (the row's `can_scan_chair` is `true`), the member may scan the card instead: the same `POST` with `{"chair_token": "<what the card's QR holds>"}`, exactly as the single guide §12. Otherwise send no body (Wait for Staff). Never a `chair_token` when `can_scan_chair` is `false`.
 - Never send the `GROUP` row's `id` to this route (`404`, §1), and never `members[].id`.
 - Another member's `booking_id` is `404` "No such booking". The app only ever has the caller's own anyway.
 - If the booker has already tapped We are here, the member's lane is already `WAITING`: the member's tap answers `200` with that same request. The other way round, if the member tapped first, the booker's We are here shows that member as `WAITING` (§5.3). Never a second request.
@@ -797,7 +804,6 @@ at all.
 
 - **The party route is still the booker's only.** `POST` and `GET /booking/group/{group_id}/check-in` answer `404` to a member, as before.
 - **Guests have no app.** The booker's one tap is still the only way to check a guest in from the app.
-- **No chair scan for a member** in v1.
 - **My Bookings is unchanged.** A member's `GROUP` row still has no button (`can_check_in: false`, §3). The member's button lives in the party read, on their own row.
 
 ### 15.6 Switches
@@ -832,3 +838,164 @@ In every case: no button, or a harmless `404`.
 - **customer-api unit tests** (1386 passed): the member row's `can_check_in` and `check_in_opens_at` (in the window, before, after, not confirmed, other rows, each switch off, `is_me` missing, `is_me` read strictly, `booking_id` untouched, no `can_scan_chair`, the member's own lane and never the party's or the booker's, the booker's own row `false` and `null` in the window).
 - **The example in §15.2:** booking-api's real party read for Rana, from its own code, passed through customer-api's real read path at 10 minutes before the start.
 - **Not yet run end to end** on a running system, and not yet live.
+
+---
+
+## 16. The backend's answers, built (2026-10-14 evening)
+
+The app team's status file listed what the backend still owed. These four are
+built in customer-api (`feat/group-check-in-follow-ups`), behind switches that
+are **already on in production**, so they go live with that deploy. Nothing
+changes in booking-api. Until the deploy, the new keys are simply absent: a
+missing key is `false` (or `null`), so nothing breaks.
+
+| Ask | What is built |
+| --- | ------------- |
+| 4.1 The booker's fields on the party read | §16.1 |
+| 4.2 A chair on a member's lane | §16.2 |
+| 4.3 A member reads their own lane | §16.3 |
+| 4.4 A member withdraws their own request | §16.4 |
+
+Still not built, by agreement: a push when the desk answers (read every 10
+seconds, §6), and each member's chair on the party read.
+
+### 16.1 The booker's button on the party read
+
+`GET /booking/{group_id}` now carries, **at its top level**, the four fields
+the `GROUP` row on My Bookings has (§3):
+
+| Field | Value |
+| ----- | ----- |
+| `is_booker` | `true` when the caller is the party's booker (`kind: "self"`), else `false` |
+| `can_check_in` | **The booker's We are here.** The same rule as the row: the booker only, party `CONFIRMED_BY_SALON`, from 30 minutes before `start_time` until `end_time`. Always `false` for a member. |
+| `check_in_opens_at` | When it opens (UTC). `null` for a member, and when the party is not `CONFIRMED_BY_SALON`. |
+| `can_scan_chair` | Always `false`: the party's tap has no chair. |
+
+The same function decides them as decides the row, so the list and the party
+screen agree. Draw the booker's button from **these** on the party screen,
+however the screen was opened. A real answer for the booker, 10 minutes before
+the start (trimmed):
+
+```json
+{
+  "id": "3a4b5d5c-5a4d-4949-a16c-f3a1f842b11b",
+  "booking_type": "GROUP",
+  "status": "CONFIRMED_BY_SALON",
+  "start_time": "2026-10-14T18:16:00+04:00",
+  "end_time": "2026-10-14T18:46:00+04:00",
+  "is_booker": true,
+  "can_check_in": true,
+  "check_in_opens_at": "2026-10-14T13:46:00.000Z",
+  "can_scan_chair": false
+}
+```
+
+The same party read by a member: `"is_booker": false`, `"can_check_in": false`,
+`"check_in_opens_at": null`, `"can_scan_chair": false`. A member's own button
+is on their member row (§15).
+
+```ts
+// GET /booking/{group_id} gains at its top level (snake_case). All four, or none.
+export interface PartyReadCheckIn {
+  is_booker?: boolean;
+  can_check_in?: boolean;             // the booker's We are here
+  check_in_opens_at?: string | null;  // UTC ISO
+  can_scan_chair?: boolean;           // always false for a party
+}
+```
+
+The party's `status` is the booker's own booking, as on the row: once the desk
+checks the booker in, `can_check_in` is `false` here too (§3).
+
+### 16.2 A member scans their own chair
+
+A member scanning the card on their chair is one person in one chair, and the
+single route takes the scan on a member's lane as on any booking. So:
+
+- The caller's **own** member row now carries `can_scan_chair`: `true` in that row's window while chair scanning is on (it is on in production), `false` otherwise. Every other row carries `false`. The booker's own row is always `false` (their way is We are here).
+- When it is `true`, offer **Scan the chair** next to "I am here". The scan sends `{"chair_token": "<card>"}` to `POST /booking/{booking_id}/check-in`, exactly as single guide §12, with every answer of that section (wrong salon, old card, the two `503`s).
+- The desk sees the member's chair on its list, as for any booking.
+
+A real member row and the real scan's answer, chair 8 (trimmed; test booking codes):
+
+```json
+{ "booking_code": "GS-M2-200627", "kind": "registered", "status": "CONFIRMED_BY_SALON",
+  "is_me": true, "booking_id": "60232723-ea9c-4d7d-ac3d-507ef273c300",
+  "can_check_in": true, "check_in_opens_at": "2026-10-14T13:46:00.000Z",
+  "can_scan_chair": true }
+```
+
+```json
+{ "request": { "requestId": "01a13abc-6a90-7220-9f0c-290cc9741c27",
+  "bookingId": "60232723-ea9c-4d7d-ac3d-507ef273c300", "state": "WAITING",
+  "raisedAt": "2026-10-14T14:06:28.966Z", "decidedAt": null,
+  "chair": { "number": "8", "zoneName": "Window section" } } }
+```
+
+The party's We are here is unchanged: no chair, `chair_token` is `422` there.
+
+### 16.3 A member reads their own lane
+
+`GET /booking/{booking_id}` with the member's own token and their row's
+`booking_id` answers their lane: an ordinary booking, so `booking_type` is
+`"SINGLE"`, with its own status, times, code, the welcome (`check_in`, single
+guide §14.3) and the same `can_check_in`, `check_in_opens_at` and
+`can_scan_chair` as their member row. Use it to build the member's own pass. A
+real answer before the tap (trimmed; a test booking code):
+
+```json
+{ "id": "60232723-ea9c-4d7d-ac3d-507ef273c300", "booking_type": "SINGLE",
+  "status": "CONFIRMED_BY_SALON",
+  "start_time": "2026-10-14T20:16:00+06:00", "end_time": "2026-10-14T20:46:00+06:00",
+  "pass_qr_code": "GS-M2-200627", "check_in": null,
+  "can_check_in": true, "check_in_opens_at": "2026-10-14T13:46:00.000Z",
+  "can_scan_chair": true }
+```
+
+- After the desk approves: `status` is `CHECKED_IN` and `check_in` is `{ at, via: "SELF", by_name }`.
+- The times may carry a different offset from the party read (`+06:00` here, `+04:00` there). They are the same instants: compare instants, never the clock text (§11).
+- **Members only.** The booker reading a member's lane is `404`, and the booker's own lane is not for the booker's pass: the booker's way is the party (§2).
+
+### 16.4 A member takes back their own request
+
+A member's request is an ordinary one on their own lane, so the single guide's
+Cancel Request works for it: `POST /booking/{booking_id}/check-in/withdraw`
+while it is `WAITING` (single guide §13). They may ask again after, with or
+without a chair.
+
+- Offer it only on the member's **own** waiting request.
+- The booker cannot take back a member's request: that is `404` `BOOKING_NOT_FOUND`.
+- There is still no Cancel Request for the party's We are here (§10).
+
+### 16.5 How this was tested (2026-10-14)
+
+All four services on one machine, every switch on, booking-api `main` 2f72f0a,
+customer-api `feat/group-check-in-follow-ups`. A party (the booker, a
+registered member, a guest) seeded in the shape the app's create writes; every
+call through the real doors. **38 of 38 checks passed:**
+
+- The booker's party read: `is_booker: true`, `can_check_in: true`, the opening time, `can_scan_chair: false`; their own member row has no member button.
+- The member's party read: `is_booker: false`, no party button; their own row `is_me`, `booking_id`, `can_check_in: true`, `can_scan_chair: true`; the guest's row `false`.
+- The member's lane read: `200`, `SINGLE`, the same three fields, `check_in: null`. The booker reading it: `404`.
+- A **real chair scan** on the member's lane (a platform chair card, chair 8): `201`, chair 8, and the desk's list shows chair 8.
+- The booker withdrawing the member's request: `404`. The member withdrawing their own: `WITHDRAWN`. Asking again at chair 9: `201`, chair 9.
+- The member on the party route: `404`.
+- The desk approves: the member's read says `APPROVED`, `via: SELF`; their lane says `CHECKED_IN` with `check_in.via: SELF`, and no more chair button.
+- The booker's party read after that: the button still on (the booker is not in yet), the member `CHECKED_IN`. The booker's We are here: `201`, the booker and the guest `RAISED`, the member `CHECKED_IN`.
+- The member's My Bookings `GROUP` row: still no button (§3).
+
+Unit tests: customer-api 1400 passed (12 new for §16.1, 4 new and 5 updated
+for §16.2). Live: chair scanning is on in production (a scan with a made-up
+card reached platform and was refused as an unknown card; nothing was asked).
+
+**Still to try live:** one member scan at a salon with a printed chair card,
+once this is deployed.
+
+### 16.6 QA checklist (§16)
+
+- [ ] Open the party from a push or deep link as the booker, 10 minutes before: We are here shows, from the party read alone.
+- [ ] The same party as a member: no party button; their own row has "I am here", and Scan the chair.
+- [ ] The member scans their chair card: `WAITING` with that chair; the desk sees it.
+- [ ] The member taps Cancel Request: `WITHDRAWN`; they can ask again.
+- [ ] The member's pass from `GET /booking/{booking_id}`: their own code and times; after approval, `CHECKED_IN` and the welcome.
+- [ ] The booker never sees a member's Cancel Request or chair.
