@@ -2121,7 +2121,14 @@ _PAYMENT_REQUEST = {
             "the row's own too: whether to offer Scan the chair, "
             "`can_check_in` with chair scanning (CHAIR_SCAN_V1) on, `false` "
             "while it is off. No key for any of the three while the switch "
-            "is off. Not on a party's or a routine's read."
+            "is off. Not on a party's or a routine's read.\n\n"
+            "A PARTY'S MEMBER ROWS, behind GROUP_SELF_CHECK_IN_V1 (and "
+            "SELF_CHECK_IN_V1), only when booking-api marks the caller's own "
+            "row with `is_me`: every member row gets `can_check_in` and "
+            "`check_in_opens_at`, the rule above on that member's own lane for "
+            "the `is_me` row, `false` and `null` on the rest. The member checks "
+            "in with POST /booking/{booking_id}/check-in, `booking_id` from "
+            "the same row. No `can_scan_chair` on a member row."
         ),
         responses={
             200: OpenApiResponse(
@@ -2657,6 +2664,27 @@ def _check_in_fields(row, now):
             and row.get("booking_type") != "GROUP"
         ),
     }
+
+
+def _member_check_in_fields(member, now):
+    """
+    can_check_in and check_in_opens_at for the caller's OWN member row of a
+    party's read (GROUP_SELF_CHECK_IN_V1, group_views.py). The member checks
+    in on their own lane, an ordinary booking, by its `booking_id` through
+    POST /booking/<id>/check-in, so the row follows the SINGLE rule:
+    _check_in_fields, fed the MEMBER's own status, start_time and end_time,
+    never the party's and never the booker's. Nothing else is decided here.
+
+    Only those two keys: a member scans no chair in v1, so no can_scan_chair.
+    """
+    lane = {
+        "booking_type": "SINGLE",
+        "status": member.get("status"),
+        "start_time": member.get("start_time"),
+        "end_time": member.get("end_time"),
+    }
+    fields = _check_in_fields(lane, now)
+    return {key: fields[key] for key in ("can_check_in", "check_in_opens_at") if key in fields}
 
 
 @extend_schema(
