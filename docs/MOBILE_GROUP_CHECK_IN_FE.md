@@ -19,6 +19,11 @@ production on 2026-10-14**, and a real party was checked in live the same day
 (§13). If a switch is ever off, both routes answer `404` and no party row
 offers the button (§12).
 
+**New: a member checks in on their own lane (§15).** A member who is not the
+booker can now say "I am here" for themselves, from the party read, with the
+single check-in route. It has two more switches of its own, **off by default**
+(§15.6); "ON on production" above is about the booker's We are here only.
+
 ---
 
 ## 0. Read this first
@@ -45,7 +50,8 @@ offers the button (§12).
 `GET /booking/{id}` and `POST /booking/{id}/cancel` take for a party.
 
 `POST /booking/{id}/check-in` (the single route) does **not** take a party's id.
-It answers `404` for it.
+It answers `404` for it. It does take a member's own lane id, the `booking_id`
+on their own row of the party read: §15.
 
 ---
 
@@ -122,7 +128,7 @@ Things to know:
 - **The window.** `start_time` is when the party starts (everyone in an app party starts together). `end_time` is when the last member finishes. The button is on from 30 minutes before `start_time` until `end_time`.
 - **The row is a snapshot.** Refresh My Bookings when the app comes back to the foreground, so a party that was 40 minutes away gets its button once `check_in_opens_at` passes. The server checks everything again on the tap anyway.
 - **The row follows the booker's own booking.** The row's `status` is the booker's own. Once the desk checks the booker in (by approving the request, or by scanning the party pass, which is the booker's code), the row says `CHECKED_IN` and `can_check_in` is `false`, even if other members are not in yet. With the v1 tap (no body, everyone is asked at once) this does not matter. If the desk scans the party pass before anyone taps, the party is already at the desk, and the desk checks the others in by hand. It is also the reason not to build "pick members" yet (§5.2).
-- **The party screen (`GET /booking/{group_id}`) does not carry these fields today.** It has no `can_check_in`, `check_in_opens_at` or `is_booker`. Take them from the My Bookings row: pass the row's values into the party screen, and refresh My Bookings when that screen comes to the foreground. (If the server adds them to the party read later, this guide will say so.)
+- **The party screen (`GET /booking/{group_id}`) does not carry these fields at its top level.** It has no party `can_check_in`, `check_in_opens_at` or `is_booker`. Take them from the My Bookings row: pass the row's values into the party screen, and refresh My Bookings when that screen comes to the foreground. Its **member rows** can now carry a `can_check_in` and `check_in_opens_at` of their own: that is a member's own check-in, not the party's (§15).
 
 ---
 
@@ -491,6 +497,9 @@ usual, with something like "{booker's name} checks in the party when you
 arrive." Do **not** call the group check-in routes: they answer `404` to
 anyone but the booker.
 
+With the member's own switches on, the member can also check in on their own
+lane from the party read: §15.
+
 ---
 
 ## 9. Errors
@@ -551,8 +560,10 @@ Real bodies:
 - **Scan the chair for a party.** Every member is Wait for Staff.
 - **Cancel Request for a party.** There is no party route for it. Do not offer it. (The single `POST /booking/{bookingId}/check-in/withdraw` works on the booker's own `bookingId` only; on any other member's it is `404`. Do not build on that.)
 - **A second try after a rejection.** A `REJECTED` member speaks to the desk.
-- **Members checking themselves in from their own app.** Only the booker's tap.
-- **A welcome per member** (`checkIn`): only the booker's own, §6.
+- **A welcome per member in this read** (`checkIn`): only the booker's own, §6. A member who checks in on their own lane reads their own welcome with `GET /booking/{booking_id}/check-in` (§15).
+
+(Members checking themselves in from their own app was here. It is built now:
+§15.)
 - **A push when the desk answers.** Read it (§6).
 
 ---
@@ -585,6 +596,9 @@ What the app sees while a switch is off (each one tested, §13):
 
 In every case: no button, and a tap would be a harmless `404`. The app needs no
 switch of its own.
+
+A member checking in on their own lane needs two more switches, off by
+default: §15.6.
 
 ---
 
@@ -637,3 +651,184 @@ desk's through booking-api, as the business web.
 - [ ] No Scan the chair on a party, even where single bookings have it.
 - [ ] Airplane mode during the tap, then tap again: no duplicate at the desk.
 - [ ] Switch off on the server: no button on any `GROUP` row, and the route is `404`.
+
+---
+
+## 15. A member checks in on their own lane
+
+**Status:** built (booking-api `main` 2f72f0a; customer-api
+`feat/group-self-check-in` 17e469d). Behind switches that are **off by
+default** (§15.6). Proven by unit tests on both sides (§15.7). Not yet run end
+to end.
+
+A member who is not the booker (a friend with an account, `kind:
+"registered"`) can say "I am here" for **themselves**. There is no new check-in
+route. Each member's place in the party is an ordinary booking (their lane), so
+the member uses the single check-in route on it, with that lane's id.
+
+### 15.1 The flow
+
+1. Open the party: `GET /booking/{group_id}` (the `GROUP` row's `id`).
+2. In `members[]`, find the row where `is_me` is `true`. That row is the caller's own.
+3. Draw the button from that row's `can_check_in`, and "Check-in opens at {time}" from its `check_in_opens_at`. **Never work the rule out in the app.**
+4. Tap: `POST /booking/{booking_id}/check-in`, no body, with the `booking_id` from **that same row**.
+5. To show waiting or approved, read `GET /booking/{booking_id}/check-in`, the same path.
+
+Steps 4 and 5 are the single check-in, exactly. Its answers, states, polling,
+errors and welcome are in the single guide (`docs/MOBILE_SELF_CHECK_IN_FE.md`):
+the tap §5, the states §6, polling §7, errors §8, the welcome §14. They are not
+repeated here.
+
+### 15.2 The fields on the party read
+
+While the switches are on (§15.6), **every** member row carries all four keys,
+one shape for all rows:
+
+| Field | From | On the caller's own row (`is_me: true`) | On every other row |
+| ----- | ---- | --------------------------------------- | ------------------ |
+| `is_me` | booking-api | `true` | `false`. A guest's row is always `false`. |
+| `booking_id` | booking-api | The caller's own lane id: the id the single route takes. | `null` |
+| `can_check_in` | customer-api | **The button.** `true` while the lane is `CONFIRMED_BY_SALON`, from 30 minutes before its `start_time` until its `end_time`. Always `false` on the booker's own row (§15.4). | `false` |
+| `check_in_opens_at` | customer-api | When it opens, in UTC (`"...Z"`). `null` when the lane is not `CONFIRMED_BY_SALON`. Still set after the window has closed: it is a fact, as on a single booking. Always `null` on the booker's own row (§15.4). | `null` |
+
+- `can_check_in` and `check_in_opens_at` follow the **member's own lane**: that row's own `status`, `start_time` and `end_time`. Not the party's, not the booker's. It is the same rule as a single booking's row, worked out by the same code.
+- `booking_id` is **not** `members[].id`. `members[].id` is the member's place in the party: never send it anywhere (§7).
+- **Find the row by `is_me`, never by name or `user_id`.** Only `true` counts.
+- No `can_scan_chair` on a member row.
+- **Treat a missing key as `false`** (`null` for `booking_id` and `check_in_opens_at`). While a switch is off, some or all of these keys are not there (§15.6).
+
+Rana, a registered member, opens the party 10 minutes before it starts. This is
+booking-api's real party read for her, passed through customer-api's real read
+path (§15.7), trimmed: `age_group`, `services`, `products`, `stylist` and
+`total` are left out.
+
+```json
+{
+  "members": [
+    {
+      "ref": 0,
+      "id": "3f6b2a91-8c4d-4e7a-b5f1-0d2c9e8a7b63",
+      "booking_code": "GS-1046",
+      "user_id": "6fda7abd-1c2e-4f4a-9b1d-2a7c3e5f8a10",
+      "name": "Sarah",
+      "kind": "self",
+      "status": "CONFIRMED_BY_SALON",
+      "start_time": "2026-11-03T13:00:00+04:00",
+      "end_time": "2026-11-03T13:45:00+04:00",
+      "is_me": false,
+      "booking_id": null,
+      "can_check_in": false,
+      "check_in_opens_at": null
+    },
+    {
+      "ref": 1,
+      "id": "7a2e5c18-4b9f-4d3a-8e6c-1f0b7d2a9c45",
+      "booking_code": "GS-1047",
+      "user_id": "9c41e2b7-5d3a-4e8f-a6c2-7b1d0e9f3a24",
+      "name": "Rana",
+      "kind": "registered",
+      "status": "CONFIRMED_BY_SALON",
+      "start_time": "2026-11-03T13:00:00+04:00",
+      "end_time": "2026-11-03T13:45:00+04:00",
+      "is_me": true,
+      "booking_id": "c2d7a4e9-1b6f-4e3c-9a8d-5f0e2b7c4a16",
+      "can_check_in": true,
+      "check_in_opens_at": "2026-11-03T08:30:00.000Z"
+    },
+    {
+      "ref": 5,
+      "id": "1190b99c-69c3-42c2-a228-dff017aad6ca",
+      "booking_code": "GS-1048",
+      "user_id": null,
+      "name": "Liam (8 yrs)",
+      "kind": "guest",
+      "status": "CONFIRMED_BY_SALON",
+      "start_time": "2026-11-03T13:00:00+04:00",
+      "end_time": "2026-11-03T13:45:00+04:00",
+      "is_me": false,
+      "booking_id": null,
+      "can_check_in": false,
+      "check_in_opens_at": null
+    }
+  ]
+}
+```
+
+Rana taps: `POST /booking/c2d7a4e9-1b6f-4e3c-9a8d-5f0e2b7c4a16/check-in`.
+
+```ts
+// A member row of the party read (GET /booking/{group_id}) gains these
+// (snake_case, as the rest of the row). All four, or none (§15.6).
+export interface PartyMemberSelfCheckIn {
+  is_me?: boolean;                    // only `true` counts
+  booking_id?: string | null;         // the caller's own lane; null on other rows
+  can_check_in?: boolean;             // the button; false on other rows and on the booker's own
+  check_in_opens_at?: string | null;  // UTC ISO; null on other rows and on the booker's own
+}
+```
+
+### 15.3 The tap
+
+`POST /booking/{booking_id}/check-in`, no body (Wait for Staff). The answers
+are the single guide's (§5): `201` with `{ request }`, or `200` when one was
+already waiting. Then read `GET /booking/{booking_id}/check-in` while it is
+`WAITING` (single guide §6 and §7).
+
+- **Never send `chair_token`** on a member's lane. There is no chair scan for a member in v1.
+- Never send the `GROUP` row's `id` to this route (`404`, §1), and never `members[].id`.
+- Another member's `booking_id` is `404` "No such booking". The app only ever has the caller's own anyway.
+- If the booker has already tapped We are here, the member's lane is already `WAITING`: the member's tap answers `200` with that same request. The other way round, if the member tapped first, the booker's We are here shows that member as `WAITING` (§5.3). Never a second request.
+
+### 15.4 The booker's own row
+
+When the **booker** opens the party, their own row (`kind: "self"`) is the
+`is_me` row, with their own `booking_id`. **The server never offers the booker
+this button:** on that row `can_check_in` is always `false` and
+`check_in_opens_at` is always `null`, whatever the window says. Draw the button
+from `can_check_in` as everywhere; the app checks nothing else.
+
+Why: the booker's way is still **We are here** (§2), one tap that asks the desk
+for everyone, guests included. A tap on the booker's own lane alone would, once
+the desk approved it, take the `GROUP` row's button away (it follows the
+booker's own booking, §3), and the guests could not be checked in from the app
+at all.
+
+### 15.5 What has NOT changed
+
+- **The party route is still the booker's only.** `POST` and `GET /booking/group/{group_id}/check-in` answer `404` to a member, as before.
+- **Guests have no app.** The booker's one tap is still the only way to check a guest in from the app.
+- **No chair scan for a member** in v1.
+- **My Bookings is unchanged.** A member's `GROUP` row still has no button (`can_check_in: false`, §3). The member's button lives in the party read, on their own row.
+
+### 15.6 Switches
+
+All five must be on. All are **off by default**.
+
+| Service | Switch | What it does here |
+| ------- | ------ | ----------------- |
+| customer-api | `SELF_CHECK_IN_V1` | The single check-in route the member taps |
+| customer-api | `GROUP_SELF_CHECK_IN_V1` | `can_check_in` and `check_in_opens_at` on the member rows |
+| booking-api | `SELF_CHECK_IN_V1` | The check-in request behind that route |
+| booking-api | `MOBILE_GROUP_BOOKING` | The app's parties and their read |
+| booking-api | `MOBILE_GROUP_SELF_CHECK_IN` | `is_me` and `booking_id` on the member rows |
+
+The party read itself also needs customer-api's `GROUP_BOOKING_V2`, as it
+always has.
+
+What the app sees with one of them off:
+
+| Off | Member rows of the party read | The tap |
+| --- | ----------------------------- | ------- |
+| customer-api `GROUP_SELF_CHECK_IN_V1` | `is_me` and `booking_id`, but no `can_check_in` and no `check_in_opens_at` | No button to tap |
+| customer-api `SELF_CHECK_IN_V1` | `is_me` and `booking_id`, but no `can_check_in` and no `check_in_opens_at` | `404`, shape A, "Not found" |
+| booking-api `MOBILE_GROUP_SELF_CHECK_IN` | none of the four keys | No `booking_id` to tap with |
+| booking-api `SELF_CHECK_IN_V1` | all four keys (customer-api cannot see this switch) | `404`, shape B, `BOOKING_NOT_FOUND`: hide the button (single guide §8) |
+
+In every case: no button, or a harmless `404`.
+
+### 15.7 How this was checked
+
+- **booking-api unit tests** (3384 passed): `is_me` and `booking_id` on each member row (exactly one `is_me`, a guest always `false`, staff `false` on every row, no keys with the switch off); and the single route on a party lane (the member's own lane `201`; another member's lane `404` with nothing written; a guest's lane `404` even for the booker).
+- **customer-api unit tests** (1386 passed): the member row's `can_check_in` and `check_in_opens_at` (in the window, before, after, not confirmed, other rows, each switch off, `is_me` missing, `is_me` read strictly, `booking_id` untouched, no `can_scan_chair`, the member's own lane and never the party's or the booker's, the booker's own row `false` and `null` in the window).
+- **The example in §15.2:** booking-api's real party read for Rana, from its own code, passed through customer-api's real read path at 10 minutes before the start.
+- **Not yet run end to end** on a running system, and not yet live.
