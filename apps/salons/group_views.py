@@ -987,6 +987,14 @@ def _member_check_in(party, now):
     Then EVERY member row gets both keys, one shape for all: the rule's
     answer on the `is_me` row (views._member_check_in_fields), false and null
     on the rest. `is_me` is read strictly, `is True`, as `is_booker` is.
+
+    NEVER THE BOOKER'S OWN ROW (`kind: "self"`): false and null there,
+    whatever the window says. The booker's way is We are here, which asks for
+    every member, guests included. A tap on the booker's lane alone would,
+    once approved, take the GROUP row's button away (it follows the booker's
+    lane), and the guests could not be checked in from the app at all. The
+    server decides it, so no app build can forget. `is_me` and `booking_id`
+    on that row are booking-api's facts and are left as they came.
     """
     if not (settings.SELF_CHECK_IN_V1 and settings.GROUP_SELF_CHECK_IN_V1):
         return party
@@ -996,7 +1004,7 @@ def _member_check_in(party, now):
     if not all(isinstance(m, dict) and "is_me" in m for m in members):
         return party
     for m in members:
-        if m.get("is_me") is True:
+        if m.get("is_me") is True and m.get("kind") != "self":
             m.update(_member_check_in_fields(m, now))
         else:
             m.update({"can_check_in": False, "check_in_opens_at": None})
