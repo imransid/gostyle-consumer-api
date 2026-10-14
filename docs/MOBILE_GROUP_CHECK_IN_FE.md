@@ -1,7 +1,7 @@
 # Mobile Group Check-in ("We are here"): FE Guide
 
 Date: 2026-10-14, updated the same evening: the backend's answers to the app
-team's asks (§16). For: the mobile app team.
+team's asks (§16); and 2026-10-15: a push when the desk answers (§17). For: the mobile app team.
 Server code: customer-api `main` 47cb6ba plus `feat/group-check-in-follow-ups`
 (§16), booking-api `main` 2f72f0a. Tested end to end on 2026-10-14, locally
 and live on `api.gostyle.uk` (§13, §16.5).
@@ -449,7 +449,7 @@ The desk's reason for a rejection is never sent to the app. Use your own words.
 - Read once when the party's check-in screen opens, to draw the right state.
 - While the screen is open and **any** member is `WAITING`, read every **10 seconds**.
 - Stop when no member is `WAITING`, or when the screen closes.
-- There is **no push** when the desk answers (yet).
+- A **push** when the desk answers is built, behind a switch that is off until the server team turns it on (§17). Keep reading as above even then.
 - After the party (or a member) is cancelled or checked in another way, a `WAITING` request can stay `WAITING` for up to about a minute, then turns `CLOSED`. The same as one booking.
 
 There is **no welcome object** (`checkIn`, single guide §14) in this read. For
@@ -570,7 +570,7 @@ Real bodies:
 
 (Members checking themselves in from their own app was here. It is built now:
 §15.)
-- **A push when the desk answers.** Read it (§6).
+- (A push when the desk answers was here. It is built now, behind a switch: §17.)
 
 ---
 
@@ -856,8 +856,8 @@ missing key is `false` (or `null`), so nothing breaks.
 | 4.3 A member reads their own lane | §16.3 |
 | 4.4 A member withdraws their own request | §16.4 |
 
-Still not built, by agreement: a push when the desk answers (read every 10
-seconds, §6), and each member's chair on the party read.
+Still not built, by agreement: each member's chair on the party read. (The
+push when the desk answers is built since: §17.)
 
 ### 16.1 The booker's button on the party read
 
@@ -999,3 +999,23 @@ once this is deployed.
 - [ ] The member taps Cancel Request: `WITHDRAWN`; they can ask again.
 - [ ] The member's pass from `GET /booking/{booking_id}`: their own code and times; after approval, `CHECKED_IN` and the welcome.
 - [ ] The booker never sees a member's Cancel Request or chair.
+
+---
+
+## 17. A push when the desk answers (parties)
+
+The push itself, its `data`, and what to do on tap are the single guide's
+§16 (`docs/MOBILE_SELF_CHECK_IN_FE.md`). It is behind booking-api's switch
+`CHECK_IN_PUSH_V1`, **off until the server team turns it on**; keep reading
+every 10 seconds (§6) either way.
+
+**Who gets it: whoever tapped.**
+
+| Who tapped | Who gets the push | What it reads |
+| ---------- | ----------------- | ------------- |
+| The booker, We are here | The **booker**, one push per member, guests included | Their own: "You are checked in". A member's: "Rana Saleh is checked in", "The salon could not confirm Mina's arrival. Booking GS-1418." |
+| A member, on their own lane (§15) | That **member** | "You are checked in" |
+
+- A member with no name known reads as "A member of your party".
+- The push's `data` carries `groupId` for any party lane: on tap, open the party (`GET /booking/{groupId}`) and read `GET /booking/group/{groupId}/check-in` (§6) for the booker, or the member's own lane (§16.3) for a member. Draw from the reads, never from the push.
+- Three members answered at once are three pushes. Draw from the read, so the screen shows all three whichever push was tapped.
