@@ -63,6 +63,8 @@ OVER = ("2026-10-11T16:00:00+06:00", "2026-10-11T16:45:00+06:00")
 RANA_LANE = "c2d7a4e9-1b6f-4e3c-9a8d-5f0e2b7c4a16"
 BOOKER_LANE = "5b8e1f2a-7c3d-4a9e-b6f0-2d4c8e1a3b57"
 KEYS = ("can_check_in", "check_in_opens_at")
+# Every member row carries these three (the chair too, since 4.2 of the app's asks).
+ALL_KEYS = KEYS + ("can_scan_chair",)
 
 
 def member(ref, kind, user_id, *, times=IN_WINDOW, status="CONFIRMED_BY_SALON", **over):
@@ -173,18 +175,33 @@ class MemberRowRuleTests(PartyReadSeams, SimpleTestCase):
             self.assertEqual(self.mine(self.read(party()))["can_check_in"], "the rule's answer")
 
     @override_settings(CHAIR_SCAN_V1=True)
-    def test_no_can_scan_chair_on_any_member_row(self):
-        for m in self.read(party()):
-            self.assertNotIn("can_scan_chair", m)
+    def test_my_row_may_scan_a_chair_in_my_window_and_no_other_row_may(self):
+        members = self.read(party())
+        self.assertEqual([m["can_scan_chair"] for m in members], [False, True, False])
+
+    @override_settings(CHAIR_SCAN_V1=True)
+    def test_no_chair_outside_my_window_or_once_i_am_in(self):
+        for rana in (member(1, "registered", RANA, is_me=True, booking_id=RANA_LANE, times=LATER),
+                     member(1, "registered", RANA, is_me=True, booking_id=RANA_LANE, times=OVER),
+                     member(1, "registered", RANA, is_me=True, booking_id=RANA_LANE,
+                            status="CHECKED_IN")):
+            with self.subTest(rana=(rana["start_time"], rana["status"])):
+                self.assertIs(self.read(party(rana=rana))[1]["can_scan_chair"], False)
+
+    @override_settings(CHAIR_SCAN_V1=False)
+    def test_chair_scanning_off_means_false_on_every_row_even_in_my_window(self):
+        members = self.read(party())
+        self.assertIs(members[1]["can_check_in"], True)
+        self.assertEqual([m["can_scan_chair"] for m in members], [False, False, False])
 
 
 @override_settings(**ALL_ON)
 class MemberRowShapeTests(PartyReadSeams, SimpleTestCase):
     """One shape for every row, and only when all three gates hold."""
 
-    def test_every_member_row_carries_both_keys(self):
+    def test_every_member_row_carries_all_three_keys(self):
         for m in self.read(party()):
-            self.assertEqual(set(KEYS) - set(m), set(), m["ref"])
+            self.assertEqual(set(ALL_KEYS) - set(m), set(), m["ref"])
 
     def test_booking_id_passes_through_untouched(self):
         members = self.read(party())
@@ -206,6 +223,7 @@ class MemberRowShapeTests(PartyReadSeams, SimpleTestCase):
             with override_settings(**{switch: False}), self.subTest(off=switch):
                 for m in self.read(party()):
                     self.assertEqual(self.fields(m), {}, m["ref"])
+                    self.assertNotIn("can_scan_chair", m)
 
     def test_is_me_missing_means_no_keys(self):
         # booking-api's own switch off: no row carries is_me.
@@ -249,8 +267,11 @@ class BookerRowTests(PartyReadSeams, SimpleTestCase):
         # booking-api's facts about the caller, left as they came.
         self.assertEqual((booker["kind"], booker["is_me"], booker["booking_id"]),
                          ("self", True, BOOKER_LANE))
-        # In the window, and still no button.
+        # In the window, and still no button, and no chair (chair scanning on).
         self.assertEqual(self.fields(booker), {"can_check_in": False, "check_in_opens_at": None})
+        with override_settings(CHAIR_SCAN_V1=True):
+            booker = self.read(as_the_booker_sees_it(), user=Customer())[0]
+        self.assertIs(booker["can_scan_chair"], False)
 
     def test_every_row_still_carries_both_keys_when_the_booker_reads(self):
         members = self.read(as_the_booker_sees_it(), user=Customer())
@@ -278,19 +299,21 @@ class MemberShimTests(SimpleTestCase):
                         {"booking_type": "SINGLE", "status": status,
                          "start_time": times[0], "end_time": times[1]}, NOW)
                     self.assertEqual(_member_check_in_fields(m, NOW),
-                                     {key: single[key] for key in KEYS})
+                                     {key: single[key] for key in ALL_KEYS})
 
     def test_only_the_lanes_own_status_and_times_are_read(self):
         # Anything else on the row (a party's type, another status word) is ignored.
         m = member(1, "registered", RANA, booking_type="GROUP", is_booker=False,
                    payment_status="PAY_AFTER_CHECK_IN")
         self.assertEqual(_member_check_in_fields(m, NOW),
-                         {"can_check_in": True, "check_in_opens_at": "2026-10-11T11:40:00.000Z"})
+                         {"can_check_in": True, "check_in_opens_at": "2026-10-11T11:40:00.000Z",
+                          "can_scan_chair": True})
 
     def test_the_shim_is_unchanged_it_knows_nothing_of_kind(self):
         # The booker rule is the party read's (group_views._member_check_in),
         # not the single booking's: fed a "self" row, the shim answers as ever.
-        expected = {"can_check_in": True, "check_in_opens_at": "2026-10-11T11:40:00.000Z"}
+        expected = {"can_check_in": True, "check_in_opens_at": "2026-10-11T11:40:00.000Z",
+                    "can_scan_chair": True}
         for kind, user_id in (("self", str(USER_ID)), ("registered", RANA)):
             with self.subTest(kind=kind):
                 self.assertEqual(_member_check_in_fields(member(0, kind, user_id), NOW), expected)
