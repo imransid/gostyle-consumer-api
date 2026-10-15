@@ -312,11 +312,13 @@ GROUP_CHECK_IN_V1 = env.bool("GROUP_CHECK_IN_V1", default=False)
 # SELF_CHECK_IN_V1 alone decides that route.
 GROUP_SELF_CHECK_IN_V1 = env.bool("GROUP_SELF_CHECK_IN_V1", default=False)
 
-# A party's Cancel button: can_cancel on a GROUP row of My Bookings looks at
-# the party's members, not only its status. The party cancel is all or
-# nothing, and booking-api refuses it (409 cannot_cancel) once any lane is
-# checked in, so the button must not be offered then. On, each GROUP row that
-# the window would let cancel is read once (GET
+# A party's Cancel button: can_cancel on a GROUP row of My Bookings is the
+# booker's alone, and looks at the party's members, not only its status. The
+# party cancel answers anyone but the booker 404, so a row whose is_booker is
+# not true (booking-api's, sent with its MOBILE_GROUP_CHECK_IN) has no button.
+# It is all or nothing, and booking-api refuses it (409 cannot_cancel) once
+# any lane is checked in, so the button must not be offered then either. On,
+# each booker's GROUP row that the window would let cancel is read once (GET
 # /v1/mobile-booking/group/{id}, within SINGLE_LOOKUP_TIMEOUT), and
 # can_cancel is false when any member row is CHECKED_IN or COMPLETED, or the
 # read does not answer. Needed before booking-api's MOBILE_GROUP_LIVE_STATUS
