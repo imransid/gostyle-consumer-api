@@ -8,6 +8,9 @@ P1: the tab pinned as it answers today, before anything moves.
 P2: the platform's package rules in one place (packages.py, the package
 selectors), and the tab on them behind PACKAGES_LIVE_RULES_V1.
 
+P3: the route, its 404s, every field, and the OpenAPI shape and example
+checked against what the view really answers.
+
 The selectors are mocked; no database.
 """
 
@@ -19,8 +22,13 @@ from unittest import mock
 
 from django.db.models import OuterRef, Q
 from django.test import SimpleTestCase, override_settings
+from django.urls import resolve, reverse
+from drf_spectacular.generators import SchemaGenerator
 
 from apps.salons import menu, packages, selectors
+from apps.salons.package_detail_serializers import EXAMPLE
+from apps.salons.package_detail_views import NO_PACKAGE, NO_SALON, SalonPackageDetailView
+from apps.salons.views import SalonPackagesView
 
 SALON = uuid.UUID("33333333-3333-3333-3333-333333333333")
 TENANT = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -659,3 +667,306 @@ class MenuForPackagesTests(SimpleTestCase):
                 minor = menu.service_price_minor(row)
                 self.assertEqual(minor, 19900 if branch is None else branch)
                 self.assertEqual(menu.service_price(row), Decimal(minor) / 100)
+
+
+
+# ---------------------------------------------------------------------------
+# P3: GET /salon/<salon_id>/package/<package_id>
+# ---------------------------------------------------------------------------
+
+
+def url(salon=SALON, package=PACKAGE):
+    return f"/api/v1/salon/{salon}/package/{package}"
+
+
+class DetailSeams(Reads):
+    """
+    The view with its reads mocked: the salon, the package, and
+    package_lines' three reads (package_lines itself runs for real).
+    """
+
+    def call(self, path=None, *, salon=True, package=True, drafts=(), svc=None,
+             variants=None, **headers):
+        found = types.SimpleNamespace(id=SALON, tenant_id=TENANT, branch_id=BRANCH) if salon else None
+        if package is True:
+            package = package_row()
+        with ExitStack() as stack:
+            self.salon_lookup = stack.enter_context(mock.patch(
+                "apps.salons.package_detail_views.salon_profile", return_value=found))
+            self.package_lookup = stack.enter_context(mock.patch(
+                "apps.salons.package_detail_views.package_for_salon", return_value=package or None))
+            self.reads(stack, drafts=drafts, svc=svc, variants=variants)
+            return self.client.get(path or url(), **headers)
+
+
+class DetailRouteTests(DetailSeams, SimpleTestCase):
+    """What the endpoint answers, through the URL layer."""
+
+    def assert_our_404(self, response, detail):
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response["Content-Type"], "application/json")
+        self.assertEqual(response.json(), {
+            "detail": detail,
+            "code": "not_found",
+            "errors": [{"field": None, "code": "not_found", "message": detail}],
+        })
+
+    def test_a_package_of_this_salon_answers_200_without_a_token(self):
+        response = self.call()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["id"], str(PACKAGE))
+        self.assertEqual(response.json()["salon_id"], str(SALON))
+
+    def test_the_selectors_get_the_parsed_ids(self):
+        self.call()
+        self.salon_lookup.assert_called_once_with(SALON)
+        (salon, package_id), _ = self.package_lookup.call_args
+        self.assertEqual(salon.id, SALON)
+        self.assertEqual(package_id, PACKAGE)
+
+    def test_ids_that_are_not_uuids_are_our_json_404(self):
+        self.assert_our_404(self.call(url(salon="not-a-uuid")), NO_SALON)
+        self.salon_lookup.assert_not_called()
+        self.assert_our_404(self.call(url(package="also-not")), NO_PACKAGE)
+        self.package_lookup.assert_not_called()
+
+    def test_other_uuid_spellings_are_404(self):
+        for spelling in (PACKAGE.hex, "{%s}" % PACKAGE, "urn:uuid:%s" % PACKAGE, str(PACKAGE)[:-1]):
+            with self.subTest(spelling=spelling):
+                self.assert_our_404(self.call(url(package=spelling)), NO_PACKAGE)
+
+    def test_an_uppercase_uuid_is_accepted(self):
+        response = self.call(url(salon=str(SALON).upper(), package=str(PACKAGE).upper()))
+        self.assertEqual(response.status_code, 200)
+
+    def test_an_unknown_salon_is_404(self):
+        self.assert_our_404(self.call(salon=False), NO_SALON)
+        self.package_lookup.assert_not_called()
+
+    def test_a_package_not_found_for_this_salon_is_404(self):
+        # Another business's package, one never on sale, or no such id: the
+        # selector answers None for all three (PackageSelectorTests).
+        self.assert_our_404(self.call(package=False), NO_PACKAGE)
+
+    def test_a_bad_token_is_401_even_on_this_public_route(self):
+        response = self.call(HTTP_AUTHORIZATION="Bearer not.a.token")
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["code"], "not_authenticated")
+        self.salon_lookup.assert_not_called()
+
+    def test_only_get(self):
+        with mock.patch("apps.salons.package_detail_views.salon_profile"):
+            response = self.client.post(url())
+        self.assertEqual(response.status_code, 405)
+
+
+class DetailUrlTests(SimpleTestCase):
+    def test_the_route_has_a_name(self):
+        self.assertEqual(
+            reverse("salon-package-detail", kwargs={"salon_id": SALON, "package_id": PACKAGE}),
+            url(),
+        )
+
+    def test_any_segment_reaches_the_view(self):
+        match = resolve(url(salon="nope", package="nope"))
+        self.assertIs(match.func.view_class, SalonPackageDetailView)
+        self.assertEqual(match.kwargs, {"salon_id": "nope", "package_id": "nope"})
+
+    def test_the_packages_tab_route_is_unchanged(self):
+        match = resolve(tab_url())
+        self.assertIs(match.func.view_class, SalonPackagesView)
+        self.assertEqual(match.kwargs, {"salon_id": SALON})
+
+
+class DetailFieldsTests(DetailSeams, SimpleTestCase):
+    """Every field, from the published content (F2) and the services here."""
+
+    def test_the_whole_answer(self):
+        self.assertEqual(self.call().json(), {
+            "id": str(PACKAGE),
+            "salon_id": str(SALON),
+            "name": "The Full Groom",
+            "description": "The complete reset: cut, beard, hot towel.",
+            "price": 460.0,
+            "price_before": 689.0,
+            "save_amount": 229.0,
+            "save_percent": 33,
+            "duration_minutes": 75,
+            "is_active": True,
+            "includes": [
+                {"service_id": str(CUT), "name": "The Gentleman's Cut", "price": 199.0, "quantity": 1},
+                {"service_id": str(BEARD), "name": "Beard Trim & Shape", "price": 230.0, "quantity": 1},
+                {"service_id": str(TOWEL), "name": "Hot Towel Shave", "price": 260.0, "quantity": 1},
+            ],
+            "timeline": [
+                {"service_id": str(CUT), "name": "The Gentleman's Cut",
+                 "offset_minutes": 0, "duration_minutes": 30},
+                {"service_id": str(BEARD), "name": "Beard Trim & Shape",
+                 "offset_minutes": 30, "duration_minutes": 20},
+                {"service_id": str(TOWEL), "name": "Hot Towel Shave",
+                 "offset_minutes": 50, "duration_minutes": 25},
+            ],
+            "terms": "Free to cancel up to 24 hours before.",
+            "theme": "gold",
+        })
+
+    def test_the_contract_s_keys_in_its_order_then_theme(self):
+        contract = ["id", "salon_id", "name", "description", "price", "price_before",
+                    "save_amount", "save_percent", "duration_minutes", "is_active",
+                    "includes", "timeline", "terms"]
+        self.assertEqual(list(self.call().json()), contract + ["theme"])
+
+    def test_a_pulled_package_still_opens_inactive_with_every_field(self):
+        for change in ({"status": "HIDDEN"}, {"status": "ARCHIVED"},
+                       {"deleted_at": "2026-10-01"}, {"online_booking_enabled": False},
+                       {"branch_row": False}):
+            with self.subTest(**change):
+                body = self.call(package=package_row(**change)).json()
+                self.assertFalse(body["is_active"])
+                self.assertEqual(body["price"], 460.0)
+                self.assertEqual(len(body["includes"]), 3)
+
+    def test_a_service_off_the_menu_makes_it_inactive(self):
+        body = self.call(svc=services(towel={"deleted_at": "2026-10-01"})).json()
+        self.assertFalse(body["is_active"])
+        # Still listed: the customer sees what the package holds.
+        self.assertEqual(len(body["includes"]), 3)
+
+    def test_a_service_not_found_is_left_out_and_inactive(self):
+        rows = services()
+        del rows[BEARD]
+        body = self.call(svc=rows).json()
+        self.assertFalse(body["is_active"])
+        self.assertEqual([i["service_id"] for i in body["includes"]], [str(CUT), str(TOWEL)])
+
+    def test_no_saving_hides_all_three(self):
+        body = self.call(package=package_row(published_snapshot=snap(priceMinor=70000))).json()
+        self.assertEqual((body["price_before"], body["save_amount"], body["save_percent"]),
+                         (None, None, None))
+        self.assertEqual(body["price"], 700.0)
+
+    def test_blank_text_is_null(self):
+        body = self.call(package=package_row(cancellation_policy="  ",
+                                             published_snapshot=snap(description=""))).json()
+        self.assertIsNone(body["terms"])
+        self.assertIsNone(body["description"])
+
+    def test_never_published_reads_the_draft(self):
+        drafts = [{"package_id": PACKAGE, **item(CUT, quantity=2)}]
+        body = self.call(package=package_row(published_snapshot=None, published_version=None),
+                         drafts=drafts).json()
+        self.assertEqual(body["name"], "The Full Groom (draft)")
+        self.assertEqual(body["price"], 500.0)
+        self.assertEqual(body["includes"], [
+            {"service_id": str(CUT), "name": "The Gentleman's Cut", "price": 199.0, "quantity": 2},
+        ])
+        self.assertIsNone(body["price_before"])  # 398 is less than 500
+        self.assertEqual(body["duration_minutes"], 60)
+
+    def test_a_parallel_package(self):
+        body = self.call(package=package_row(scheduling="PARALLEL")).json()
+        self.assertEqual([s["offset_minutes"] for s in body["timeline"]], [0, 0, 0])
+
+    def test_reads(self):
+        self.call()
+        self.services_read.assert_called_once()
+        self.drafts_read.assert_not_called()
+        self.variants_read.assert_not_called()
+
+
+class TabAndDetailAgreeTests(Reads, SimpleTestCase):
+    """With PACKAGES_LIVE_RULES_V1 on, a tab row and its detail show the same numbers."""
+
+    salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT, branch_id=BRANCH)
+
+    def test_same_numbers(self):
+        cases = [
+            (package_row(), services()),
+            (package_row(published_snapshot=snap([snap_item(CUT, LONG_HAIR, 2)])), services()),
+            (package_row(published_snapshot=snap(priceMinor=90000)), services()),
+            (package_row(), services(cut={"branch_price_minor": 15000})),
+        ]
+        keys = ("name", "description", "price", "price_before", "save_amount",
+                "duration_minutes", "theme")
+        for pkg, svc in cases:
+            with self.subTest(pkg=pkg.published_snapshot), ExitStack() as stack:
+                self.reads(stack, svc=svc, variants={LONG_HAIR: variant()})
+                content, rows, complete = selectors.package_lines(self.salon, [pkg])[pkg.id]
+                tab = packages.tab_row(pkg, content, rows)
+                detail = packages.detail(self.salon, pkg, content, rows, complete)
+                self.assertEqual({k: tab[k] for k in keys}, {k: detail[k] for k in keys})
+                self.assertTrue(detail["is_active"])
+
+
+def example_rows():
+    """The rows EXAMPLE was answered from (the seeded salon's package, published
+    with three services), so a test can ask the view again."""
+    scalp = uuid.UUID("66666666-6666-6666-6666-666666666663")
+    items = [snap_item(CUT), snap_item(scalp), snap_item(TOWEL)]
+    package = package_row(
+        name="Groom and Go",
+        description="Leave sharp, stay sharp.",
+        price_minor=37000,
+        branch_row=True,
+        highlights=["Gentleman's Cut", "Hot Towel Shave", "Beard oil to take home"],
+        cancellation_policy="Free to cancel up to 24 hours before your visit. After that, the deposit is kept.",
+        published_snapshot=snap(
+            items,
+            name="Groom and Go",
+            description="Leave sharp, stay sharp: a cut, a scalp treatment and a hot towel shave.",
+            priceMinor=52000,
+        ),
+    )
+    svc = {
+        CUT: service(CUT, "The Gentleman's Cut", 19900, 30),
+        scalp: service(scalp, "Scalp Treatment", 18000, 20, branch_price_minor=15000),
+        TOWEL: service(TOWEL, "Hot Towel Shave", 26000, 35),
+    }
+    return dict(package=package, svc=svc)
+
+
+class ExampleIsRealTests(DetailSeams, SimpleTestCase):
+    """
+    EXAMPLE (the OpenAPI example and docs/PACKAGE_DETAIL_API.md's) was taken
+    from the running code. Asked again from the same rows, the view must
+    answer it exactly, or the documents have drifted from the code.
+    """
+
+    def test_the_view_answers_the_example(self):
+        response = self.call(**example_rows())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), EXAMPLE)
+
+
+class DetailOpenApiTests(DetailSeams, SimpleTestCase):
+    """The route's OpenAPI entry describes what the view answers."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.schema = SchemaGenerator().get_schema(request=None, public=True)
+
+    def component(self, name):
+        return self.schema["components"]["schemas"][name]
+
+    def operation(self):
+        return self.schema["paths"]["/api/v1/salon/{salon_id}/package/{package_id}"]["get"]
+
+    def test_the_200_is_the_response_shape_with_the_example(self):
+        content = self.operation()["responses"]["200"]["content"]["application/json"]
+        self.assertEqual(content["schema"]["$ref"], "#/components/schemas/SalonPackageDetailResponse")
+        self.assertEqual(content["examples"]["APackageOnSale"]["value"], EXAMPLE)
+
+    def test_the_shape_has_exactly_the_fields_the_view_answers(self):
+        self.assertEqual(list(self.component("SalonPackageDetailResponse")["properties"]),
+                         list(self.call().json()))
+
+    def test_the_nested_shapes_have_exactly_the_example_s_fields(self):
+        for name, sample in (("SalonPackageDetailInclude", EXAMPLE["includes"][0]),
+                             ("SalonPackageDetailStep", EXAMPLE["timeline"][0])):
+            with self.subTest(name=name):
+                self.assertEqual(list(self.component(name)["properties"]), list(sample))
+
+    def test_the_404_example_is_the_real_body(self):
+        example = self.operation()["responses"]["404"]["content"]["application/json"]
+        self.assertEqual(example["examples"]["NoSuchPackage"]["value"], self.call(package=False).json())
