@@ -28,11 +28,16 @@ def service_price(svc):
     branch (`selectors.branch_price_minor`). Any other number here is an
     amount_mismatch when the customer books.
     """
+    return major(service_price_minor(svc))
+
+
+def service_price_minor(svc):
+    """`service_price` in minor units, for code that adds prices up (packages.py)."""
     if isinstance(svc, dict):
         base, branch = svc.get("price_minor"), svc.get("branch_price_minor")
     else:
         base, branch = svc.price_minor, getattr(svc, "branch_price_minor", None)
-    return major(branch if branch is not None else base)
+    return branch if branch is not None else base
 
 
 def category_chip(categories, category_id):
@@ -126,9 +131,13 @@ def is_on_menu(svc):
     """
     True when the service is on the salon's menu today: exactly the three
     rules `selectors.salon_services` filters the tab on.
+
+    `svc` is a model row or a dict from `.values()`, like `service_price`.
     """
-    return (
-        svc.status == "PUBLISHED"
-        and svc.deleted_at is None
-        and bool(svc.online_booking_enabled)
-    )
+    if isinstance(svc, dict):
+        status, deleted_at, online = (
+            svc.get("status"), svc.get("deleted_at"), svc.get("online_booking_enabled")
+        )
+    else:
+        status, deleted_at, online = svc.status, svc.deleted_at, svc.online_booking_enabled
+    return status == "PUBLISHED" and deleted_at is None and bool(online)

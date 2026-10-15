@@ -52,6 +52,7 @@ from .booking_api import (
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from apps.accounts.models import Favourite, FavouriteStylist
 
+from . import packages as package_rules
 from . import roster, slots, timezones
 from .hours import resolve as resolve_hours
 from .hours import weekly_row as hours_row
@@ -68,6 +69,8 @@ from .selectors import (
     categories_for_tenants,
     salon_categories,
     salon_cards_for_refs,
+    live_salon_packages,
+    package_lines,
     salon_packages,
     salon_products,
     manual_state_on,
@@ -765,6 +768,9 @@ class SalonPackagesView(APIView):
     anywhere tracks sessions used against sessions bought: there is no
     redemption table. Returning the key with an empty list lets the app ship
     the tab now; filling it needs schema work on the platform side.
+
+    PACKAGES_LIVE_RULES_V1 on: the bundles follow the platform's own rules,
+    the Package Details screen's (packages.py). Off: as before.
     """
 
     permission_classes = [AllowAny]
@@ -773,6 +779,9 @@ class SalonPackagesView(APIView):
         salon = salon_profile(salon_id)
         if salon is None:
             raise Http404("Salon not found")
+
+        if settings.PACKAGES_LIVE_RULES_V1:
+            return Response({"my_packages": [], "bundles": self.live_bundles(salon)})
 
         bundles = []
         for pkg in salon_packages(salon):
@@ -797,6 +806,25 @@ class SalonPackagesView(APIView):
             })
 
         return Response({"my_packages": [], "bundles": bundles})
+
+    @staticmethod
+    def live_bundles(salon):
+        """
+        The bundles on the platform's rules (PACKAGES_LIVE_RULES_V1): the
+        reads and the numbers of GET /salon/<id>/package/<id>, so a bundle
+        listed here opens there as active, at the same price.
+        """
+        rows = list(live_salon_packages(salon))
+        reads = package_lines(salon, rows)
+        bundles = []
+        for row in rows:
+            content, lines, complete = reads[row.id]
+            if package_rules.is_active(row, lines, complete):
+                bundles.append(package_rules.tab_row(row, content, lines))
+        # By the name the customer sees (the published one), then the id, so
+        # the order never changes between two calls.
+        bundles.sort(key=lambda bundle: (bundle["name"].casefold(), bundle["id"]))
+        return bundles
 
 
 class ProductDetailView(APIView):

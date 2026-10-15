@@ -44,6 +44,7 @@ from apps.platform_data.models import (
     ServicePackage,
     ServicePackageBranchAvailability,
     ServicePackageItem,
+    ServiceVariant,
 )
 
 from apps.platform_data.models import FileItem, StaffProfile, UserAccount
@@ -56,6 +57,7 @@ from apps.platform_data.models import (
     Skill,
     StaffSkillAssignment,
 )
+from . import packages as package_rules
 from .skills import (
     coverage as skill_coverage,
     held_levels as held_skill_levels,
@@ -268,6 +270,136 @@ def salon_packages(storefront):
         .order_by("name")
     )
 
+
+# ---------------------------------------------------------------------------
+# Packages on the platform's own rules: the Package Details screen, and the
+# Packages tab with PACKAGES_LIVE_RULES_V1 on (docs/PACKAGE_DETAIL_AUDIT.md).
+# packages.py (pure) turns these rows into fields.
+# ---------------------------------------------------------------------------
+
+
+def _package_branch_row(branch_id):
+    """This branch's availability row for the package: True, False, or None (no row)."""
+    return Subquery(
+        ServicePackageBranchAvailability.objects.filter(
+            package_id=OuterRef("pk"), branch_id=branch_id,
+        ).values("available")[:1],
+        output_field=BooleanField(),
+    )
+
+
+def live_salon_packages(storefront):
+    """
+    The Packages tab's rows with PACKAGES_LIVE_RULES_V1 on: this tenant's
+    published packages with online booking on, each with `branch_row`.
+
+    The branch rule and the services are checked in Python
+    (packages.is_active), the same function the detail screen's `is_active`
+    uses, so the two cannot disagree. A tenant has a handful of packages.
+    """
+    return (
+        ServicePackage.objects.filter(
+            tenant_id=storefront.tenant_id,
+            status="PUBLISHED",
+            deleted_at__isnull=True,
+            online_booking_enabled=True,
+        )
+        .annotate(branch_row=_package_branch_row(storefront.branch_id))
+        .order_by("name", "id")
+    )
+
+
+def package_for_salon(salon, package_id):
+    """
+    One package of this salon's business, in whatever state it is in now,
+    or None. For the Package Details screen
+    (GET /salon/<id>/package/<id>).
+
+    A package has no salon column: it belongs to the tenant, and every
+    branch sells it unless its branch rule says no (packages.sold_here). So
+    one id opens at each of the tenant's salons, and `is_active` says
+    whether it is sold at this one. A package pulled from sale (hidden,
+    archived, deleted, online booking off) still opens, as inactive.
+
+    None, and so a 404, for another tenant's package and for one never on
+    sale: service_for_salon's rule (a `published_version`, or a status that
+    only a published package can have).
+    """
+    return (
+        ServicePackage.objects.filter(id=package_id, tenant_id=salon.tenant_id)
+        .filter(
+            Q(published_version__isnull=False)
+            | Q(status__in=DETAIL_STATUSES_WITHOUT_VERSION)
+        )
+        .annotate(branch_row=_package_branch_row(salon.branch_id))
+        .first()
+    )
+
+
+def package_item_rows(package_ids):
+    """
+    The draft items of these packages (`service_package_item`), each
+    package's in its own order. Only read for a package with no published
+    snapshot: a published one's live items are in the snapshot.
+    """
+    return list(
+        ServicePackageItem.objects.filter(package_id__in=package_ids)
+        .order_by("package_id", "sort_order", "id")
+        .values("package_id", "service_id", "variant_id", "quantity")
+    )
+
+
+def package_service_rows(salon, service_ids):
+    """
+    The services packages name, by id, in whatever state they are in now
+    (so one off the menu can be told apart), with this branch's price.
+    This tenant's only.
+    """
+    rows = (
+        Service.objects.filter(id__in=service_ids, tenant_id=salon.tenant_id)
+        .annotate(branch_price_minor=branch_price_minor(OuterRef("pk"), salon.branch_id))
+        .values(
+            "id", "name", "price_minor", "branch_price_minor", "duration_minutes",
+            "status", "deleted_at", "online_booking_enabled",
+        )
+    )
+    return {row["id"]: row for row in rows}
+
+
+def package_variant_rows(variant_ids):
+    """The live (not deleted) variants packages name, by id: price and minutes."""
+    rows = ServiceVariant.objects.filter(
+        id__in=variant_ids, deleted_at__isnull=True,
+    ).values("id", "service_id", "price_minor", "duration_minutes")
+    return {row["id"]: row for row in rows}
+
+
+def package_lines(salon, rows):
+    """
+    What each package holds at this salon: {package id: (content, lines,
+    complete)}, for packages.detail, packages.tab_row and packages.is_active.
+
+    Three reads at most, whatever the number of packages: the draft items
+    (only for packages never published), the services, and the variants
+    (only when an item names one).
+    """
+    drafts = {}
+    unpublished = [row.id for row in rows if package_rules.snapshot(row) is None]
+    if unpublished:
+        for item in package_item_rows(unpublished):
+            drafts.setdefault(item["package_id"], []).append(item)
+
+    contents = {row.id: package_rules.live_content(row, drafts.get(row.id, ())) for row in rows}
+    items = [item for content in contents.values() for item in content["items"]]
+    service_ids = {item["service_id"] for item in items if item["service_id"]}
+    variant_ids = {item["variant_id"] for item in items if item["variant_id"]}
+    services = package_service_rows(salon, service_ids) if service_ids else {}
+    variants = package_variant_rows(variant_ids) if variant_ids else {}
+
+    return {
+        row.id: (contents[row.id], *package_rules.lines(contents[row.id]["items"], services, variants))
+        for row in rows
+    }
 
 def _live_login():
     """
