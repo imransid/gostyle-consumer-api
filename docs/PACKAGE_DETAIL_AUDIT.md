@@ -331,3 +331,40 @@ What each answer decides:
   (any quantity above 1, any PARALLEL?), and whether Q3 needs a switch.
 - **B, sales:** has any package ever been sold at the till. Tells us how real
   the "My Packages" question is.
+
+---
+
+## 9. Build log (2026-10-15)
+
+Branch `feat/package-detail`, from `imransid/main` `a190ebb`. Not pushed.
+
+| Step | Commit | What |
+|---|---|---|
+| P0 | `f058adf` | The contract as received, this audit, the live SQL. |
+| P1 | `afe0857` | The Packages tab pinned as it answers today. |
+| P2 | `1f2fb44` | `packages.py` + the package selectors (F1 to F4), the tab on them behind `PACKAGES_LIVE_RULES_V1` (off). `menu.service_price_minor`, `menu.is_on_menu` reads a dict. |
+| P3 | `c971566` | `GET /salon/{salon_id}/package/{package_id}`: route, 404s, every field, doc-only serializers, a real `EXAMPLE`. |
+| P4 | (this commit) | FE guide `docs/PACKAGE_DETAIL_API.md`, `SALON_PROFILE_API.md` section 4, this log. |
+
+Checked on the local seed, each in a rolled-back transaction:
+
+- Switch off and on: the same tab answer for the seed (2 vs 4 queries).
+- F1: no branch row, not scoped: off hides it, on shows it. Scoped with no
+  row, or a false row: hidden both ways.
+- F2: a snapshot with another name, price and one item: on shows the
+  snapshot, off the draft.
+- F3: a variant at 300.00 / 50 min: on counts it; a deleted variant is
+  ignored.
+- F4: a member service HIDDEN: on hides the package, off still shows it.
+- The detail: 3 queries for a published package; bad ids, an unknown package
+  and an unknown salon answer our JSON 404.
+
+Suite: 1419 before, all pass; 1511 after P4, all pass.
+No migration. No booking-api or platform change. No new spectacular warnings.
+
+**Before turning `PACKAGES_LIVE_RULES_V1` on:** run
+`scripts/sql/package_detail_live_checks.sql` live. Section C lists, per salon,
+every package whose place on the tab changes (F1). Section A shows how many
+hold an off-menu service (F4: they disappear), have a variant (F3: their
+numbers change) or a snapshot that differs from the draft (F2: their name or
+price changes).

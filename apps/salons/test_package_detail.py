@@ -11,15 +11,21 @@ selectors), and the tab on them behind PACKAGES_LIVE_RULES_V1.
 P3: the route, its 404s, every field, and the OpenAPI shape and example
 checked against what the view really answers.
 
+P4: docs/PACKAGE_DETAIL_API.md's examples are real answers.
+
 The selectors are mocked; no database.
 """
 
+import json
+import re
 import types
+import unittest
 import uuid
 from contextlib import ExitStack
 from decimal import Decimal
 from unittest import mock
 
+from django.conf import settings
 from django.db.models import OuterRef, Q
 from django.test import SimpleTestCase, override_settings
 from django.urls import resolve, reverse
@@ -970,3 +976,27 @@ class DetailOpenApiTests(DetailSeams, SimpleTestCase):
     def test_the_404_example_is_the_real_body(self):
         example = self.operation()["responses"]["404"]["content"]["application/json"]
         self.assertEqual(example["examples"]["NoSuchPackage"]["value"], self.call(package=False).json())
+
+
+FE_DOC = settings.BASE_DIR / "docs" / "PACKAGE_DETAIL_API.md"
+
+
+@unittest.skipUnless(FE_DOC.exists(), "docs/ is not in the Docker image")
+class FeDocTests(DetailSeams, SimpleTestCase):
+    """docs/PACKAGE_DETAIL_API.md promises every example is a real answer."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        text = FE_DOC.read_text(encoding="utf-8")
+        cls.blocks = [json.loads(b) for b in re.findall(r"```json\n(.*?)\n```", text, re.S)]
+
+    def test_the_full_example_is_the_real_answer(self):
+        self.assertEqual(self.blocks[0], EXAMPLE)
+
+    def test_the_404_bodies_are_the_real_ones(self):
+        self.assertIn(self.call(package=False).json(), self.blocks)
+        self.assertIn(self.call(salon=False).json(), self.blocks)
+
+    def test_no_other_json_blocks(self):
+        self.assertEqual(len(self.blocks), 3)
