@@ -440,7 +440,7 @@ Each member's line, by `request.state`:
 | `REJECTED` | "Please speak to the desk." This member cannot be asked again. |
 | `EXPIRED` | "The salon did not answer in time. Please speak to the desk." |
 | `CLOSED` | The booking moved on another way (the desk checked them in with its own button, or it was cancelled). Show the member as the party read now says (§7). |
-| `WITHDRAWN` | Not offered for parties in v1 (§10). If seen, treat as `null`. |
+| `WITHDRAWN` | The party's We are here has no Cancel Request: there is no party-wide withdraw (§10). A member can take back their own request on their own lane (§16.4), so the booker may see this on that member. Treat it as `null`: not asked, and the member can be asked again. |
 
 The desk's reason for a rejection is never sent to the app. Use your own words.
 
@@ -679,6 +679,8 @@ the member uses the single check-in route on it, with that lane's id.
 3. Draw the button from that row's `can_check_in`, and "Check-in opens at {time}" from its `check_in_opens_at`. **Never work the rule out in the app.**
 4. Tap: `POST /booking/{booking_id}/check-in`, no body, with the `booking_id` from **that same row**.
 5. To show waiting or approved, read `GET /booking/{booking_id}/check-in`, the same path.
+6. To show the member's own pass, read their lane: `GET /booking/{booking_id}`. It answers as an ordinary booking, with that lane's own status and times (§16.3).
+7. To take a waiting request back (Cancel Request), use the single withdraw route on their own lane: `POST /booking/{booking_id}/check-in/withdraw` (§16.4). **There is no party-wide withdraw:** the party's route, `/booking/group/{group_id}/check-in`, only says We are here (`POST`) and reads the requests (`GET`).
 
 Steps 4 and 5 are the single check-in, exactly. Its answers, states, polling,
 errors and welcome are in the single guide (`docs/MOBILE_SELF_CHECK_IN_FE.md`):
