@@ -44,6 +44,7 @@ from .booking_api import (
     create_booking,
     list_bookings,
     read_booking,
+    read_group_booking,
     patch_booking,
     BookingApiUnavailable,
 )
@@ -2446,6 +2447,47 @@ def _can_still_move(row, card, now):
     return now < start - timedelta(hours=hours)
 
 
+# A member row's status that the party cancel cannot take back. booking-api's
+# MobileGroupCancelHandler checks every live lane before it cancels any, and
+# refuses the whole party (409 cannot_cancel) when one is checked in, in
+# service (both CHECKED_IN here) or finished (COMPLETED). A cancelled member
+# is skipped there, so it is not here either.
+PAST_CHECK_IN_STATUSES = frozenset({"CHECKED_IN", "COMPLETED"})
+
+
+def _no_member_past_check_in(request, group_id):
+    """
+    Whether a party's Cancel button may stay on (GROUP_CANCEL_LANES_V1): no
+    member of it is checked in, in service or finished.
+
+    FROM THE MEMBER ROWS, never the party's status. The party's status is one
+    lane's (the booker's, or with booking-api's MOBILE_GROUP_LIVE_STATUS any
+    lane still confirmed), so it can say CONFIRMED while another lane is
+    checked in, and the cancel would then answer 409. The GROUP row of My
+    Bookings carries no members, so the party is read: once, with the
+    caller's own token, within SINGLE_LOOKUP_TIMEOUT.
+
+    A READ THAT DOES NOT ANSWER IS NO BUTTON. booking-api down, slow, a 404
+    or a body with no members: false. A button that fails is worse than no
+    button, and the party's own screen can still be opened.
+    """
+    try:
+        code, body = read_group_booking(
+            group_id,
+            authorization=request.META.get("HTTP_AUTHORIZATION", ""),
+            timeout=settings.SINGLE_LOOKUP_TIMEOUT,
+        )
+    except BookingApiUnavailable:
+        return False
+    members = body.get("members") if code == 200 and isinstance(body, dict) else None
+    if not isinstance(members, list):
+        return False
+    return not any(
+        isinstance(m, dict) and m.get("status") in PAST_CHECK_IN_STATUSES
+        for m in members
+    )
+
+
 def _parse_iso(value):
     """An ISO 8601 instant with an offset, or None.
 
@@ -2709,7 +2751,9 @@ MEMBER_CHECK_IN_KEYS = ("can_check_in", "check_in_opens_at", "can_scan_chair")
         "cannot resolve a name, logo or city; and `can_cancel` / "
         "`can_reschedule`, because the cancellation window is published by "
         "the salon into this service's tables. `can_cancel` follows that "
-        "window for a GROUP row, and for a SINGLE row while "
+        "window for a GROUP row (with GROUP_CANCEL_LANES_V1 on, also "
+        "`false` once any member of the party is checked in or finished: "
+        "the party cancel is all or nothing), and for a SINGLE row while "
         "SINGLE_BOOKING_ACTIONS_V1 is on (off: `false`); every other row "
         "(ROUTINE, a missing or unknown `booking_type`) has `false`, because "
         "no route here cancels it by its id. `can_reschedule` follows the "
@@ -2963,6 +3007,14 @@ class BookingListView(APIView):
                 row.get("booking_type") in cancellable
                 and _can_still_move(row, card, now)
             )
+            # A party's Cancel is all or nothing (GROUP_CANCEL_LANES_V1): only
+            # where the window said yes, its members are asked too.
+            if (
+                row["can_cancel"]
+                and row.get("booking_type") == "GROUP"
+                and settings.GROUP_CANCEL_LANES_V1
+            ):
+                row["can_cancel"] = _no_member_past_check_in(request, row.get("id"))
             # A single booking, with its route on, and one the route would
             # move: not one with two stylists, which it refuses. Never a
             # party, and never a routine session by its booking id: a session
