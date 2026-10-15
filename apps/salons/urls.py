@@ -5,6 +5,7 @@ from . import (
     expert_profile_views,
     group_check_in_views,
     group_views,
+    package_detail_views,
     routine_views,
     series_views,
     service_detail_views,
@@ -65,6 +66,13 @@ urlpatterns = [
     ),
     path("stylists", StylistListView.as_view(), name="stylists"),
     path("salon/<uuid:salon_id>/packages", SalonPackagesView.as_view(), name="salon-packages"),
+    # One package, for the package details screen. <str:>, like the service
+    # detail: a bad id must get our JSON 404, so the view checks both ids.
+    path(
+        "salon/<str:salon_id>/package/<str:package_id>",
+        package_detail_views.SalonPackageDetailView.as_view(),
+        name="salon-package-detail",
+    ),
     path("salon/<uuid:salon_id>/products", SalonProductsView.as_view(), name="salon-products"),
     path("salon/<uuid:salon_id>/stories", SalonStoriesView.as_view(), name="salon-stories"),
     path("discover/story", DiscoverStoryListView.as_view(), name="discover-story"),

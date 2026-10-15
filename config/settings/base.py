@@ -325,6 +325,14 @@ GROUP_SELF_CHECK_IN_V1 = env.bool("GROUP_SELF_CHECK_IN_V1", default=False)
 # goes on (a party then reads confirmed while any lane is). OFF here,
 # can_cancel is exactly what it was and no party is read.
 GROUP_CANCEL_LANES_V1 = env.bool("GROUP_CANCEL_LANES_V1", default=False)
+# The Packages tab on the platform's own rules (docs/PACKAGE_DETAIL_AUDIT.md,
+# F1 to F4): a package is sold at every branch unless that branch's row says
+# no, the tab shows its published content (not the owner's draft), an item's
+# variant sets its price and minutes, and a package is shown only when every
+# service in it can be booked. GET /salon/{id}/package/{id} always uses these
+# rules, so ON the tab and the detail agree. OFF here, the tab answers
+# exactly what it did.
+PACKAGES_LIVE_RULES_V1 = env.bool("PACKAGES_LIVE_RULES_V1", default=False)
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",

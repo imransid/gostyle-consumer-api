@@ -92,6 +92,7 @@ services:
       GROUP_CHECK_IN_V1: ${GROUP_CHECK_IN_V1:-False}
       GROUP_SELF_CHECK_IN_V1: ${GROUP_SELF_CHECK_IN_V1:-False}
       GROUP_CANCEL_LANES_V1: ${GROUP_CANCEL_LANES_V1:-False}
+      PACKAGES_LIVE_RULES_V1: ${PACKAGES_LIVE_RULES_V1:-False}
 
       # File uploads to S3. The keys live in stack.env, never in git.
       AWS_BUCKET_NAME: ${AWS_BUCKET_NAME:-}
