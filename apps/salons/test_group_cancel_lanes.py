@@ -1,10 +1,12 @@
 """
 A party's Cancel button (GROUP_CANCEL_LANES_V1): can_cancel on a GROUP row of
-My Bookings is false once any member of the party is checked in, in service
-or finished, because the party cancel is all or nothing (booking-api answers
-409 cannot_cancel then). Worked out from the party's member rows, read once
-per GROUP row the window would let cancel, never from the party's status.
-Off by default: can_cancel exactly as before, and no party is read.
+My Bookings is the booker's alone (the party cancel answers anyone else 404),
+and is false once any member of the party is checked in, in service or
+finished, because the party cancel is all or nothing (booking-api answers
+409 cannot_cancel then). The members are worked out from the party's member
+rows, read once per booker's GROUP row the window would let cancel, never
+from the party's status. Off by default: can_cancel exactly as before, and no
+party is read.
 """
 
 from pathlib import Path
@@ -94,7 +96,8 @@ class GroupCancelButtonTests(SimpleTestCase):
         return response.data["results"], reader
 
     def group_row(self, **over):
-        return self.row(id=GROUP, booking_type="GROUP", **over)
+        """The booker's GROUP row, unless told: `is_booker` as booking-api sends it."""
+        return self.row(id=GROUP, booking_type="GROUP", **{"is_booker": True, **over})
 
     # ------------------------------------------------------------- off
 
@@ -192,7 +195,7 @@ class GroupCancelButtonTests(SimpleTestCase):
         }
         request = APIRequestFactory().get("/api/v1/bookings", HTTP_AUTHORIZATION="Bearer cus")
         force_authenticate(request, user=Customer())
-        rows = [self.group_row(), self.row(id=other, booking_type="GROUP")]
+        rows = [self.group_row(), self.row(id=other, booking_type="GROUP", is_booker=True)]
         with mock.patch(
             "apps.salons.views.list_bookings", return_value=(200, self.page(rows)),
         ), mock.patch(
@@ -207,3 +210,39 @@ class GroupCancelButtonTests(SimpleTestCase):
             results = BookingListView.as_view()(request).data["results"]
         self.assertEqual([r["can_cancel"] for r in results], [False, True])
         self.assertEqual(reader.call_count, 2)
+
+    # ------------------------------------------------------- the booker only
+
+    @override_settings(GROUP_CANCEL_LANES_V1=True)
+    def test_the_booker_in_the_window_keeps_the_button(self):
+        rows, reader = self.get([self.group_row(is_booker=True)])
+        self.assertIs(rows[0]["can_cancel"], True)
+        reader.assert_called_once()
+
+    @override_settings(GROUP_CANCEL_LANES_V1=True)
+    def test_a_member_in_the_window_has_no_button_and_no_party_is_read(self):
+        # The party cancel answers a member 404: a button that always fails.
+        rows, reader = self.get([self.group_row(is_booker=False)])
+        self.assertIs(rows[0]["can_cancel"], False)
+        reader.assert_not_called()
+
+    @override_settings(GROUP_CANCEL_LANES_V1=True)
+    def test_no_is_booker_at_all_means_no_button(self):
+        row = self.group_row()
+        del row["is_booker"]
+        rows, reader = self.get([row])
+        self.assertIs(rows[0]["can_cancel"], False)
+        reader.assert_not_called()
+
+    @override_settings(GROUP_CANCEL_LANES_V1=True)
+    def test_is_booker_is_read_strictly(self):
+        for value in ("true", 1, "yes", None):
+            with self.subTest(is_booker=value):
+                rows, reader = self.get([self.group_row(is_booker=value)])
+                self.assertIs(rows[0]["can_cancel"], False)
+                reader.assert_not_called()
+
+    def test_off_a_member_s_row_is_unchanged(self):
+        rows, reader = self.get([self.group_row(is_booker=False)])
+        self.assertIs(rows[0]["can_cancel"], True)
+        reader.assert_not_called()
