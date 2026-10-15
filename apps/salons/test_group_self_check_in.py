@@ -14,21 +14,49 @@ guesses either.
 
 import contextlib
 import copy
+import importlib
 import os
 import uuid
 from datetime import datetime, timezone as dt_timezone
 from pathlib import Path
 from unittest import mock
 
+import environ
+from django.conf import settings
 from django.test import SimpleTestCase, override_settings
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from apps.salons.test_group_booking import GROUP_ID, RANA, USER_ID, Customer
 from apps.salons.test_group_booking_v2 import ANSWER, ReadSeams
 from apps.salons.views import BookingDetailView, _check_in_fields, _member_check_in_fields
-from config.settings.base import env
+from config.settings import base
 
 FLAG = "GROUP_SELF_CHECK_IN_V1"
+
+
+def setting_in(name, environment):
+    """
+    The setting `name` as config/settings/base.py works it out in
+    `environment`: the module is run again with only that environment (and
+    .env not read), and the setting is read off it. So a name misspelled in
+    base.py, on either side of the `=`, fails the test that reads it.
+    django.conf.settings cannot be asked instead: it was built once, at start.
+
+    base.py is run again afterwards in the real environment, so nothing
+    after this sees the patched one.
+    """
+    try:
+        with mock.patch.dict(os.environ, environment, clear=True), \
+                mock.patch.object(environ.Env, "read_env"):
+            return getattr(importlib.reload(base), name)
+    finally:
+        with mock.patch.object(environ.Env, "read_env"):
+            importlib.reload(base)
+
+
+def without(name):
+    """The real environment, less `name`."""
+    return {k: v for k, v in os.environ.items() if k != name}
 
 
 class SwitchTests(SimpleTestCase):
@@ -40,15 +68,12 @@ class SwitchTests(SimpleTestCase):
         self.assertIn(f'{FLAG} = env.bool("{FLAG}", default=False)', source)
 
     def test_unset_means_off(self):
-        without = {k: v for k, v in os.environ.items() if k != FLAG}
-        with mock.patch.dict(os.environ, without, clear=True):
-            self.assertIs(env.bool(FLAG, default=False), False)
+        self.assertTrue(hasattr(settings, FLAG))
+        self.assertIs(setting_in(FLAG, without(FLAG)), False)
 
     def test_true_turns_it_on_and_a_typo_does_not(self):
-        with mock.patch.dict(os.environ, {FLAG: "true"}):
-            self.assertIs(env.bool(FLAG, default=False), True)
-        with mock.patch.dict(os.environ, {FLAG: "ture"}):
-            self.assertIs(env.bool(FLAG, default=False), False)
+        self.assertIs(setting_in(FLAG, {**without(FLAG), FLAG: "true"}), True)
+        self.assertIs(setting_in(FLAG, {**without(FLAG), FLAG: "ture"}), False)
 
 
 # 12:00 UTC: 18:00 on booking-api's +06:00 clock, 16:00 at the salon (+04:00).
