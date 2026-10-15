@@ -334,6 +334,25 @@ strikethrough row in that case.
 
 `duration_minutes` is likewise the summed duration of the members.
 
+### Opening a bundle
+
+`GET /salon/:id/package/:package_id`, with `bundles[].id`, draws the Package
+Details screen. See `PACKAGE_DETAIL_API.md`.
+
+### A server rule change, not on yet
+
+When it goes on, the shape stays the same, but the list follows the salon's
+live menu, exactly as the Package Details screen does:
+
+- a bundle the salon published for every branch is listed here even when
+  this branch was never ticked (today it is missing);
+- the published name, description, price and services are shown, never an
+  edit the salon has not published yet;
+- a bundle holding a service the salon hid, archived or took off online
+  booking is not listed;
+- a size or length of a service (a variant) in a bundle counts at its own
+  price and minutes.
+
 ---
 
 ## 5. Shop tab — `GET /salon/:id/products`
