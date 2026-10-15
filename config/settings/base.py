@@ -311,6 +311,18 @@ GROUP_CHECK_IN_V1 = env.bool("GROUP_CHECK_IN_V1", default=False)
 # and the single check-in route still takes a member's lane, because
 # SELF_CHECK_IN_V1 alone decides that route.
 GROUP_SELF_CHECK_IN_V1 = env.bool("GROUP_SELF_CHECK_IN_V1", default=False)
+
+# A party's Cancel button: can_cancel on a GROUP row of My Bookings looks at
+# the party's members, not only its status. The party cancel is all or
+# nothing, and booking-api refuses it (409 cannot_cancel) once any lane is
+# checked in, so the button must not be offered then. On, each GROUP row that
+# the window would let cancel is read once (GET
+# /v1/mobile-booking/group/{id}, within SINGLE_LOOKUP_TIMEOUT), and
+# can_cancel is false when any member row is CHECKED_IN or COMPLETED, or the
+# read does not answer. Needed before booking-api's MOBILE_GROUP_LIVE_STATUS
+# goes on (a party then reads confirmed while any lane is). OFF here,
+# can_cancel is exactly what it was and no party is read.
+GROUP_CANCEL_LANES_V1 = env.bool("GROUP_CANCEL_LANES_V1", default=False)
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",

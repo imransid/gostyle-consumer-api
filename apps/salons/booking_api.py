@@ -578,19 +578,23 @@ def create_group_booking(body, *, authorization, idempotency_key=None, tenant_id
     return _send("POST", "/v1/mobile-booking/group", headers=headers, body=_encode(body))
 
 
-def read_group_booking(group_id, *, authorization, tenant_id=None):
+def read_group_booking(group_id, *, authorization, tenant_id=None, timeout=None):
     """
     GET /v1/mobile-booking/group/<id> -- a party read back as one booking.
 
     booking-api knows the party's own tenant, so none is needed. 404 for a
     party the caller may not see. Returns (status, parsed body) as given.
+
+    `timeout` is for My Bookings' Cancel button (GROUP_CANCEL_LANES_V1), a
+    lookup that must not hold the list up; the party's own read keeps
+    BOOKING_API_TIMEOUT.
     """
     headers = {"Authorization": authorization}
     if tenant_id:
         headers["X-Tenant-Id"] = str(tenant_id)
     return _send(
         "GET", f"/v1/mobile-booking/group/{urllib.parse.quote(str(group_id), safe='')}",
-        headers=headers,
+        headers=headers, timeout=timeout,
     )
 
 
