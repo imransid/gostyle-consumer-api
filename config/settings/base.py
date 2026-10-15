@@ -304,7 +304,12 @@ GROUP_CHECK_IN_V1 = env.bool("GROUP_CHECK_IN_V1", default=False)
 # member's own row of the party read (is_me true) carries can_check_in and
 # check_in_opens_at. booking-api's MOBILE_GROUP_SELF_CHECK_IN must be on too
 # (it gives the row is_me and booking_id), and SELF_CHECK_IN_V1 here (the
-# route the member uses). OFF here, the party read is exactly what it was.
+# route the member uses). OFF here, this service adds nothing to the member
+# rows: no can_check_in, check_in_opens_at or can_scan_chair. It does not
+# hide anything either: while booking-api's switch is on, is_me and
+# booking_id still come through on the party read as booking-api sent them,
+# and the single check-in route still takes a member's lane, because
+# SELF_CHECK_IN_V1 alone decides that route.
 GROUP_SELF_CHECK_IN_V1 = env.bool("GROUP_SELF_CHECK_IN_V1", default=False)
 CACHES = {
     "default": {
