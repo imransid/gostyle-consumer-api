@@ -814,12 +814,23 @@ class SalonPackagesView(APIView):
         reads and the numbers of GET /salon/<id>/package/<id>, so a bundle
         listed here opens there as active, at the same price.
         """
+        rows = list(live_salon_packages(salon))
+        reads = package_lines(salon, rows)
+        bundles = []
         for row in rows:
             content, lines, complete = reads[row.id]
             if package_rules.is_active(row, lines, complete):
                 bundle = package_rules.tab_row(row, content, lines)
 
-                service_ids = [line["service_id"] for line in lines]
+                service_ids = []
+                for line in lines:
+                    if isinstance(line, dict):
+                        sid = line.get("service_id")
+                    else:
+                        sid = getattr(line, "service_id", None)
+                    if sid:
+                        service_ids.append(sid)
+
                 bundle["services"] = [
                     service_row(svc) for svc in services_by_ids(service_ids)
                 ]
@@ -829,8 +840,6 @@ class SalonPackagesView(APIView):
         # the order never changes between two calls.
         bundles.sort(key=lambda bundle: (bundle["name"].casefold(), bundle["id"]))
         return bundles
-
-
 class ProductDetailView(APIView):
     """GET /api/v1/products/<uuid>"""
     permission_classes = [AllowAny]
