@@ -479,5 +479,9 @@ part pinned to a size or length of a service (a variant), and a price above 0.
 
 - Prepaid sessions and My Packages (option B): nothing is bought ahead,
   nothing is counted, `my_packages` stays `[]`.
-- A package in a group booking: `members[].packages` is still `422`
-  `packages_not_supported` (`BOOKING_GROUP_API.md`).
+- ~~A package in a group booking: `members[].packages` is still `422`
+  `packages_not_supported` (`BOOKING_GROUP_API.md`).~~ **Changed
+  2026-10-18: built.** A party member books a package the same way, as one
+  line of that member's `services` (`BOOKING_GROUP_API.md` §12,
+  `MOBILE_GROUP_BOOKING_FE.md` Packages). `members[].packages` is still
+  refused.

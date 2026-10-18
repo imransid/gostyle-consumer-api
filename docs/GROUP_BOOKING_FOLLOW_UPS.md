@@ -29,6 +29,8 @@ own PR and Rafa's OK. Newest decisions first.
 | M4 | The app must send a product's `variant_id` (from `GET /salon/<id>/products`), not its `id`. | Tell the app team. booking-api's `unknown_product` message already says so. |
 | M5 | Registered members see the party in `/bookings` too (decision D3). They cannot pay or cancel it. | As decided. |
 | M6 | `docs/BOOKING_GROUP_API.md` §4 to §8 describe the old path. A banner says so; rewrite once `GROUP_BOOKING_V2` is on for good and the old path is removed. | Open. |
+| M7 | 2026-10-18: a member may book a package, as one line of `services` (`BOOKING_GROUP_API.md` §12). Still open around it: `GET /salon/<id>/stylists?service_ids=` takes no package id (the app asks with the package's services); a package's own lead time and `lead_days` are not applied; a `PARALLEL` package is booked one service after another. | Built behind customer-api's `PACKAGE_BOOKING_V1` (off) on `feat/package-booking`; needs booking-api's `feat/packages-from-platform` deployed with `PACKAGES_FROM_PLATFORM` on. Not deployed. |
+| M8 | With `GROUP_BOOKING_V2` on, a `services` line sent without `amount` is a 500 here: `group_translate.mobile_group_body` reads `s["amount"]`, and the serializer lets the key be left out. Found while adding packages; not a package bug, and left as it is so the switch-off path stays exactly as it was. | Open. A 422 on `amount` before booking-api is asked would fix it. |
 
 ## Housekeeping
 

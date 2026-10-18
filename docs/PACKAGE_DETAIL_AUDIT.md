@@ -421,7 +421,12 @@ This service, branch `feat/package-booking` from `imransid/main` =
 | 3 | `7f12b7f` | Nearest available takes a package id: its parts, each per quantity, one stylist for all; `422 package_not_bookable`. |
 | 4 | `277fdc9` | `POST /api/v1/booking/quote`, forwarded to booking-api's quote, routed as create; no Idempotency-Key. Not behind the switch. |
 | 5 | `5b8a0d5` | Create: nothing here reads `services`, so nothing to allow; a test pins a package line crossing byte for byte. |
-| 6 | (this commit) | `BOOKING_CREATE_API.md` §6 and §7, `PACKAGE_DETAIL_API.md` §5, the server note in the contract, `SALON_PROFILE_API.md` §4, `BOOKING_NEAREST_AVAILABLE_API.md`, this section. |
+| 6 | `43def99` | `BOOKING_CREATE_API.md` §6 and §7, `PACKAGE_DETAIL_API.md` §5, the server note in the contract, `SALON_PROFILE_API.md` §4, `BOOKING_NEAREST_AVAILABLE_API.md`, this section. |
+| 7 | `3ed8789` | The slot search's expansion in two shareable halves (`views._bookable_packages`, `views._as_parts`), answering exactly as before. |
+| 8 | `a7c7b45` | A party member's package (added 2026-10-18): the group checks read each member's parts through that expansion (`foreign_id`, `422 package_not_bookable`, the stylist for every part, the party's length with quantity, the notice); booking-api is sent the line as it came; the old path names and prices the line. |
+| 9 | `a50b4f6` | `members[].packages` still refused; with the switch on, its message says to send a `services` line instead. |
+| 10 | `6de0192` | Tests: a member's package line reaches booking-api byte for byte; the reads carry `packages` untouched. |
+| 11 | (this commit) | `MOBILE_GROUP_BOOKING_FE.md` Packages (its worked example pinned by a test), `BOOKING_GROUP_API.md` §12, `GROUP_BOOKING_FOLLOW_UPS.md` M7 and M8, a server note in the app team's `APP_GROUP_BOOKING_SPEC.md` §5, `BOOKING_CREATE_API.md` §7. |
 
 Checked on the local seed (the SQL against Postgres; the false cases in
 rolled-back transactions): the tab is 3 queries whatever the number of
@@ -436,6 +441,14 @@ Suite: 1511 before, 3 failing (the LiveTabTests, `fcae0ec`'s query); 1572
 after, all pass. No migration. No booking-api or platform change. No new
 spectacular warnings.
 
+Steps 7 to 11, a party member's package: suite 1572 before, 1606 after, all
+pass. No migration, no booking-api or platform change, no new spectacular
+warnings. Checked by this service's tests only, with booking-api's calls
+replaced; not run here against a live booking-api. (booking-api's own
+journey, `scripts/packages-journey.mjs` at `5deed8a`, held and confirmed a
+party with a member on a package at its demo salon, the hold-and-confirm
+path; its mobile party route was not in that run.)
+
 Before turning `PACKAGE_BOOKING_V1` on: booking-api's branch deployed with
 `PACKAGES_FROM_PLATFORM` on, and the platform's snapshot change merged and
 deployed. Until then booking-api reads a package's row and draft items, so
@@ -444,8 +457,10 @@ variant pin (this service's `can_book` refuses such a package anyway).
 
 Not built, and open:
 
-- A package in a group booking (`members[].packages` is still
-  `packages_not_supported`).
+- ~~A package in a group booking (`members[].packages` is still
+  `packages_not_supported`).~~ **Changed 2026-10-18: built**, steps 7 to 11
+  above: a package is one line of a member's `services`
+  (`BOOKING_GROUP_API.md` §12). `members[].packages` is still refused.
 - The package's own `lead_time_minutes` and `lead_days`: neither booking-api
   nor the slot search applies them.
 - `scheduling: PARALLEL`: booking-api books the parts one after another, so

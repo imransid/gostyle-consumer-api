@@ -15,12 +15,15 @@ test_package_booking mocks them: no database, no network.
 """
 
 import json
+import re
+import unittest
 import uuid
 from contextlib import ExitStack, contextmanager
 from datetime import datetime
 from decimal import Decimal
 from unittest import mock
 
+from django.conf import settings
 from django.core.cache import cache
 from django.test import SimpleTestCase, override_settings
 from rest_framework.test import APIRequestFactory, force_authenticate
@@ -694,3 +697,46 @@ class MyBookingsPackagesTests(SimpleTestCase):
         ])
         self.assertEqual(rows[0].get("packages"), names)
         self.assertNotIn("packages", rows[1])
+
+
+# ------------------------------------------------------------ the FE guide
+
+FE_GUIDE = settings.BASE_DIR / "docs" / "MOBILE_GROUP_BOOKING_FE.md"
+
+
+def round_half_up(fils, percent):
+    """booking-api's Money.percent: Math.round(fils * percent / 100), for whole fils."""
+    return (fils * percent + 50) // 100
+
+
+@unittest.skipUnless(FE_GUIDE.exists(), "docs/ is not in the Docker image")
+class PackageMoneyDocTests(SimpleTestCase):
+    """MOBILE_GROUP_BOOKING_FE.md, Packages: its example follows booking-api's party rules."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        text = FE_GUIDE.read_text(encoding="utf-8")
+        cls.section = text.split("\n## Packages\n", 1)[1].split("\n## ", 1)[0]
+
+    def test_the_worked_example_is_the_rules(self):
+        # A package is one line at its price; a child pays half of the line,
+        # rounded once; VAT 5% once on the party; the deposit 20% of the total.
+        package, cut = 52000, 19900
+        child = round_half_up(package, 50)
+        net = package + child + cut
+        vat = round_half_up(net, 5)
+        total = net + vat
+        deposit = round_half_up(total, 20)
+        for fils in (package, child, cut, net, vat, total, deposit):
+            self.assertIn(f"{fils // 100}.{fils % 100:02d}", self.section)
+
+    def test_the_child_s_services_carry_the_package_s_charge_between_them(self):
+        # The whole objects; the section also shows a `"services": [...]` fragment.
+        blocks = [json.loads(b) for b in re.findall(r"```json\n(.*?)\n```", self.section, re.S)
+                  if b.startswith("{")]
+        [member] = [b for b in blocks if isinstance(b, dict) and "packages" in b]
+        [held] = member["packages"]
+        self.assertEqual(member["age_group"], "child")
+        self.assertEqual(round(sum(s["amount"] for s in member["services"]), 2), held["amount"])
+        self.assertEqual([s["id"] for s in member["services"]], held["service_ids"])
