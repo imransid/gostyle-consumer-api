@@ -353,6 +353,31 @@ live menu, exactly as the Package Details screen does:
 - a size or length of a service (a variant) in a bundle counts at its own
   price and minutes.
 
+> **Changed 2026-10-18: with that change on, each bundle also has
+> `services`.**
+>
+> - **It was** "the shape stays the same".
+> - **It is** the same keys plus `services`: the bundle's own services, one
+>   row per service in the package, in the package's order, as the Services
+>   tab writes a row (`id`, `name`, `description`, `price`, `duration_min`,
+>   `duration_max`) plus `quantity`. `price` is ONE of it at this branch's
+>   price, the number What's Included shows (a variant's own price and
+>   minutes when the package names one). A row with `quantity: 2` is "2 x".
+> - **Why.** So the tab can say what a bundle holds without another call.
+>   They are read with the tab's own prices, so they cannot disagree with the
+>   bundle's `price_before`.
+
+### Book with this Package
+
+> **Added 2026-10-18.** While the server's `PACKAGE_BOOKING_V1` is on, each
+> bundle also carries `can_book`, whichever rules the tab is on: true when the
+> package can be booked here as one visit at its price. It is the Package
+> Details screen's `can_book`, the same rule; the flow is in
+> `PACKAGE_DETAIL_API.md` §5. Absent while the switch is off: offer no Book
+> button then. A bundle can be listed and still have `can_book: false` (a
+> service in it is not offered at this branch, it names a size or length of
+> a service, or it costs nothing).
+
 ---
 
 ## 5. Shop tab — `GET /salon/:id/products`

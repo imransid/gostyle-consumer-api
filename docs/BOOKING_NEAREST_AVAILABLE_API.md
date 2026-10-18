@@ -25,6 +25,23 @@ GET /booking/nearest-available/33333333-…?from=2026-09-19T10:00:00%2B04:00
 Send one or the other; both together narrow to that stylist for those
 services; neither is `422 missing_filter`.
 
+> **Changed 2026-10-18: `service_ids` may hold a package id** (while the
+> server's `PACKAGE_BOOKING_V1` is on).
+>
+> - **It was** service ids only. A package id matched no service, so the
+>   visit measured nothing and nobody was offered.
+> - **It is** a package id (`bundles[].id`, or Package Details' `id`) among
+>   them, alone or beside services. It is searched as the services it holds,
+>   the ones Package Details lists, each as many times as the package holds
+>   it: a "2 x Cut" package is two cuts long. One stylist does all of them,
+>   as for any visit (§3). A package that cannot be booked here is
+>   `422 package_not_bookable` (§4). Each id still counts once, so send a
+>   package once.
+> - **Why.** Booking a package starts with a time, and booking-api books the
+>   package as exactly those services, one after another
+>   (`BOOKING_CREATE_API.md` §7). The offer's `end` is where the booking will
+>   end.
+
 **Encode the offset.** A raw `+` decodes to a space, so `+04:00` travels as
 `%2B04:00`. A caller who forgets is tolerated — the space is read back as a
 `+` — but nothing else about the string is guessed: a time with no offset at
@@ -101,7 +118,9 @@ Then: every grid point where the whole appointment fits, in the window.
 - **Length** is the sum over the picked services of the platform's own stage
   arithmetic — `buffer_pre + work + duration_impact + buffer_post` — falling
   back to the catalogue duration for a service with no stages. `end` already
-  includes that padding and is never recomputed downstream.
+  includes that padding and is never recomputed downstream. A service the
+  visit performs twice (a package's quantity, or a picked service that is
+  also in a picked package) counts twice.
 - **Qualified** is stricter than on the Expert step: one stylist for the whole
   visit, so covering part of the basket is covering none of it. The skill
   match itself is identical — see `BOOKING_EXPERT_API.md` §3.
@@ -126,6 +145,7 @@ Only a malformed request fails, or booking-api being out of reach (503).
 | `from` and `to` on different salon days            | 422    | `invalid_window`   |
 | Neither `service_ids` nor `stylist_id`             | 422    | `missing_filter`   |
 | `service_ids`/`stylist_id` not UUIDs               | 422    | `invalid`          |
+| A package in `service_ids` that cannot be booked here (`PACKAGE_BOOKING_V1` on) | 422 | `package_not_bookable` |
 | No bearer token                                    | 401    | `not_authenticated`|
 | Salon id does not exist                            | 404    | `not_found`        |
 | Unknown service or stylist, closed day, full diary | 200    | — (`"offers": []`) |

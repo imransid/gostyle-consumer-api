@@ -15,13 +15,16 @@ test_package_detail's, so both modules read the same packages.
 """
 
 import json
+import re
 import types
+import unittest
 import urllib.error
 import uuid
 from contextlib import ExitStack
 from datetime import datetime, timedelta
 from unittest import mock
 
+from django.conf import settings
 from django.db.models import OuterRef, Q
 from django.test import SimpleTestCase, override_settings
 from django.urls import resolve, reverse
@@ -50,6 +53,7 @@ from apps.salons.test_package_detail import (
     variant,
 )
 from apps.salons.views import (
+    _QUOTE_EXAMPLE,
     PACKAGE_NOT_BOOKABLE,
     BookingCreateView,
     BookingQuoteView,
@@ -550,3 +554,16 @@ class CreateWithAPackageLineTests(SimpleTestCase):
                 sent = self.create(self.body(STOREFRONT), flag=flag).args[0]
                 self.assertEqual(sent, self.body(BRANCH_ID))
                 self.assertIn(self.LINES, sent)
+
+
+CREATE_DOC = settings.BASE_DIR / "docs" / "BOOKING_CREATE_API.md"
+
+
+@unittest.skipUnless(CREATE_DOC.exists(), "docs/ is not in the Docker image")
+class QuoteDocTests(SimpleTestCase):
+    """docs/BOOKING_CREATE_API.md §6 shows the quote the OpenAPI page shows."""
+
+    def test_the_doc_s_quote_is_the_openapi_example(self):
+        text = CREATE_DOC.read_text(encoding="utf-8")
+        blocks = [json.loads(b) for b in re.findall(r"```json\n(.*?)\n```", text, re.S)]
+        self.assertIn(_QUOTE_EXAMPLE, blocks)

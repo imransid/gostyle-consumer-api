@@ -6,7 +6,9 @@ The contract: the mobile team's "Package Details Screen" (one new route,
 `GET /salon/{salon_id}/package/{package_id}`), received 2026-10-15 and saved
 as received in `docs/package-detail-fe-contract.md` (never edit it; its
 "ยง5" is how their section sign arrived). Section numbers below (§2, §3, ...)
-are theirs.
+are theirs. The one exception, 2026-10-18: a dated server note at the end of
+its §5, saying what replaces their proposed create body (section 10); their
+text is untouched.
 
 **Status: Rafa (2026-10-15): "fix all, best way". Every recommendation in
 section 6 is taken as the answer. The tab fix (Q3) goes behind a switch,
@@ -39,7 +41,8 @@ or a choice. **MISSING** no data anywhere today.
    a customer owning a package, nothing counts sessions, and booking create
    has no package field. A booking at the package price is refused as
    `amount_mismatch`. This is its own project, with a product question first
-   (section 3).
+   (section 3). **Changed 2026-10-18:** answered with option A, and built
+   behind `PACKAGE_BOOKING_V1` (section 10).
 3. **Our Packages tab has four bugs** (F1 to F4) that the detail must not copy.
    The worst: a package that is on sale everywhere (the platform's default)
    is missing from our tab unless the owner also ticked this branch.
@@ -130,6 +133,19 @@ other service, so a 503 can only mean our own server is down.
   business login (`catalog.read`). No gRPC message for packages
   (`services.proto` has `ListServices` only). booking-api cannot ask the
   platform for a package today.
+
+  > **Changed 2026-10-18: no longer true.** The platform has a gRPC read of
+  > packages, `ServicesDirectory.ListPackages`, merged 2026-10-18 (platform
+  > PRs #183 and #184): a tenant's packages on sale at a branch (published,
+  > online booking on, the package's branch rule), each with its items, and
+  > only those whose every service is sellable there by
+  > `isServiceAvailableAtBranch`. booking-api sells from it, behind its
+  > `PACKAGES_FROM_PLATFORM`. It serves the published snapshot, the content
+  > this service shows, once the platform's `feat/list-packages-snapshot`
+  > is in: that change also sends each item's `variant_id`, which
+  > booking-api's client already reads. As read here on 2026-10-18 (platform
+  > `origin/main` = `7875172e`), the merged code still read the package row
+  > and its draft items, and that change was not merged yet.
 - **booking-api: no package on create.** `POST /mobile-booking` takes
   services, products, stylists, times and money totals. No `package_id`,
   voucher, prepaid or session field. The booking tables have no package
@@ -368,3 +384,70 @@ every package whose place on the tab changes (F1). Section A shows how many
 hold an off-menu service (F4: they disappear), have a variant (F3: their
 numbers change) or a snapshot that differs from the draft (F2: their name or
 price changes).
+
+---
+
+## 10. Decision and build: booking a package (2026-10-18)
+
+**Decision: option A, one visit at the bundle price** (section 3). A package
+is booked as one booking of its services, at the package price. **Option B,
+prepaid sessions and My Packages, is not built**: nothing is bought ahead,
+nothing counts sessions, and `my_packages` on the tab stays `[]`.
+
+What A needed (section 3), and how it came:
+
+- **A platform read of packages:** `ServicesDirectory.ListPackages` (the
+  changed note in section 3).
+- **booking-api create learns packages**, not with a `package_id` (as
+  section 3 guessed and the mobile team proposed) but as a **line** of
+  `services`: `{ "id": "<package id>", "amount": <package price> }`.
+  booking-api expands it into its parts (each item times its quantity) and
+  charges the package price, each part carrying its share, so there is no
+  bundle discount line any more. A `package_id` key is refused (`422`). It
+  also answers `POST /v1/mobile-booking/quote`, and its reads carry
+  `packages`. booking-api branch `feat/packages-from-platform`, not deployed.
+- **What booking-api sells** (`platform-package-catalogue.ts`): published,
+  online booking on, sold at the branch, every part offered at the branch,
+  a price above 0, no item pinned to a variant. A package dearer than its
+  parts is sold at its price.
+
+This service, branch `feat/package-booking` from `imransid/main` =
+`86507b4`, behind `PACKAGE_BOOKING_V1` (off) except the quote:
+
+| Step | Commit | What |
+|---|---|---|
+| 1 | `ebf88ea` | `bundles[].services` (added in `fcae0ec`) from the package's own lines: its order, this branch's price, `quantity`, no query per bundle. The three failing LiveTabTests pass. |
+| 2 | `4ecf6cc` | `can_book` on the tab and the detail: `packages.can_book`, with the platform's branch rule once, in `menu.offered_at_branch`. `is_active` unchanged. |
+| 3 | `7f12b7f` | Nearest available takes a package id: its parts, each per quantity, one stylist for all; `422 package_not_bookable`. |
+| 4 | `277fdc9` | `POST /api/v1/booking/quote`, forwarded to booking-api's quote, routed as create; no Idempotency-Key. Not behind the switch. |
+| 5 | `5b8a0d5` | Create: nothing here reads `services`, so nothing to allow; a test pins a package line crossing byte for byte. |
+| 6 | (this commit) | `BOOKING_CREATE_API.md` §6 and §7, `PACKAGE_DETAIL_API.md` §5, the server note in the contract, `SALON_PROFILE_API.md` §4, `BOOKING_NEAREST_AVAILABLE_API.md`, this section. |
+
+Checked on the local seed (the SQL against Postgres; the false cases in
+rolled-back transactions): the tab is 3 queries whatever the number of
+bundles, its services in the package's order at this branch's price; the
+branch rule's subqueries read this branch's service and category rows, and
+a service row set to false, a category row false with no service row, or a
+branch-scoped service with no row each make `can_book` false and leave
+`is_active` true; the slot search finds the seed package in one read and
+counts a hand-picked cut beside it twice (95 minutes).
+
+Suite: 1511 before, 3 failing (the LiveTabTests, `fcae0ec`'s query); 1572
+after, all pass. No migration. No booking-api or platform change. No new
+spectacular warnings.
+
+Before turning `PACKAGE_BOOKING_V1` on: booking-api's branch deployed with
+`PACKAGES_FROM_PLATFORM` on, and the platform's snapshot change merged and
+deployed. Until then booking-api reads a package's row and draft items, so
+an owner's unpublished edit can be what it charges, and it does not see a
+variant pin (this service's `can_book` refuses such a package anyway).
+
+Not built, and open:
+
+- A package in a group booking (`members[].packages` is still
+  `packages_not_supported`).
+- The package's own `lead_time_minutes` and `lead_days`: neither booking-api
+  nor the slot search applies them.
+- `scheduling: PARALLEL`: booking-api books the parts one after another, so
+  the visit is as long as the quote's `end_time`, while the detail's timeline
+  draws the steps at the same time.
