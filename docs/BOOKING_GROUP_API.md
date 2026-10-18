@@ -682,7 +682,10 @@ by booking-api everywhere it is asked, in two envelopes:
 
 ### The money (`GROUP_BOOKING_V2`, booking-api's mobile route)
 
-booking-api checks the app's figures to within 1 fil, as for any party:
+booking-api works the party's money out by these rules, and checks the app's
+`amount_without_tax`, `tax_amount`, `discount`, `total` and `due_amount`
+against it, each to within 1 fil (and `advance_paid_amount` must be `0`), as
+for any party:
 
 1. A package is ONE line at **the package's price**, not its services'
    prices added up.
@@ -691,7 +694,17 @@ booking-api checks the app's figures to within 1 fil, as for any party:
 3. **No discount** for a party: `discount` is `0`. There is no saving line
    either; the package's price is the price.
 4. **VAT**, 5%, once on the party's whole net, then split across the members.
-5. **The deposit** is `deposit_percent` of the party's `total`.
+
+**The deposit is not one of the figures checked** (changed 2026-10-18: this
+list ended "5. The deposit is `deposit_percent` of the party's `total`", as
+if it were). booking-api checks only the percent (`checkGroupMoney`):
+`deposit_percent`, when sent, must be its own (`MOBILE_GROUP_DEPOSIT_PERCENT`,
+20 unless set), or it is `422 amount_mismatch` on `deposit_percent` with
+that percent as `expected`. No deposit amount is checked, or even sent: this
+service forwards `deposit_percent` and never a `deposit_amount`
+(`group_translate.MONEY_FIELDS`). booking-api works the deposit out itself,
+that percent of the party's `total`, and answers it as `deposit_amount`, for
+display.
 
 For example, an adult and a child each with Groom and Go (520.00), and an
 adult with a 199.00 cut: 520.00 + 260.00 + 199.00 = `amount_without_tax`
