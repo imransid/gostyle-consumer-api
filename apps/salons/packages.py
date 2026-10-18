@@ -138,8 +138,9 @@ def lines(items, services, variants):
     only, in whatever state they are in now). `variants` is
     `selectors.package_variant_rows` (id to row: live ones only).
 
-    Each line: `{service_id, name, unit_minor, minutes, quantity, bookable}`.
-    `bookable` is the Services tab's own rule (menu.is_on_menu).
+    Each line: `{service_id, name, description, unit_minor, minutes,
+    quantity, bookable}`. `bookable` is the Services tab's own rule
+    (menu.is_on_menu).
 
     An item whose service is not there (another tenant's, removed, an id
     that could not be read) cannot be shown: it is left out and `complete`
@@ -169,6 +170,7 @@ def lines(items, services, variants):
         out.append({
             "service_id": svc["id"],
             "name": svc["name"],
+            "description": svc.get("description"),
             "unit_minor": unit,
             "minutes": minutes,
             "quantity": item["quantity"],
@@ -239,6 +241,27 @@ def includes(package_lines):
     ]
 
 
+def tab_services(package_lines):
+    """
+    A Packages tab bundle's own services: one row per line, in the
+    package's order, in the Services tab's row shape plus `quantity`.
+    `price` is ONE of it at this branch's price and the minutes are one of
+    it, both the line's own, so they agree with `includes` and `timeline`.
+    """
+    return [
+        {
+            "id": str(line["service_id"]),
+            "name": line["name"],
+            "description": line["description"],
+            "price": major(line["unit_minor"]),
+            "duration_min": line["minutes"],
+            "duration_max": line["minutes"],
+            "quantity": line["quantity"],
+        }
+        for line in package_lines
+    ]
+
+
 def timeline(package_lines, scheduling):
     """
     The visit, one step per service in the package's order.
@@ -283,7 +306,8 @@ def detail(salon, pkg, content, package_lines, complete):
 def tab_row(pkg, content, package_lines):
     """
     One bundle on the Packages tab (PACKAGES_LIVE_RULES_V1 on): the tab's
-    keys, from the same numbers the detail screen shows.
+    keys, from the same numbers the detail screen shows, and its own
+    services (`tab_services`).
     """
     money = saving(content["price_minor"], package_lines)
     return {
@@ -296,4 +320,5 @@ def tab_row(pkg, content, package_lines):
         "price_before": money["price_before"],
         "save_amount": money["save_amount"],
         "theme": pkg.color_theme,
+        "services": tab_services(package_lines),
     }

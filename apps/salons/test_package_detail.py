@@ -209,6 +209,7 @@ def service(service_id, name, price_minor, minutes, **overrides):
     return {
         "id": service_id,
         "name": name,
+        "description": None,
         "price_minor": price_minor,
         "branch_price_minor": None,
         "duration_minutes": minutes,
@@ -222,9 +223,9 @@ def service(service_id, name, price_minor, minutes, **overrides):
 def services(**changes):
     """The three services, with `changes` ({name: {column: value}}) applied."""
     rows = {
-        CUT: service(CUT, "The Gentleman's Cut", 19900, 30),
+        CUT: service(CUT, "The Gentleman's Cut", 19900, 30, description="Cut, wash and style."),
         BEARD: service(BEARD, "Beard Trim & Shape", 23000, 20),
-        TOWEL: service(TOWEL, "Hot Towel Shave", 26000, 25),
+        TOWEL: service(TOWEL, "Hot Towel Shave", 26000, 25, description="A straight razor."),
     }
     names = {"cut": CUT, "beard": BEARD, "towel": TOWEL}
     for name, columns in changes.items():
@@ -341,10 +342,10 @@ class LinesTests(SimpleTestCase):
         rows, complete = lines_for([item(TOWEL), item(CUT)])
         self.assertTrue(complete)
         self.assertEqual(rows, [
-            {"service_id": TOWEL, "name": "Hot Towel Shave", "unit_minor": 26000,
-             "minutes": 25, "quantity": 1, "bookable": True},
-            {"service_id": CUT, "name": "The Gentleman's Cut", "unit_minor": 19900,
-             "minutes": 30, "quantity": 1, "bookable": True},
+            {"service_id": TOWEL, "name": "Hot Towel Shave", "description": "A straight razor.",
+             "unit_minor": 26000, "minutes": 25, "quantity": 1, "bookable": True},
+            {"service_id": CUT, "name": "The Gentleman's Cut", "description": "Cut, wash and style.",
+             "unit_minor": 19900, "minutes": 30, "quantity": 1, "bookable": True},
         ])
 
     def test_this_branch_s_price(self):
@@ -609,6 +610,10 @@ class LiveTabTests(Reads, SimpleTestCase):
             self.old_read = stack.enter_context(mock.patch("apps.salons.views.salon_packages"))
             stack.enter_context(mock.patch(
                 "apps.salons.views.live_salon_packages", return_value=list(rows)))
+            # The lookup `services` used to make, once per bundle. Mocked only
+            # so that a call to it is seen, not raised: it must not be made.
+            self.per_bundle_lookup = stack.enter_context(
+                mock.patch("apps.salons.views.services_by_ids"))
             self.reads(stack, **reads)
             return self.client.get(tab_url()).json()
 
@@ -627,8 +632,50 @@ class LiveTabTests(Reads, SimpleTestCase):
                 "price_before": 689.0,
                 "save_amount": 229.0,
                 "theme": "gold",
+                "services": [
+                    {"id": str(CUT), "name": "The Gentleman's Cut",
+                     "description": "Cut, wash and style.", "price": 199.0,
+                     "duration_min": 30, "duration_max": 30, "quantity": 1},
+                    {"id": str(BEARD), "name": "Beard Trim & Shape", "description": None,
+                     "price": 230.0, "duration_min": 20, "duration_max": 20, "quantity": 1},
+                    {"id": str(TOWEL), "name": "Hot Towel Shave",
+                     "description": "A straight razor.", "price": 260.0,
+                     "duration_min": 25, "duration_max": 25, "quantity": 1},
+                ],
             }],
         })
+
+    def test_services_are_the_package_s_own_lines_in_its_order(self):
+        # The snapshot's order (not the database's), this branch's price (the
+        # Services tab's, not the base price), and each line's quantity.
+        items = [snap_item(TOWEL), snap_item(CUT, quantity=2)]
+        body = self.tab([package_row(published_snapshot=snap(items))],
+                        svc=services(cut={"branch_price_minor": 15000}))
+        self.assertEqual(
+            [(s["id"], s["price"], s["quantity"]) for s in body["bundles"][0]["services"]],
+            [(str(TOWEL), 260.0, 1), (str(CUT), 150.0, 2)],
+        )
+
+    def test_services_agree_with_the_detail_s_includes_and_timeline(self):
+        # A variant line is the variant's price and minutes, as there.
+        pkg = package_row(published_snapshot=snap([snap_item(CUT, LONG_HAIR), snap_item(TOWEL)]))
+        reads = dict(variants={LONG_HAIR: variant()})
+        line = self.tab([pkg], **reads)["bundles"][0]["services"][0]
+        self.assertEqual((line["price"], line["duration_min"], line["duration_max"]), (300.0, 50, 50))
+        with ExitStack() as stack:
+            self.reads(stack, **reads)
+            content, rows, complete = selectors.package_lines(
+                types.SimpleNamespace(id=SALON, tenant_id=TENANT, branch_id=BRANCH), [pkg])[pkg.id]
+        detail = packages.detail(types.SimpleNamespace(id=SALON), pkg, content, rows, complete)
+        self.assertEqual(detail["includes"][0]["price"], line["price"])
+        self.assertEqual(detail["timeline"][0]["duration_minutes"], line["duration_min"])
+
+    def test_one_services_read_for_every_bundle_and_no_lookup_per_bundle(self):
+        rows = [package_row(PACKAGE), package_row(PACKAGE_2, published_snapshot=snap(name="Second"))]
+        body = self.tab(rows)
+        self.assertEqual([len(b["services"]) for b in body["bundles"]], [3, 3])
+        self.services_read.assert_called_once()
+        self.per_bundle_lookup.assert_not_called()
 
     def test_f1_sold_everywhere_without_a_branch_row(self):
         self.assertEqual(len(self.tab([package_row(branch_row=None)])["bundles"]), 1)

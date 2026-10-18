@@ -812,7 +812,9 @@ class SalonPackagesView(APIView):
         """
         The bundles on the platform's rules (PACKAGES_LIVE_RULES_V1): the
         reads and the numbers of GET /salon/<id>/package/<id>, so a bundle
-        listed here opens there as active, at the same price.
+        listed here opens there as active, at the same price. Its
+        `services` are its own lines from those same reads (tab_row), so
+        the tab costs no query per bundle.
         """
         rows = list(live_salon_packages(salon))
         reads = package_lines(salon, rows)
@@ -820,26 +822,13 @@ class SalonPackagesView(APIView):
         for row in rows:
             content, lines, complete = reads[row.id]
             if package_rules.is_active(row, lines, complete):
-                bundle = package_rules.tab_row(row, content, lines)
-
-                service_ids = []
-                for line in lines:
-                    if isinstance(line, dict):
-                        sid = line.get("service_id")
-                    else:
-                        sid = getattr(line, "service_id", None)
-                    if sid:
-                        service_ids.append(sid)
-
-                bundle["services"] = [
-                    service_row(svc) for svc in services_by_ids(service_ids)
-                ]
-
-                bundles.append(bundle)
+                bundles.append(package_rules.tab_row(row, content, lines))
         # By the name the customer sees (the published one), then the id, so
         # the order never changes between two calls.
         bundles.sort(key=lambda bundle: (bundle["name"].casefold(), bundle["id"]))
         return bundles
+
+
 class ProductDetailView(APIView):
     """GET /api/v1/products/<uuid>"""
     permission_classes = [AllowAny]

@@ -352,15 +352,15 @@ def package_item_rows(package_ids):
 def package_service_rows(salon, service_ids):
     """
     The services packages name, by id, in whatever state they are in now
-    (so one off the menu can be told apart), with this branch's price.
-    This tenant's only.
+    (so one off the menu can be told apart), with this branch's price and
+    their description (the Packages tab's `services`). This tenant's only.
     """
     rows = (
         Service.objects.filter(id__in=service_ids, tenant_id=salon.tenant_id)
         .annotate(branch_price_minor=branch_price_minor(OuterRef("pk"), salon.branch_id))
         .values(
-            "id", "name", "price_minor", "branch_price_minor", "duration_minutes",
-            "status", "deleted_at", "online_booking_enabled",
+            "id", "name", "description", "price_minor", "branch_price_minor",
+            "duration_minutes", "status", "deleted_at", "online_booking_enabled",
         )
     )
     return {row["id"]: row for row in rows}
