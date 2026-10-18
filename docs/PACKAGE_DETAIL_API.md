@@ -9,6 +9,9 @@ does. The full `200` below was taken from the running code, and a test asks
 the code again from the same rows and must get the same answer, so this page
 cannot drift from the code. The ids in the examples are test data.
 
+**Changed 2026-10-18:** Book with this Package has a flow behind it now, and
+the answer gains `can_book` to show it by (§5, point 12 below).
+
 The screen a customer opens from a salon's Packages tab by tapping a bundle.
 **One call draws the whole screen.** The list call
 (`GET /salon/:id/packages`) stays as it is.
@@ -56,6 +59,11 @@ The screen a customer opens from a salon's Packages tab by tapping a bundle.
     `is_active: false`, so an old link or a My Packages row never breaks.
 11. **No `503` from this route for another service being down.** It reads
     the salon's menu directly and calls nothing else.
+12. **`can_book` is added (2026-10-18)**, last, while the server's
+    `PACKAGE_BOOKING_V1` is on, and absent while it is off. True: the
+    package can be booked here now as one visit at `price`, so show Book with
+    this Package (§5). It is never true when `is_active` is false, and can be
+    false when `is_active` is true.
 
 ---
 
@@ -154,7 +162,7 @@ why `price_before` is 199 + 150 + 260 = 609:
 | `save_amount` | number \| null | The saving card's amount. Null with `price_before` |
 | `save_percent` | integer \| null | "SAVE 15%" and "(15%)". Null with `price_before` |
 | `duration_minutes` | integer \| null | "Time: ~85 mins". Null only for a package with no services |
-| `is_active` | boolean | False hides Book with this Package (see §5 for today) |
+| `is_active` | boolean | False: pulled from sale here. Book with this Package goes by `can_book` (§5) |
 | `includes[].service_id` | uuid | Not drawn |
 | `includes[].name` | string | The left of each What's Included row |
 | `includes[].price` | number | The right of it: ONE of this service, here |
@@ -165,6 +173,7 @@ why `price_before` is 199 + 150 + 260 = 609:
 | `timeline[].duration_minutes` | integer | "~20 mins" under it |
 | `terms` | string \| null | The grey footnote. Null hides it |
 | `theme` | string \| null | The hero colour, as on the tab row. Null keeps it black |
+| `can_book` | boolean, or absent | Shows Book with this Package when true. Absent while the server's `PACKAGE_BOOKING_V1` is off: hide the button (§5) |
 
 All money is a number in the salon's own currency, before VAT, as everywhere
 else. Minutes are whole numbers.
@@ -192,6 +201,21 @@ else. Minutes are whole numbers.
   `quantity` 2 is still one step (a timeline is one visit).
 - **`is_active`** is true only when the package is on sale at this branch now
   and every included service can be booked here.
+- **`can_book`** (2026-10-18, `PACKAGE_BOOKING_V1` on) is true only when
+  booking-api would sell the package as one booking: `is_active`, and every
+  included service offered at this branch (the platform's branch rule, for
+  the service and its category), no included service pinned to a size or
+  length (a variant: booking-api books services, not their variants), a
+  `price` above 0, and every included service priced above 0 at this branch
+  and in the package's own currency (changed 2026-10-18: booking-api refuses
+  the whole booking for one service with no price, and for a package and a
+  service in two currencies). A package dearer than its services can be
+  booked: it is sold at its price. The Packages tab's `can_book` is the same
+  rule once the tab shows the published content too; until then it is
+  `false` on every bundle (changed 2026-10-18: the tab shows the price the
+  salon last saved, not the published one a booking is charged). This
+  screen reads the published content either way, so its `can_book` stands
+  on its own.
 - **Plain text only.** `description` and `terms` are sent as the salon typed
   them, trimmed. Blank is `null`.
 - **Nothing is booked or held.** It is a read.
@@ -248,29 +272,54 @@ The token library adds its own items to `errors`; do not rely on them.
 
 ## 5. Book with this Package
 
-**There is nothing behind this button yet, anywhere.** Please hide it (or
-show it disabled) until package booking is built. Answers to your three
-questions:
+> **Changed 2026-10-18: the button has a flow behind it.**
+>
+> - **It was** "there is nothing behind this button yet, anywhere": hide it,
+>   and send no `package_id`, because booking create had none.
+> - **It is** a booking of the package as **one visit at the package price**
+>   (the first of the two answers this section used to weigh), shown when
+>   `can_book` is true. Your proposed create body,
+>   `{ "salon_id", "package_id", "services": [{ "service_id", … }] }`, is
+>   replaced by the package as one line of `services`:
+>   `{ "id": "<package id>", "amount": <package price> }`. There is no
+>   `package_id` field, and the included services are not listed.
+> - **Why.** booking-api takes the package as a line, and refuses a key it
+>   does not know with `422`, so a `package_id` field would fail the booking.
+>   And the package price is the line's price: there is no bundle discount
+>   line, so everything that reads the booking's lines (the till, the payment
+>   link) charges the package price, as the quote did.
 
-- **What booking create expects:** nothing about packages. `POST /booking`
-  has no `package_id` and no session field, and the booking records have
-  nowhere to keep one. Do not send one.
-- **Bought at that moment or beforehand:** neither, today. A customer cannot
-  buy a package in the app, and nothing records that a customer owns one or
-  how many sessions are left. A salon can sell a package only at its own
-  till, and even that records just the sale.
-- **Sold out or no longer active:** no such answer exists yet.
+1. **Show the button only when `can_book` is true.** The key is absent while
+   the server's switch is off: hide the button then, as before. A guest is
+   asked to sign in first (your §6).
+2. **Find a time with the package's own id:**
+   `GET /booking/nearest-available/{salon_id}?from=…&to=…&service_ids={id}`,
+   not its `includes[].service_id`s. The server searches for the included
+   services itself, each as many times as the package holds it, with one
+   stylist for all of them; `duration_min` is the whole visit.
+3. **Price it:** `POST /booking/quote` with
+   `services: [{ "id": "<package id>" }]`, `date`, and the chosen offer's
+   `start` as `start_time`.
+4. **Book it:** `POST /booking` with the quote's `services`, `end_time` and
+   money figures exactly as it answered them, and the chosen offer's stylist.
 
-Please do not book the included services as an ordinary booking under the
-package's name. Booking create prices every service itself, at its normal
-price, and refuses any lower total (`amount_mismatch`), so the customer
-would pay the full price, not the package price.
+The bodies, the money rules and what the booking reads back (`packages`) are
+in `BOOKING_CREATE_API.md`, §6 and §7.
 
-Package booking is its own piece of work, and needs one product decision
-first: is a package **one visit at a bundle price** (book all its services
-together, once), or **prepaid sessions** (buy first, then book included
-services one by one, as your How it works describes)? We will come back with
-a plan and a contract.
+Your three questions, answered again:
+
+- **What booking create expects:** the package as a line of `services`, at
+  its price (above). No `package_id`, no session field.
+- **Bought at that moment or beforehand:** at that moment, as the booking
+  itself: one visit, paid like any booking. Nothing is prepaid and no
+  sessions are counted (prepaid sessions are not built), so How it works'
+  "Buy and activate instantly" and "Check in, covered" do not describe it.
+- **Sold out or no longer active:** `can_book` is false. If that changes
+  while the customer is on the way, the slot search answers `422`
+  `package_not_bookable`, and the quote or create `422` `unknown_service`.
+
+Do not book the included services by their own ids under the package's name:
+picked one by one, each is charged at its own price, not the package price.
 
 ---
 
@@ -280,15 +329,17 @@ a plan and a contract.
 2. Reads this endpoint once. Nothing to poll, nothing to write.
 3. Draws the hero, What's Included, the timeline, How it works (your own
    text), the saving card (when `price_before` is not null) and `terms`.
-4. Book with this Package: hidden for now (§5).
+4. Book with this Package: shown when `can_book` is true, and hidden while it
+   is false or absent (§5).
 
 ---
 
 ## 7. Your open points
 
-1. **A package the customer already owns.** Not possible yet: nothing
-   records ownership or sessions used (§5). `my_packages` on the tab stays
-   `[]`. This screen has one state.
+1. **A package the customer already owns.** Not possible: nothing records
+   ownership or sessions used, and prepaid sessions are not built (a package
+   is booked as one visit, §5). `my_packages` on the tab stays `[]`. This
+   screen has one state.
 2. **The hero theme.** Yes: `theme`, the tab row's own value.
 3. **Share.** There is no link for a package (nothing per package to point
    at). Leave the button out for now.

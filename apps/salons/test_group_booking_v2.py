@@ -22,6 +22,7 @@ from apps.salons.test_group_booking import (
     CUT,
     GROUP_ID,
     MAYA,
+    PACKAGES_OFF,
     RANA,
     SALON_ID,
     TENANT,
@@ -70,7 +71,7 @@ CARD = {
 }
 
 
-@override_settings(GROUP_BOOKING_V2=True)
+@override_settings(GROUP_BOOKING_V2=True, **PACKAGES_OFF)
 class GroupBookingV2CreateTests(PartyChecks, ViewSeams, SimpleTestCase):
     """POST /api/v1/booking/group with the flag on."""
 
@@ -201,6 +202,7 @@ class GroupBookingV2CreateTests(PartyChecks, ViewSeams, SimpleTestCase):
         self.assertEqual(response.status_code, 503)
 
 
+@override_settings(**PACKAGES_OFF)
 class GroupBookingV2OffTests(ViewSeams, SimpleTestCase):
     """With the flag off, nothing about POST /booking/group changes."""
 

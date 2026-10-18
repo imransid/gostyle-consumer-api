@@ -46,6 +46,10 @@ Step 5 should only offer a member the stylists that call returns, because
 `GET /booking/:id`, `PATCH /booking/:id`. Neither is the group part of
 `/bookings`. See §8.
 
+> **Changed 2026-10-18: `/salon/:id/packages` is**, while `PACKAGE_BOOKING_V1`
+> is on: a bundle whose `can_book` is `true` is booked for a member as one
+> line of that member's `services`. See §12.
+
 ---
 
 ## 2. Find an invited member — `GET /user/lookup`
@@ -131,7 +135,7 @@ the whole URL.
 | `date`          | yes      | `YYYY-MM-DD`, salon-local.                                            |
 | `members`       | yes      | 2 to 8.                                                               |
 | `↳ ref`         | yes      | A whole number ≥ 0, unique. Echoed in `plan`.                          |
-| `↳ service_ids` | yes      | Uuids from `/salon/<id>/services`. Empty is `member_no_services`.      |
+| `↳ service_ids` | yes      | Uuids from `/salon/<id>/services`, or a package's id (§12). Empty is `member_no_services`. |
 | `↳ stylist_id`  | no       | `null` or left out: the salon picks.                                   |
 
 ### `200 OK`
@@ -172,6 +176,16 @@ the whole URL.
 - **`available: true` only if every member fits.** The `plan` then says who
   is with whom, and when. `stylist` is the one actually reserved, even when
   the request sent `null`.
+  - *Changed 2026-10-18, with `PACKAGE_BOOKING_V1` on:* every `stylist` in a
+    `plan` can do all of that member's services, a package's every service
+    included, by the rule `/salon/<id>/stylists?service_ids=` applies.
+    booking-api does not check that (§5, item 4), so this service checks
+    each stylist it plans. A start where booking-api gave a member someone
+    who cannot is asked again with the stylists it planned there shared out
+    so that each member's can; if there is no such sharing, or it does not
+    fit, the start is unavailable. So the `plan` may name other stylists
+    than booking-api first chose, and one more call may be made for those
+    starts.
 - **Starts already gone are listed as unavailable.** That covers past times
   and times inside the chosen services' notice period. booking-api is not
   asked about them.
@@ -227,7 +241,7 @@ two calls.
 | `↳ id`         | cond.    | Required for `self` (the token's user id) and `registered` (from §2). Dropped for a guest. |
 | `↳ name`       | cond.    | Required for `guest`. For `self` and `registered`, the account's name is used, and this only fills in for an account without one. |
 | `↳ age_group`  | yes      | `adult` or `child`. Echoed back; **not priced** (§8).                                     |
-| `↳ services`   | yes      | At least one. `amount` is accepted and ignored.                                           |
+| `↳ services`   | yes      | At least one. `amount` is accepted and ignored. A package is one line (§12).              |
 | `↳ products`   | no       | **Must be empty**, or `products_not_supported` (§8).                                      |
 | `↳ stylist_id` | no       | `null`: the salon assigns one.                                                          |
 
@@ -256,9 +270,30 @@ What each kind becomes:
    with nothing due in the app.
 4. **Stylists are checked before anything is held.** A chosen stylist must
    be on the salon's roster, chosen for only one member, and able to do
-   all of that member's services. That last test is the one
-   `/salon/<id>/stylists?service_ids=` applies. A `null` is filled in by
-   booking-api.
+   all of that member's services, every service in a package included
+   (§12). That last test is the one `/salon/<id>/stylists?service_ids=`
+   applies. A `null` is filled in by booking-api.
+   - *Changed 2026-10-18: booking-api does not check skills.* It gives each
+     member one professional for all of their services, but the platform's
+     services reach it with no skill, and its `SKILLS_UNVERIFIED` switch
+     (which they cannot be booked without) counts every professional as
+     qualified. So for a `null` it picks whoever is free, the groom's nails
+     to someone who only cuts, and this check is the only one a chosen
+     stylist gets. With `PACKAGE_BOOKING_V1` on (it brings packages, often
+     more than one person's work), its picks for a `null` are checked here
+     too, by the same test; off, as before, they are not. On availability
+     (§3). On the old path, the professionals held, before the party is
+     confirmed: a hold with someone who cannot is given back and the party
+     held again once, with the professionals it held shared out so each
+     member's can, or it is `slot_taken` and nothing is booked; the confirm
+     then names the professional held for every member, so its re-plan
+     cannot move anyone. With `GROUP_BOOKING_V2` the party is held and
+     booked in one call, so a `null`'s pick can only be checked once it is
+     booked: a wrong one is logged as an error, for the salon to put right,
+     and the party stands. To book exactly the stylists a start's `plan`
+     shows, checked, send each member's `plan[].stylist.id` as
+     `stylist_id`. The lasting fix is booking-api's: skills from the
+     platform (`GROUP_BOOKING_FOLLOW_UPS.md`, M9).
 5. **The slot is re-checked for the whole party.** If it no longer fits,
    nothing is written and the call fails with `slot_taken`.
 6. **`start_time` is held to §3's rule.** booking-api plans against its diary
@@ -357,8 +392,9 @@ one: `validation_error` for a 422, `error` for a 409.
 | `contact` is not a valid email or phone (§2)                 | 422    | `invalid_contact`        | `contact`     |
 | A stylist cannot do all of that member's services            | 422    | `stylist_mismatch`       | `stylist_id`  |
 | One stylist chosen for two members                           | 422    | `stylist_repeated`       | `stylist_id`  |
-| A service or stylist not at this salon                       | 422    | `foreign_id`             | `service_ids` / `services` / `stylist_id` |
-| A member with products, or with packages                     | 422    | `products_not_supported` / `packages_not_supported` | `products` / `packages` |
+| A service, package or stylist not at this salon              | 422    | `foreign_id`             | `service_ids` / `services` / `stylist_id` |
+| A member with products, or with `members[].packages`         | 422    | `products_not_supported` / `packages_not_supported` | `products` / `packages` |
+| A package of this salon that cannot be booked here now (§12) | 422    | `package_not_bookable`   | `service_ids` / `services` |
 | `start_time` without an offset                               | 422    | `offset_required`        | `start_time`  |
 | `start_time` not on `date`                                   | 422    | `date_mismatch`          | `start_time`  |
 | Salon closed that day / too soon or past / outside hours     | 422    | `salon_closed` / `too_soon` / `outside_hours` | `start_time` |
@@ -370,18 +406,28 @@ one: `validation_error` for a 422, `error` for a 409.
 
 `slot_taken`'s `message` is booking-api's own reason where it gives one
 ("Only 1 professional can cover this party, and each of the 3 participants
-needs their own."), and is worth showing.
+needs their own."), and is worth showing. When booking-api held a member with
+someone who cannot do their services and nobody it held can (§5, item 4), it
+is this service's: "There is no stylist free at that time who can do all of
+each member's services. Pick another time." (added 2026-10-18).
 
-`duplicate_ref`, `stylist_repeated`, `products_not_supported` and
-`packages_not_supported` are not in the spec. `stylist_repeated` exists
-because everyone starts together and each member needs their own
-professional. Without it, a party like that would get a day of
-struck-through slots and no reason.
+`duplicate_ref`, `stylist_repeated`, `products_not_supported`,
+`packages_not_supported` and `package_not_bookable` are not in the spec.
+`stylist_repeated` exists because everyone starts together and each member
+needs their own professional. Without it, a party like that would get a day
+of struck-through slots and no reason.
 
 Anything else booking-api refuses is forwarded **in its own shape**, with
 its status: `statusCode`, `message`, `error`, `code`. Only an unexpected
 refusal is forwarded this way; everything the app can cause is in the
-table above.
+table above, with one exception (added 2026-10-18): a member's package
+beside a hand-picked service priced in another currency is booking-api's
+`422 BOOKING_CURRENCY_MIXED`, in that shape, on availability and on this
+create's hold and confirm (§12, "One currency per member"). Read the
+top-level `code` for it. *Changed 2026-10-18 (booking-api `3ae8e53`):* with
+`GROUP_BOOKING_V2` on, create is booking-api's mobile route, and that route
+answers it in the app's envelope instead, `422 currency_mismatch` on
+`members[i].services`; availability still answers it in booking-api's shape.
 
 **The two 503s mean different things:**
 
@@ -411,7 +457,10 @@ and don't promise it. Each one needs work in booking-api first.
 
 1. **No products.** A member with products is refused with
    `products_not_supported`, not booked without them.
-2. **No packages.** Book the package's services instead.
+2. ~~**No packages.** Book the package's services instead.~~ **Changed
+   2026-10-18:** with `PACKAGE_BOOKING_V1` on, a member may book a package,
+   as one line of that member's `services` (§12). `members[].packages` is
+   still refused.
 3. **No child discount.** `age_group` is echoed and never stored, and it
    changes no price.
 4. **No VAT, discount or promo code.** `tax_amount` is `null`, `discount` is
@@ -498,3 +547,200 @@ the `--logger-class` that `docker-compose.yml` now passes.
 - **Recorded as a desk booking.** booking-api marks every group booking with
   the `desk` channel, not `online`, so app group bookings are counted as
   desk bookings in its reports.
+
+---
+
+## 12. A package for a member
+
+> **Changed 2026-10-18.** Until now a member could not book a package (§8,
+> item 2). With this service's `PACKAGE_BOOKING_V1` and booking-api's
+> `PACKAGES_FROM_PLATFORM` both on, a member may: a bundle from the
+> Packages tab, booked as one visit at the package's price. Off, nothing
+> here applies, and a package id is `foreign_id`, as it was.
+
+### The line
+
+- **Availability (§3):** the package's id among the member's `service_ids`.
+- **Create (§4):** one line of the member's `services`, at the package's
+  price: `{ "id": "<package id>", "amount": 520 }`. Alone or beside
+  hand-picked services; any number of members, the same package or
+  different ones. Do not list its services as well.
+- **One shape.** `members[].packages` is still refused,
+  `packages_not_supported`. While the switch is on, its message says to
+  send the package as a line of `services` instead.
+- Offer a bundle only when its `can_book` is `true` (the Packages tab,
+  Package Details). No `can_book` key means the switch is off. While the
+  tab is on its old rules (`PACKAGES_LIVE_RULES_V1` off) every bundle's
+  `can_book` is `false` (changed 2026-10-18): those bundles show the
+  package row's draft price, and booking-api charges the published
+  snapshot's. Package Details reads the snapshot either way.
+
+### What this service checks, and what it sends
+
+A package is checked as the services it holds: its published snapshot's
+items, each as many times as the package holds it, read exactly as the
+slot search reads them (`BOOKING_NEAREST_AVAILABLE_API.md`).
+
+- **`package_not_bookable`** (`422`, on `service_ids` or `services`): a
+  package of this salon's business that cannot be booked here now, by the
+  `can_book` rule (published, online booking on, sold at this branch, every
+  service in it on the menu, offered at this branch, priced above 0 here
+  and priced in the package's own currency, none pinned to a variant, a
+  price above 0). Another business's package, or one never on sale, is
+  `foreign_id`, as is any id that is not this salon's.
+  - *Changed 2026-10-18: a service in it priced at 0 here.* booking-api
+    refuses the whole basket for one service with no price above 0 (`409
+    BOOKING_STATE_INVALID`, "That service has no usable price in the
+    catalogue."), which reached the app raw from availability and as
+    `slot_taken` from the old path's hold, so Pick a time could only loop.
+    `can_book` is false for such a package now, and this is
+    `package_not_bookable` before booking-api is asked.
+  - *Changed 2026-10-18: a service in it priced in another currency.* The
+    platform has services in different currencies at one branch, and
+    booking-api refuses a package priced in one currency with a service
+    priced in another here (`422`, below: `currency_mismatch` from its
+    mobile route, `BOOKING_CURRENCY_MIXED` everywhere else). The
+    service's currency here is its branch row's when the row names one,
+    else its own, as the platform's ListServices sends it.
+- **The stylist** (§5, item 4): a chosen stylist must be able to do every
+  service in the package, or `stylist_mismatch`.
+  `/salon/<id>/stylists?service_ids=` takes services only: ask it with the
+  package's services (`includes[].service_id` on Package Details). For a
+  member with no chosen stylist, booking-api's own pick is checked by the
+  same rule (changed 2026-10-18: booking-api checks no skills, and a
+  package's services are often more than one person's work): on
+  availability, a start whose plan gives the package to someone who cannot
+  do all of it is asked again with the stylists shared out, or unavailable;
+  on the old path the hold is checked the same way before it is confirmed;
+  with `GROUP_BOOKING_V2`, only once booked, and logged.
+- **The party's length:** each member's services end to end, a package's
+  included, each as many times as the package holds it ("2 × Cut" is two
+  cuts). The longest member decides which starts are offered (§3) and
+  whether a start finishes in time (`outside_hours`).
+- **The notice:** the longest any service in the party asks for, a
+  package's services included (`too_soon`).
+- **Sent on as it came.** booking-api expands a package itself, on
+  availability, hold, confirm and its mobile route, so it is sent each
+  member's lines exactly as the app sent them: the package id, not its
+  services, and its `amount`. The one thing done to any id is its uuid
+  spelling, lower case.
+
+booking-api checks again, and its refusal is forwarded as it came. If it does
+not sell the package at this branch: on availability and the old path's
+hold and confirm, in its own shape (§7); on its mobile route
+(`GROUP_BOOKING_V2`), in the app's envelope, `422 unknown_service` on
+`members[i].services` ("Not sold at this salon: …"). The mobile route
+answers a member's service with no usable price here (priced at 0 at this
+branch) the same way, with the message "That service has no usable price in
+the catalogue." (changed 2026-10-18, booking-api `3ae8e53`; a package with
+such a service is `package_not_bookable` here first).
+
+**One currency per member** (added 2026-10-18). booking-api adds a member's
+lines up as one figure and has no rate to convert with. `can_book` covers a
+package and its own services; what it cannot see is the member's basket. A
+package beside a hand-picked service priced in another currency (an AED
+package and a BDT Keratin), or two hand-picked services in two, is refused
+by booking-api everywhere it is asked, in two envelopes:
+
+- **Create with `GROUP_BOOKING_V2` (its mobile route): the app's envelope**
+  (changed 2026-10-18, booking-api `3ae8e53`; it was booking-api's own, as
+  below): `422 currency_mismatch` on `members[i].services`, the member
+  named by its index in the request. Branch on `errors[0].code` as for any
+  of that route's refusals.
+
+  ```json
+  {
+    "detail": "Please correct the highlighted fields.",
+    "code": "validation_error",
+    "errors": [
+      {
+        "field": "members[0].services",
+        "code": "currency_mismatch",
+        "message": "This basket mixes AED and BDT. Prices in different currencies cannot be added, and there is no rate to convert them with."
+      }
+    ]
+  }
+  ```
+
+  The same code comes on two other fields, and the field says which: on
+  `members[i].products[j].id`, a product priced in another currency than
+  the party's services; on `members`, members each in one currency but not
+  the same one ("one party pays in one currency").
+- **Availability, and the old path's hold and confirm: booking-api's own
+  envelope**, `422 BOOKING_CURRENCY_MIXED`, forwarded as it came: no
+  `errors[]`; read the top-level `code`.
+
+  ```json
+  {
+    "statusCode": 422,
+    "code": "BOOKING_CURRENCY_MIXED",
+    "message": "This basket mixes AED and BDT. Prices in different currencies cannot be added, and there is no rate to convert them with.",
+    "details": { "currencies": ["AED", "BDT"] },
+    "error": "Unprocessable Entity"
+  }
+  ```
+
+### The money (`GROUP_BOOKING_V2`, booking-api's mobile route)
+
+booking-api works the party's money out by these rules, and checks the app's
+`amount_without_tax`, `tax_amount`, `discount`, `total` and `due_amount`
+against it, each to within 1 fil (and `advance_paid_amount` must be `0`), as
+for any party:
+
+1. A package is ONE line at **the package's price**, not its services'
+   prices added up.
+2. A **child** pays half of each line: **half of the package's price,
+   rounded once** (half up), not half of each service in it.
+3. **No discount** for a party: `discount` is `0`. There is no saving line
+   either; the package's price is the price.
+4. **VAT**, 5%, once on the party's whole net, then split across the members.
+
+**The deposit is not one of the figures checked** (changed 2026-10-18: this
+list ended "5. The deposit is `deposit_percent` of the party's `total`", as
+if it were). booking-api checks only the percent (`checkGroupMoney`):
+`deposit_percent`, when sent, must be its own (`MOBILE_GROUP_DEPOSIT_PERCENT`,
+20 unless set), or it is `422 amount_mismatch` on `deposit_percent` with
+that percent as `expected`. No deposit amount is checked, or even sent: this
+service forwards `deposit_percent` and never a `deposit_amount`
+(`group_translate.MONEY_FIELDS`). booking-api works the deposit out itself,
+that percent of the party's `total`, and answers it as `deposit_amount`, for
+display.
+
+For example, an adult and a child each with Groom and Go (520.00), and an
+adult with a 199.00 cut: 520.00 + 260.00 + 199.00 = `amount_without_tax`
+979.00, `tax_amount` 48.95, `total` 1027.95, `deposit_amount` 205.59 at
+20% (`MOBILE_GROUP_BOOKING_FE.md`, Packages, works it through).
+
+On the old path (`GROUP_BOOKING_V2` off) a package is held and confirmed
+the same way, at its price, with no child price and no VAT, as every line
+on that path (§8). Its line comes back in §6's answer as it was sent, with
+the package's name and price.
+
+### What comes back (`GROUP_BOOKING_V2`)
+
+booking-api's fields, forwarded untouched, on the `201` and on `GET
+/booking/<group id>`:
+
+- **`members[].packages`**: `[{ id, name, amount, service_ids }]` on a
+  member whose lane holds a package, **and only there**. A member of
+  hand-picked services has no `packages` key at all, exactly as before:
+  never `[]`, so treat a missing key as `[]` (made explicit 2026-10-18).
+  `amount` is the package as charged to that member, before VAT (a child's
+  is the half); `service_ids` its services, a quantity repeated. One entry
+  per sale: a package the member holds twice is listed twice.
+- That member's **`services`** lists the package's services, each at its
+  share of the package's charge, adding up to its `amount`.
+- **My Bookings:** the party's GROUP row has `packages: [{ id, name }]`
+  only when any member holds one; otherwise the key is absent, never `[]`
+  (treat a missing key as `[]`). *Changed 2026-10-18:* it lists **one entry
+  per member per sale**, every member's packages in member order, not one
+  per package: a package two members each hold appears twice, with the
+  same `id`. To name each package once on the card, de-duplicate by `id`.
+
+### Not built
+
+- `/salon/<id>/stylists?service_ids=` does not take a package id.
+- A package's own lead time and `lead_days` are not applied, here or by
+  booking-api, as for a single booking.
+- A `PARALLEL` package is booked one service after another.
+- Prepaid packages (sessions, My Packages): nothing is bought ahead.

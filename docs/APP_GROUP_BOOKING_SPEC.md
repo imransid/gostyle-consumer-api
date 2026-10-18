@@ -294,6 +294,17 @@ display value and is recomputed before anything is stored.
 If a recomputed total differs from the payload, the server keeps its own figure
 and returns it — the client shows what comes back.
 
+> **Changed 2026-10-18 (a server note added to this section; everything else in
+> this file is as the app team wrote it).** A package from the Packages tab
+> (step 4) is sent as one line of the member's `services`,
+> `{ "id": "<package id>", "amount": <package price> }`, and in §3 as an id
+> among that member's `service_ids`. There is no other field for it;
+> `members[].packages` is refused. For a package, two rules above read
+> differently: its line costs the package's own price, not the prices of the
+> services in it (1), and a child pays 50% of that line, rounded once, not 50%
+> of each service in it (2). The stylist (4) must be able to do every service
+> in the package. See `MOBILE_GROUP_BOOKING_FE.md`, Packages.
+
 ---
 
 ## 6. Response — `201 Created`

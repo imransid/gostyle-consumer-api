@@ -127,6 +127,8 @@ The button opens the package booking screen, which is hardcoded too and is hande
 }
 Please confirm what booking create expects, whether the package is bought at that moment or beforehand, and what it answers when the package is sold out or no longer active. booking-create.md says nothing about packages today, and the app sends nothing.
 
+> **Changed 2026-10-18 (a server note added to this section; everything else in this file is as received).** The body above is replaced: booking create takes the package as one line of `services`, `{ "id": "<package id>", "amount": <package price> }`, with no `package_id` field and no included services listed. Why: booking-api refuses a key it does not know (422), and the package price is the line's price, so there is no bundle discount line and everything that reads the booking's lines charges the package price. A package is one visit at its price, bought with the booking itself; nothing is prepaid and no sessions are deducted. Show the button only when the detail's `can_book` is true. The flow (slot search with the package id, `POST /booking/quote`, then create) is in PACKAGE_DETAIL_API.md §5 and BOOKING_CREATE_API.md §6 and §7.
+
 6. What the screen does next
 Opened from the Packages tab with the salon id and the package id.
 Reads this endpoint once. There is nothing to poll and nothing to write.

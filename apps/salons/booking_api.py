@@ -79,6 +79,33 @@ def create_booking(body, *, authorization, idempotency_key=None, tenant_id=None)
     return _send("POST", "/v1/mobile-booking", headers=headers, body=body)
 
 
+def quote_booking(body, *, authorization, tenant_id=None):
+    """
+    POST /v1/mobile-booking/quote, returning (status_code, parsed_body)
+    exactly as given: the figures create will check (amount_without_tax,
+    discount, tax_amount, total, due_amount), the `services` lines and the
+    `end_time` to send back, or create's own refusal (422 unknown_service,
+    date_mismatch, products_not_supported, ...). It holds nothing and writes
+    nothing.
+
+    `body` and `authorization` travel as for create_booking: the caller's
+    bytes, and the customer's own token (the tier discount is theirs).
+
+    NO Idempotency-Key, ever, the caller's or a derived one. booking-api's
+    interceptor covers this route too: it would store the answer under the
+    key and replay it to the next quote with the same key and body, which is
+    an old price. A quote has nothing a retry could do twice.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": authorization,
+    }
+    if tenant_id:
+        headers["X-Tenant-Id"] = tenant_id
+
+    return _send("POST", "/v1/mobile-booking/quote", headers=headers, body=body)
+
+
 def read_booking(booking_id, *, authorization, tenant_id=None):
     """
     GET /v1/mobile-booking/<id>, returning (status, parsed body) as given.

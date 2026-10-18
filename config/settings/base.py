@@ -331,8 +331,36 @@ GROUP_CANCEL_LANES_V1 = env.bool("GROUP_CANCEL_LANES_V1", default=False)
 # variant sets its price and minutes, and a package is shown only when every
 # service in it can be booked. GET /salon/{id}/package/{id} always uses these
 # rules, so ON the tab and the detail agree. OFF here, the tab answers
-# exactly what it did.
+# exactly what it did, and with PACKAGE_BOOKING_V1 on every bundle's
+# can_book is false (it shows the draft's price, not the one charged).
 PACKAGES_LIVE_RULES_V1 = env.bool("PACKAGES_LIVE_RULES_V1", default=False)
+
+# Booking a package as one visit at its price (docs/BOOKING_CREATE_API.md,
+# "Booking a package"; option A in docs/PACKAGE_DETAIL_AUDIT.md). ON, each
+# Packages tab bundle and the Package Details answer carry `can_book`:
+# booking-api's rule for selling it (packages.can_book), on the published
+# content. Except on the tab's old rules (PACKAGES_LIVE_RULES_V1 off), where
+# it is false on every bundle: those show the draft row's price, not the
+# published one booking-api charges, so the tab offers Book only with both
+# on. And GET /booking/nearest-available takes a package id among
+# service_ids, searching for its parts (each as many times as the package
+# holds it), or answers 422 package_not_bookable. And a party member may hold
+# a package as a line of `services` (POST /booking/group) or among
+# `service_ids` (its availability): this service's checks count it as its
+# parts (foreign_id, the stylist, the party's length and notice) or answer
+# 422 package_not_bookable, and booking-api is sent the line as it came.
+# And booking-api's own pick of a stylist for a member with no chosen one
+# is checked, since it checks no skills (a package is often more than one
+# person's work): a group plan or hold giving a member someone who cannot do
+# all of their services is asked again with the stylists shared out, or the
+# start is unavailable (slot_taken on create); after the fact, logged, on
+# GROUP_BOOKING_V2 (docs/BOOKING_GROUP_API.md, section 5).
+# OFF here, the key is absent, a package id there is answered as before (as
+# no service of the salon), and the screens and the party routes answer
+# exactly what they did. Turn it on only where booking-api runs with
+# PACKAGES_FROM_PLATFORM=true: without it booking-api sells no package, and
+# every one answers 422 unknown_service.
+PACKAGE_BOOKING_V1 = env.bool("PACKAGE_BOOKING_V1", default=False)
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",

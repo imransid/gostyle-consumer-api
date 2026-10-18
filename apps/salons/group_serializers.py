@@ -13,7 +13,8 @@ never sent.
 The codes are the app's contract (docs/BOOKING_GROUP_API.md §7):
 `invalid_party_size`, `member_no_services`, `invalid_member_kind`,
 `member_id_required`. The ones that need the database -- `unknown_user`,
-`foreign_id`, `stylist_mismatch` -- are group_views.py's.
+`foreign_id`, `stylist_mismatch`, and with PACKAGE_BOOKING_V1 on
+`package_not_bookable` -- are group_views.py's.
 
 Fields the app sends and nothing here uses -- the money figures, the promo
 code, the statuses -- are simply not declared, and DRF drops them. The
@@ -36,6 +37,15 @@ MAX_MEMBERS = 8
 
 SELF, REGISTERED, GUEST = "self", "registered", "guest"
 ADULT, CHILD = "adult", "child"
+
+# `members[].packages` is refused either way (`packages_not_supported`). Off,
+# in the words it always had; with PACKAGE_BOOKING_V1 on, saying where a
+# package goes instead.
+PACKAGES_REFUSED = "Group bookings cannot include packages yet. Choose the services instead."
+PACKAGES_AS_A_LINE = (
+    "Send a package as one of this member's services instead: the package's "
+    "id, with its price as the amount."
+)
 
 
 def _refusal(message, code, field=None):
@@ -161,7 +171,12 @@ class AvailabilityMemberSerializer(serializers.Serializer):
     )
     service_ids = serializers.ListField(
         child=serializers.UUIDField(),
-        help_text="The services this member picked. Empty is `member_no_services`.",
+        help_text=(
+            "The services this member picked. Empty is `member_no_services`. "
+            "With PACKAGE_BOOKING_V1 on, a package's id (`bundles[].id`) may "
+            "be among them: the member's visit is then its parts, each as "
+            "many times as the package holds it."
+        ),
     )
     stylist_id = serializers.UUIDField(
         required=False,
@@ -200,7 +215,13 @@ class GroupAvailabilityRequestSerializer(serializers.Serializer):
 
 
 class GroupServiceLineSerializer(serializers.Serializer):
-    id = serializers.UUIDField(help_text="The service's id from GET /salon/<id>/services.")
+    id = serializers.UUIDField(
+        help_text=(
+            "The service's id from GET /salon/<id>/services. With "
+            "PACKAGE_BOOKING_V1 on, a package's id (`bundles[].id`) is a line "
+            "too, at the package's price: booking-api expands it into its parts."
+        ),
+    )
     amount = serializers.JSONField(
         required=False,
         help_text=(
@@ -266,12 +287,21 @@ class BookingMemberSerializer(serializers.Serializer):
         child=serializers.JSONField(),
         required=False,
         default=list,
-        help_text="Must be empty, for the same reason as products.",
+        help_text=(
+            "Must be empty, for the same reason as products. With "
+            "PACKAGE_BOOKING_V1 on a member may have a package, but as a line "
+            "of `services` ({id: the package's id, amount: its price}), never "
+            "here: anything here is still `packages_not_supported`."
+        ),
     )
     stylist_id = serializers.UUIDField(
         required=False,
         allow_null=True,
-        help_text="A stylist this member wants. Null or left out: the salon assigns one.",
+        help_text=(
+            "A stylist this member wants. Null or left out: the salon assigns "
+            "one. To keep the stylist the chosen start's `plan` named for this "
+            "member, send it here."
+        ),
     )
 
     class Meta:
@@ -293,9 +323,15 @@ class BookingMemberSerializer(serializers.Serializer):
         return [_product_line(line) for line in value]
 
     def validate_packages(self, value):
+        """
+        Always refused, never dropped: a package left out would leave a
+        customer believing it was booked. With PACKAGE_BOOKING_V1 on a member
+        may have one, in ONE shape, a line of `services`, so the refusal says
+        where to send it instead.
+        """
         if value:
             raise serializers.ValidationError(
-                "Group bookings cannot include packages yet. Choose the services instead.",
+                PACKAGES_AS_A_LINE if settings.PACKAGE_BOOKING_V1 else PACKAGES_REFUSED,
                 code="packages_not_supported",
             )
         return value

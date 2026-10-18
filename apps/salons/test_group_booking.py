@@ -198,6 +198,62 @@ class PartyTranslationTests(SimpleTestCase):
         self.assertEqual(gt.member_minutes(members, MINUTES), [105, 0])
 
 
+class WhoDoesEachVisitTests(SimpleTestCase):
+    """
+    gt.lane_staff and gt.qualified_assignment: booking-api's picks, read back
+    and shared out again. It checks no skills for the platform's services,
+    so the views check every professional it picks.
+    """
+
+    ABLE = {MAYA: {CUT, NAILS}, ANYA: {CUT}}
+
+    @staticmethod
+    def can_do(able):
+        """`able` is {staff: services they can do}, as group_views._able reads coverage."""
+        return lambda member, staff: set(member["service_ids"]) <= able.get(staff, set())
+
+    def share(self, members, staff, able=None):
+        return gt.qualified_assignment(members, staff, self.can_do(able or self.ABLE))
+
+    def test_each_lane_comes_back_to_its_member_in_one_spelling(self):
+        # Sent booker first (member 1, then 0 and 2); a staff id that is not
+        # a uuid is nobody this can check.
+        lanes = [{"staffId": MAYA.upper()}, {"staffId": ANYA}, {"staffId": "maya"}]
+        self.assertEqual(gt.lane_staff(lanes, [1, 0, 2]), [ANYA, MAYA, None])
+
+    def test_a_missing_lane_is_not_guessed(self):
+        for lanes in ([{"staffId": MAYA}], None, [{"staffId": MAYA}, "not a lane"]):
+            with self.subTest(lanes=lanes), self.assertRaises(ValueError):
+                gt.lane_staff(lanes, [0, 1])
+
+    def test_picks_that_are_right_come_back_as_they_are(self):
+        members = [{"service_ids": [CUT]}, {"service_ids": [CUT]}]
+        self.assertEqual(self.share(members, [ANYA, MAYA]), [ANYA, MAYA])
+
+    def test_the_nails_go_to_the_one_who_does_them(self):
+        # booking-api gave the cuts-and-nails member to Anya, who only cuts.
+        members = [{"service_ids": [CUT, CUT, NAILS]}, {"service_ids": [CUT]}]
+        self.assertEqual(self.share(members, [ANYA, MAYA]), [MAYA, ANYA])
+
+    def test_a_chosen_stylist_keeps_their_member(self):
+        members = [{"service_ids": [CUT, NAILS]}, {"service_ids": [CUT], "stylist_id": MAYA}]
+        self.assertIsNone(self.share(members, [ANYA, MAYA]))
+        members[1]["stylist_id"] = None
+        self.assertEqual(self.share(members, [ANYA, MAYA]), [MAYA, ANYA])
+
+    def test_only_who_booking_api_found_free_and_each_once(self):
+        # Nobody planned here does nails: Maya was not free.
+        members = [{"service_ids": [NAILS]}, {"service_ids": [CUT]}]
+        self.assertIsNone(self.share(members, [ANYA, STRANGER], {**self.ABLE, STRANGER: {CUT}}))
+        # One who can do both is still one person.
+        members = [{"service_ids": [NAILS]}, {"service_ids": [NAILS]}]
+        self.assertIsNone(self.share(members, [MAYA, ANYA]))
+
+    def test_a_pick_that_cannot_be_read_is_nobody(self):
+        members = [{"service_ids": [CUT]}, {"service_ids": [NAILS]}]
+        self.assertIsNone(self.share(members, [None, MAYA]))
+
+
 # ------------------------------------------------------------ when
 
 
@@ -270,6 +326,11 @@ CARDS = {
 STAFF = [MAYA, ANYA, STRANGER]  # the engine's pick for participants 0, 1, 2
 
 
+def engine_pick(i, participant):
+    """Who booking-api gives participant `i`: the one pinned, else STAFF[i]."""
+    return participant.get("preferredStaffId") or STAFF[i]
+
+
 def plan_entry(minute, participants, *, fits=True):
     """One entry of booking-api's {starts: [...]}, as it writes one."""
     base = {
@@ -284,7 +345,7 @@ def plan_entry(minute, participants, *, fits=True):
     lanes = []
     for i, p in enumerate(participants):
         length = sum(MINUTES.get(s, 0) for s in p["serviceIds"])
-        lanes.append({"label": p["label"], "staffId": STAFF[i],
+        lanes.append({"label": p["label"], "staffId": engine_pick(i, p),
                       "start": base["target"], "end": "", "startMin": minute,
                       "endMin": minute + length, "resourceType": "styling"})
     return {**base, "feasible": True, "lanes": lanes}
@@ -358,7 +419,7 @@ def held_answer(body):
     lanes = []
     for i, p in enumerate(body["participants"]):
         end = minute + sum(MINUTES.get(s, 0) for s in p["serviceIds"])
-        lanes.append({"label": p["label"], "staffId": STAFF[i],
+        lanes.append({"label": p["label"], "staffId": engine_pick(i, p),
                       "start": f"{minute // 60:02d}:{minute % 60:02d}",
                       "end": f"{end // 60:02d}:{end % 60:02d}"})
     return {"groupId": GROUP_ID, "holdId": HOLD_ID, "expiresAt": "2026-10-11T09:15:00.000Z",
@@ -368,7 +429,7 @@ def held_answer(body):
 def confirmed_answer(body, shares=("AED 415.00", "AED 0.00", "AED 0.00")):
     """booking-api's 201 to POST /v1/groups/:id/confirm. ORGANIZER: the booker carries it all."""
     return {"groupId": GROUP_ID, "status": "CONFIRMED", "bookings": [
-        {"label": p["label"], "code": f"GS-{1280 + i}", "staffId": STAFF[i],
+        {"label": p["label"], "code": f"GS-{1280 + i}", "staffId": engine_pick(i, p),
          "start": "17:00", "share": shares[i]}
         for i, p in enumerate(body["participants"])
     ]}
@@ -755,6 +816,10 @@ COVERAGE = {
     uuid.UUID(MAYA): [uuid.UUID(CUT), uuid.UUID(NAILS)],
     uuid.UUID(ANYA): [uuid.UUID(CUT)],
 }
+# The group views' seams: the same, and the engine's third pick (STAFF), off
+# the app's roster, who can cut. booking-api checks no skills, so the views
+# check every professional it picks (group_views._who_can_do).
+GROUP_COVERAGE = {**COVERAGE, uuid.UUID(STRANGER): [uuid.UUID(CUT)]}
 
 
 def planned(body, fits=frozenset({660, 1020})):
@@ -777,7 +842,7 @@ class ViewSeams:
             "service_timing_rows": mock.Mock(side_effect=lambda salon, ids: [
                 row for row in TIMING if str(row["id"]) in ids]),
             "salon_stylists": mock.Mock(return_value=STYLISTS),
-            "stylist_service_coverage": mock.Mock(return_value=COVERAGE),
+            "stylist_service_coverage": mock.Mock(return_value=GROUP_COVERAGE),
             "_bookable_accounts": mock.Mock(return_value={RANA: "Rana Hassan"}),
             "_open_span": mock.Mock(side_effect=lambda salon, tz, day, day_start: (
                 day_start + timedelta(hours=9), day_start + timedelta(hours=21))),
@@ -845,13 +910,25 @@ class PartyChecks:
         s.engine_clock.assert_not_called()
 
     def test_the_skill_check_asks_about_the_chosen_stylists_only(self):
+        # The first read: before booking-api is asked. (Its own picks are
+        # read after it answers.)
         with self.seams() as s:
             self.send(self.with_stylist(MAYA))
-        _, service_ids, staff_ids = s.stylist_service_coverage.call_args.args
+        _, service_ids, staff_ids = s.stylist_service_coverage.call_args_list[0].args
         self.assertEqual(staff_ids, [uuid.UUID(MAYA)])
         self.assertEqual(service_ids, [uuid.UUID(NAILS)])
 
 
+# The view tests' switch, pinned whatever the environment says: these are
+# the views without packages. With PACKAGE_BOOKING_V1 on, group_views._visits
+# reads the package tables (packages_for_salon), which these seams do not
+# replace, and booking-api's own stylist picks are checked
+# (group_views._checks_picks). test_group_package_booking drives both, with
+# the package reads mocked and the switch set test by test.
+PACKAGES_OFF = {"PACKAGE_BOOKING_V1": False}
+
+
+@override_settings(**PACKAGES_OFF)
 class GroupAvailabilityViewTests(PartyChecks, ViewSeams, SimpleTestCase):
     PATH = "/api/v1/booking/group-availability"
     SERVICES_FIELD = "service_ids"
@@ -980,7 +1057,7 @@ class GroupAvailabilityViewTests(PartyChecks, ViewSeams, SimpleTestCase):
         s.plan_group.assert_not_called()
 
 
-@override_settings(CACHES={"default": {
+@override_settings(**PACKAGES_OFF, CACHES={"default": {
     "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
     "LOCATION": "group-booking-tests",
 }})

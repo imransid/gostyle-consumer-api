@@ -360,7 +360,7 @@ Further reading, all in [docs/](docs/):
 - [SERVICES_DETAILS_API.md](docs/SERVICES_DETAILS_API.md) — resolving service ids into their details: order, retired services, and why `salon_id` comes from the tenant
 - [BOOKING_EXPERT_API.md](docs/BOOKING_EXPERT_API.md) — the booking flow's Expert step: which stylists can perform the picked services, and the two skill catalogues it bridges to find out
 - [BOOKING_NEAREST_AVAILABLE_API.md](docs/BOOKING_NEAREST_AVAILABLE_API.md) — the Time step: how a bookable start is decided, and everything that does not yet block one
-- [BOOKING_CREATE_API.md](docs/BOOKING_CREATE_API.md) — creating a booking: what this service forwards to gostyle-booking-api, what it refuses on its own, and why two error shapes share one endpoint
+- [BOOKING_CREATE_API.md](docs/BOOKING_CREATE_API.md) — creating a booking: what this service forwards to gostyle-booking-api, what it refuses on its own, and why two error shapes share one endpoint; pricing it first (`POST /booking/quote`) and booking a package
 - [BOOKING_LIST_API.md](docs/BOOKING_LIST_API.md) — listing, reading and paying for bookings: the three shelves, and the three fields only this service can answer (`salon`, `can_cancel`, `can_reschedule`)
 - [AUTH_GUIDE.md](docs/AUTH_GUIDE.md) — the OTP → verify → register flow in plain language
 - [DEPLOYMENT.md](docs/DEPLOYMENT.md) — CI/CD, image tags, and the rollback lever

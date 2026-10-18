@@ -43,6 +43,7 @@ from .booking_api import (
     busy_intervals,
     create_booking,
     list_bookings,
+    quote_booking,
     read_booking,
     read_group_booking,
     patch_booking,
@@ -71,6 +72,7 @@ from .selectors import (
     salon_cards_for_refs,
     live_salon_packages,
     package_lines,
+    packages_for_salon,
     salon_packages,
     salon_products,
     manual_state_on,
@@ -771,6 +773,11 @@ class SalonPackagesView(APIView):
 
     PACKAGES_LIVE_RULES_V1 on: the bundles follow the platform's own rules,
     the Package Details screen's (packages.py). Off: as before.
+
+    PACKAGE_BOOKING_V1 on: each bundle carries `can_book`, under either
+    rules: packages.can_book on the platform's, and false on the old ones,
+    whose bundles show the draft row's price, not the published one
+    booking-api charges. Off: no key.
     """
 
     permission_classes = [AllowAny]
@@ -805,6 +812,19 @@ class SalonPackagesView(APIView):
                 "theme": pkg.color_theme,
             })
 
+        if settings.PACKAGE_BOOKING_V1:
+            # NEVER BOOKABLE FROM THESE ROWS. They are the drafts: the name,
+            # price and services the owner last saved, published or not,
+            # while booking-api charges the published snapshot (and sells no
+            # package the platform does not serve from it). Asking the live
+            # rule about the same id said yes beside a price booking-api will
+            # not charge. So false, and the key stays: absent means the
+            # switch is off, on this tab and on Package Details alike. Package
+            # Details reads the snapshot under either rules and answers for
+            # itself; PACKAGES_LIVE_RULES_V1 puts this tab on it too.
+            for bundle in bundles:
+                bundle["can_book"] = False
+
         return Response({"my_packages": [], "bundles": bundles})
 
     @staticmethod
@@ -812,7 +832,9 @@ class SalonPackagesView(APIView):
         """
         The bundles on the platform's rules (PACKAGES_LIVE_RULES_V1): the
         reads and the numbers of GET /salon/<id>/package/<id>, so a bundle
-        listed here opens there as active, at the same price.
+        listed here opens there as active, at the same price. Its
+        `services` are its own lines from those same reads (tab_row), so
+        the tab costs no query per bundle.
         """
         rows = list(live_salon_packages(salon))
         reads = package_lines(salon, rows)
@@ -821,25 +843,15 @@ class SalonPackagesView(APIView):
             content, lines, complete = reads[row.id]
             if package_rules.is_active(row, lines, complete):
                 bundle = package_rules.tab_row(row, content, lines)
-
-                service_ids = []
-                for line in lines:
-                    if isinstance(line, dict):
-                        sid = line.get("service_id")
-                    else:
-                        sid = getattr(line, "service_id", None)
-                    if sid:
-                        service_ids.append(sid)
-
-                bundle["services"] = [
-                    service_row(svc) for svc in services_by_ids(service_ids)
-                ]
-
+                if settings.PACKAGE_BOOKING_V1:
+                    bundle["can_book"] = package_rules.can_book(row, content, lines, complete)
                 bundles.append(bundle)
         # By the name the customer sees (the published one), then the id, so
         # the order never changes between two calls.
         bundles.sort(key=lambda bundle: (bundle["name"].casefold(), bundle["id"]))
         return bundles
+
+
 class ProductDetailView(APIView):
     """GET /api/v1/products/<uuid>"""
     permission_classes = [AllowAny]
@@ -1331,7 +1343,11 @@ class FavouriteListView(ListAPIView):
             "service_ids", str, required=False,
             description="Comma-separated service UUIDs. Required unless "
                         "`stylist_id` is sent; both together narrow to that "
-                        "stylist for those services.",
+                        "stylist for those services. With PACKAGE_BOOKING_V1 "
+                        "on, a package id (bundles[].id) may be among them: "
+                        "it is searched as its services, each as many times "
+                        "as the package holds it, and one that cannot be "
+                        "booked here is 422 package_not_bookable.",
         ),
         OpenApiParameter(
             "stylist_id", str, required=False,
@@ -1355,8 +1371,15 @@ class NearestAvailableView(APIView):
         except ParamError as exc:
             raise _invalid(exc) from exc
 
+        # The visit: one entry per service performed. Off, the ids as sent.
+        visit = params["service_ids"]
+        if settings.PACKAGE_BOOKING_V1:
+            visit = _with_packages_as_parts(salon, visit)
+            # Who can do it, and the notice it needs: each service once.
+            params = {**params, "service_ids": list(dict.fromkeys(visit))}
+
         timing = service_timing_rows(salon, params["service_ids"])
-        duration = _appointment_minutes(params["service_ids"], timing)
+        duration = _appointment_minutes(visit, timing)
 
         # WHO IS BUSY COMES FROM booking-api, and when that service cannot
         # be reached this endpoint has no honest answer. Saying "everything
@@ -1392,13 +1415,88 @@ def _appointment_minutes(service_ids, timing):
     With no services named there is nothing to measure, and the answer is the
     browsing default — reported back as `duration_min` so the app never has to
     guess which number drew the grid.
+
+    Counted per entry of `service_ids`, so a service the visit performs twice
+    (a package's "2 x Cut") takes twice its minutes. An id with no timing row
+    (not offered here) adds nothing, as before.
     """
     if not service_ids:
         return slots.DEFAULT_APPOINTMENT_MINUTES
 
-    return sum(
-        row["stage_minutes"] or row["duration_minutes"] or 0 for row in timing
-    )
+    minutes = {
+        row["id"]: row["stage_minutes"] or row["duration_minutes"] or 0 for row in timing
+    }
+    return sum(minutes.get(service_id, 0) for service_id in service_ids)
+
+
+# The one refusal a package adds to the slot search (PACKAGE_BOOKING_V1).
+PACKAGE_NOT_BOOKABLE = "This package cannot be booked at this salon right now."
+
+
+def _bookable_packages(salon, ids, field="service_ids"):
+    """
+    The packages among `ids` (PACKAGE_BOOKING_V1), as `{id: (content,
+    parts)}`, keyed by the package's id as text. One read for all of them
+    (packages_for_salon, then package_lines' three), whatever their number.
+
+    `content` is the live content the Package Details screen shows (the
+    published snapshot's name, price and items). `parts` is the services one
+    booking of the package performs, each as many times as the package holds
+    it (packages.parts), as booking-api expands it. An id that is no package
+    of this salon's business is not in the answer.
+
+    A package of this salon's business that packages.can_book refuses is a
+    422 on `field`, package_not_bookable, rather than an answer about
+    something nobody can book.
+
+    THE ONE EXPANSION. Whatever needs a package's parts reads them here (the
+    slot search, `_with_packages_as_parts`; a party's members,
+    group_views._visits), so a package is the same visit wherever it is
+    booked.
+    """
+    rows = packages_for_salon(salon, ids)
+    if not rows:
+        return {}
+
+    reads = package_lines(salon, rows)
+    found = {}
+    for row in rows:
+        content, lines, complete = reads[row.id]
+        if not package_rules.can_book(row, content, lines, complete):
+            raise _invalid(ParamError(field, PACKAGE_NOT_BOOKABLE, code="package_not_bookable"))
+        found[str(row.id)] = (content, package_rules.parts(lines))
+    return found
+
+
+def _as_parts(ids, packages):
+    """
+    `ids` with each of `packages` (`_bookable_packages`) among them replaced
+    by its parts, in the order asked. Any other id is left as it was sent.
+    """
+    out = []
+    for id_ in ids:
+        found = packages.get(str(id_))
+        out.extend([id_] if found is None else found[1])
+    return out
+
+
+def _with_packages_as_parts(salon, service_ids):
+    """
+    `service_ids` with every package among them replaced by its parts
+    (PACKAGE_BOOKING_V1), in the order asked.
+
+    A PACKAGE'S QUANTITY IS NOT COLLAPSED. parse_service_ids keeps each id
+    once, which is right for hand-picked services; a package's parts are the
+    live content the Package Details screen shows (the published snapshot's
+    items), each as many times as the package holds it (packages.parts), as
+    booking-api expands it. A hand-picked id that is also a part is two
+    services, as booking-api books it.
+
+    A package of this salon's business that packages.can_book refuses is a
+    422, package_not_bookable, rather than a search for something nobody can
+    book. Any other id is left as it was sent, and is answered as before.
+    """
+    return _as_parts(service_ids, _bookable_packages(salon, service_ids))
 
 
 def _qualified_stylists(salon, service_ids, stylist_id):
@@ -1758,7 +1856,12 @@ _BOOKING_REQUEST = {
             "type": "array",
             "minItems": 1,
             "items": _LINE,
-            "description": "At least one. An empty basket is refused upstream.",
+            "description": (
+                "At least one. An empty basket is refused upstream. A package "
+                "is a line too, `{id, amount}` with its id (bundles[].id) and "
+                "the package price, as POST /booking/quote answers it; there "
+                "is no package_id field."
+            ),
         },
         "products": {
             "type": "array",
@@ -2067,6 +2170,169 @@ class BookingCreateView(APIView):
 
         # Returned, not raised, so api_exception_handler never sees it and the
         # body reaches the app in booking-api's own shape.
+        return Response(body, status=upstream_status)
+
+
+# POST /booking/quote: what a basket will cost, priced by booking-api with
+# the same computation create checks against. Documented like create's body,
+# not validated here: booking-api's 422 is the only answer about it.
+_QUOTE_REQUEST = {
+    "type": "object",
+    "required": ["salon_id", "services", "date", "start_time"],
+    "properties": {
+        "salon_id": _BOOKING_REQUEST["properties"]["salon_id"],
+        "services": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                    "id": {"type": "string", "example": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"},
+                },
+            },
+            "description": (
+                "Service ids and package ids (bundles[].id), as create's "
+                "services[].id, each as `{id}` alone: an `amount` here is a 422. "
+                "The answer prices each line."
+            ),
+        },
+        "products": _BOOKING_REQUEST["properties"]["products"],
+        "date": _BOOKING_REQUEST["properties"]["date"],
+        "start_time": _BOOKING_REQUEST["properties"]["start_time"],
+    },
+    "description": (
+        "Exactly these keys: booking-api refuses any other with 422. No "
+        "stylists (who does the visit does not change its price), no end_time "
+        "and no money: those are what it answers."
+    ),
+}
+
+# Groom and Go at the seeded salon (520 for a cut, a scalp treatment at this
+# branch's 150, and a hot towel shave), for a customer with no tier: the
+# figures booking-api's rules give, each part's share by its own price.
+_QUOTE_EXAMPLE = {
+    "salon_id": "22222222-2222-2222-2222-222222222222",
+    "date": "2026-10-20",
+    "start_time": "2026-10-20T16:00:00+06:00",
+    "end_time": "2026-10-20T17:25:00+06:00",
+    "duration_min": 85,
+    "services": [{"id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1", "amount": 520}],
+    "parts": [
+        {"id": "66666666-6666-6666-6666-666666666660", "name": "The Gentleman's Cut",
+         "amount": 169.92, "duration_min": 30, "package_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"},
+        {"id": "66666666-6666-6666-6666-666666666663", "name": "Scalp Treatment",
+         "amount": 128.08, "duration_min": 20, "package_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"},
+        {"id": "66666666-6666-6666-6666-666666666662", "name": "Hot Towel Shave",
+         "amount": 222, "duration_min": 35, "package_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"},
+    ],
+    "packages": [{
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
+        "name": "Groom and Go",
+        "amount": 520,
+        "parts_total": 609,
+        "savings": 89,
+        "service_ids": [
+            "66666666-6666-6666-6666-666666666660",
+            "66666666-6666-6666-6666-666666666663",
+            "66666666-6666-6666-6666-666666666662",
+        ],
+    }],
+    "products": [],
+    "amount_without_tax": 520,
+    "discount": 0,
+    "tax_amount": 26,
+    "total": 546,
+    "advance_paid_amount": 0,
+    "due_amount": 546,
+    "deposit_amount": 0,
+}
+
+
+@extend_schema(
+    summary="Price a booking before creating it",
+    description=(
+        "What a basket will cost, priced by gostyle-booking-api with the "
+        "same computation create checks the app's figures against. Send it "
+        "before Book it and copy the answer into the create: `services` (a "
+        "package's line at the package price), `end_time`, "
+        "`amount_without_tax`, `discount`, `tax_amount`, `total`, "
+        "`advance_paid_amount` and `due_amount`. A create built from the "
+        "answer is accepted unless prices change in between.\n\n"
+        "Routed as create is: send the `salon_id` this service gave you, "
+        "and the branch and tenant are resolved here. Holds nothing, writes "
+        "nothing, and prices any basket, a package or not. booking-api's "
+        "status and body come back unchanged, its 422 included. See "
+        "docs/BOOKING_CREATE_API.md, Booking a package."
+    ),
+    request={"application/json": _QUOTE_REQUEST},
+    responses={
+        200: OpenApiResponse(
+            response={"type": "object", "description": "booking-api's quote, forwarded verbatim."},
+            description="The figures, and the lines to send on create.",
+            examples=[OpenApiExample("A package", value=_QUOTE_EXAMPLE)],
+        ),
+        401: OpenApiResponse(response=_OUR_ENVELOPE, description="No bearer token. Refused here."),
+        415: OpenApiResponse(
+            response=_OUR_ENVELOPE,
+            description="Not `Content-Type: application/json`. Refused before dialling out.",
+        ),
+        422: OpenApiResponse(
+            response={"type": "object"},
+            description=(
+                "booking-api's own shape, as on create: unknown_service (also "
+                "a service with no usable price here), currency_mismatch on "
+                "`services` (a basket in two currencies), date_mismatch, "
+                "products_not_supported, a key it does not take."
+            ),
+            examples=[
+                OpenApiExample(
+                    "Not sold here",
+                    value={
+                        "detail": "Please correct the highlighted fields.",
+                        "code": "validation_error",
+                        "errors": [{
+                            "field": "services",
+                            "code": "unknown_service",
+                            "message": "Not sold at this salon: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1.",
+                        }],
+                    },
+                )
+            ],
+        ),
+        503: OpenApiResponse(
+            response=_OUR_ENVELOPE,
+            description=(
+                "booking-api unreachable, timed out, or not JSON: "
+                "booking_api_unavailable, the same as create. Safe to retry."
+            ),
+        ),
+    },
+)
+class BookingQuoteView(APIView):
+    """POST /api/v1/booking/quote — forwards to booking-api's POST /v1/mobile-booking/quote."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        # The same guard create has, for the same reason.
+        media_type = (request.content_type or "").split(";")[0].strip().lower()
+        if media_type != "application/json":
+            raise UnsupportedMediaType(media_type or "none")
+
+        # Routed exactly as create is (_route_booking), so the quote prices
+        # the basket at the branch and for the tenant the create will use.
+        body, tenant_id = _route_booking(request)
+
+        try:
+            upstream_status, body = quote_booking(
+                body,
+                authorization=request.META.get("HTTP_AUTHORIZATION", ""),
+                tenant_id=tenant_id,
+            )
+        except BookingApiUnavailable as exc:
+            raise BookingApiDown() from exc
+
         return Response(body, status=upstream_status)
 
 

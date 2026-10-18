@@ -14,8 +14,15 @@ because the JWT check runs on every route whatever its permission.
 EVERY 404 IS OURS. The ids come in as text and are checked here
 (params.path_uuid), as on the service detail: with Django's <uuid:> converter
 a bad id would get Django's HTML page, not our JSON envelope.
+
+PACKAGE_BOOKING_V1 on: the answer also carries `can_book`, last
+(packages.can_book, the Packages tab's rule). Off: no key. Whatever
+PACKAGES_LIVE_RULES_V1 says: this screen always shows the published content,
+the price booking-api charges, so its `can_book` is always the rule's. (The
+tab on its old rules shows the draft's price, and answers false.)
 """
 
+from django.conf import settings
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import (
     OpenApiExample,
@@ -110,4 +117,7 @@ class SalonPackageDetailView(APIView):
 
         # The tab's own reads (selectors.package_lines), for one package.
         content, lines, complete = package_lines(salon, [package])[package.id]
-        return Response(packages.detail(salon, package, content, lines, complete))
+        answer = packages.detail(salon, package, content, lines, complete)
+        if settings.PACKAGE_BOOKING_V1:
+            answer["can_book"] = packages.can_book(package, content, lines, complete)
+        return Response(answer)

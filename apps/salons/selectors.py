@@ -11,6 +11,7 @@ from apps.platform_data.models import Product, ProductVariant
 
 from apps.platform_data.models import (
     Category,
+    CategoryBranchAvailability,
     Service,
     ServiceBranchAvailability,
     ServiceMedia,
@@ -327,12 +328,36 @@ def package_for_salon(salon, package_id):
     """
     return (
         ServicePackage.objects.filter(id=package_id, tenant_id=salon.tenant_id)
-        .filter(
-            Q(published_version__isnull=False)
-            | Q(status__in=DETAIL_STATUSES_WITHOUT_VERSION)
-        )
+        .filter(_ever_on_sale())
         .annotate(branch_row=_package_branch_row(salon.branch_id))
         .first()
+    )
+
+
+def packages_for_salon(salon, package_ids):
+    """
+    `package_for_salon` for several ids at once: the ones that are packages
+    of this salon's business ever on sale, in whatever state they are in
+    now, each with `branch_row`. Any other id (a service's, another
+    business's package, a draft never on sale) is simply not in the answer.
+
+    For the slot search with a package in it (PACKAGE_BOOKING_V1): one read
+    on the primary key for the whole basket.
+    """
+    if not package_ids:
+        return []
+    return list(
+        ServicePackage.objects.filter(id__in=list(package_ids), tenant_id=salon.tenant_id)
+        .filter(_ever_on_sale())
+        .annotate(branch_row=_package_branch_row(salon.branch_id))
+    )
+
+
+def _ever_on_sale():
+    """A package that was ever on sale, as a filter: package_for_salon's rule."""
+    return (
+        Q(published_version__isnull=False)
+        | Q(status__in=DETAIL_STATUSES_WITHOUT_VERSION)
     )
 
 
@@ -352,15 +377,30 @@ def package_item_rows(package_ids):
 def package_service_rows(salon, service_ids):
     """
     The services packages name, by id, in whatever state they are in now
-    (so one off the menu can be told apart), with this branch's price.
-    This tenant's only.
+    (so one off the menu can be told apart), with this branch's price and
+    their description (the Packages tab's `services`). This tenant's only.
+
+    With what the platform's branch rule needs (menu.offered_at_branch):
+    `branch_scoped`, the category, and this branch's rows for the service
+    and for its category. And the currency booking-api prices the service
+    in here (menu.service_currency): the service's own, and this branch's
+    row's. Scalar subqueries in the same read.
     """
     rows = (
         Service.objects.filter(id__in=service_ids, tenant_id=salon.tenant_id)
-        .annotate(branch_price_minor=branch_price_minor(OuterRef("pk"), salon.branch_id))
+        .annotate(
+            branch_price_minor=branch_price_minor(OuterRef("pk"), salon.branch_id),
+            branch_currency=branch_currency(OuterRef("pk"), salon.branch_id),
+            branch_available=service_branch_available(OuterRef("pk"), salon.branch_id),
+            category_branch_available=category_branch_available(
+                OuterRef("category_0_id"), salon.branch_id,
+            ),
+        )
         .values(
-            "id", "name", "price_minor", "branch_price_minor", "duration_minutes",
-            "status", "deleted_at", "online_booking_enabled",
+            "id", "name", "description", "price_minor", "branch_price_minor",
+            "currency", "branch_currency",
+            "duration_minutes", "status", "deleted_at", "online_booking_enabled",
+            "branch_scoped", "category_0_id", "branch_available", "category_branch_available",
         )
     )
     return {row["id"]: row for row in rows}
@@ -574,6 +614,54 @@ def branch_price_minor(service_ref, branch_id):
             branch_id=branch_id,
         ).values("price_minor")[:1],
         output_field=IntegerField(),
+    )
+
+
+def branch_currency(service_ref, branch_id):
+    """
+    The currency of one service's own price at one branch, as a subquery:
+    `service_branch_availability.currency`, or NULL when the branch has no
+    row for the service or a row with no currency. Beside branch_price_minor
+    and read the same way: menu.service_currency turns it into the currency
+    booking-api prices the service in here.
+    """
+    return Subquery(
+        ServiceBranchAvailability.objects.filter(
+            service_id=service_ref,
+            branch_id=branch_id,
+        ).values("currency")[:1],
+        output_field=TextField(),
+    )
+
+
+def service_branch_available(service_ref, branch_id):
+    """
+    One service's own availability row at one branch, as a subquery:
+    `service_branch_availability.available`, or NULL when the branch has no
+    row for the service. Read for menu.offered_at_branch, never filtered on
+    here (BRANCH_AVAILABILITY_ENABLED is the tab's filter, and still off).
+    """
+    return Subquery(
+        ServiceBranchAvailability.objects.filter(
+            service_id=service_ref,
+            branch_id=branch_id,
+        ).values("available")[:1],
+        output_field=BooleanField(),
+    )
+
+
+def category_branch_available(category_ref, branch_id):
+    """
+    A category's availability row at one branch, as a subquery:
+    `category_branch_availability.available`, or NULL when there is no row
+    (or no category). For menu.offered_at_branch, like the one above.
+    """
+    return Subquery(
+        CategoryBranchAvailability.objects.filter(
+            category_id=category_ref,
+            branch_id=branch_id,
+        ).values("available")[:1],
+        output_field=BooleanField(),
     )
 
 

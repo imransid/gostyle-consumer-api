@@ -353,6 +353,48 @@ live menu, exactly as the Package Details screen does:
 - a size or length of a service (a variant) in a bundle counts at its own
   price and minutes.
 
+> **Changed 2026-10-18: with that change on, each bundle also has
+> `services`.**
+>
+> - **It was** "the shape stays the same".
+> - **It is** the same keys plus `services`: the bundle's own services, one
+>   row per service in the package, in the package's order, as the Services
+>   tab writes a row (`id`, `name`, `description`, `price`, `duration_min`,
+>   `duration_max`) plus `quantity`. `price` is ONE of it at this branch's
+>   price, the number What's Included shows (a variant's own price and
+>   minutes when the package names one). A row with `quantity: 2` is "2 x".
+> - **Why.** So the tab can say what a bundle holds without another call.
+>   They are read with the tab's own prices, so they cannot disagree with the
+>   bundle's `price_before`.
+
+### Book with this Package
+
+> **Added 2026-10-18.** While the server's `PACKAGE_BOOKING_V1` is on, each
+> bundle also carries `can_book`, whichever rules the tab is on: true when the
+> package can be booked here as one visit at its price. It is the Package
+> Details screen's `can_book`, the same rule; the flow is in
+> `PACKAGE_DETAIL_API.md` §5. Absent while the switch is off: offer no Book
+> button then. A bundle can be listed and still have `can_book: false` (a
+> service in it is not offered at this branch, it names a size or length of
+> a service, it costs nothing, or a service in it costs nothing here or is
+> priced in another currency than the package).
+
+> **Changed 2026-10-18: until the server rule change above is on,
+> `can_book` is `false` on every bundle.**
+>
+> - **It was** Package Details' answer for the same id, whichever rules the
+>   tab is on.
+> - **It is** that answer only once the rule change is on. Until then a
+>   bundle shows the name, price and services the salon last saved,
+>   published or not, and a booking is charged the published package's
+>   price, the one Package Details shows. So every bundle says
+>   `can_book: false`: offer no Book button on the tab. Package Details
+>   still answers `can_book` for itself, beside the published price.
+> - **Why `false` and not absent.** No key means the server's switch is
+>   off, and the app reads it that way everywhere (no Book button, and no
+>   package for a group member). The switch is on; it is the price on this
+>   tab that cannot be booked.
+
 ---
 
 ## 5. Shop tab — `GET /salon/:id/products`

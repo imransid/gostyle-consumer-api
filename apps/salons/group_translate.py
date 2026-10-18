@@ -23,6 +23,7 @@ changes there, this follows.
 """
 
 import re
+import uuid
 from collections import namedtuple
 from datetime import date, datetime, time, timedelta, timezone as dt_timezone
 from decimal import Decimal
@@ -222,6 +223,86 @@ def confirm_body(hold_id, members, order):
         "holdId": hold_id,
         "participants": participants(members, order, planning=True),
     }
+
+
+# ------------------------------------------------------------ who does each visit
+#
+# booking-api gives every member ONE professional for all of that member's
+# services, but checks no skills for the platform's services: they reach it
+# with no skill (services.proto carries none yet), and its SKILLS_UNVERIFIED
+# switch, which platform services cannot be booked without, counts every
+# professional as qualified. So a member with no chosen stylist can be given
+# whoever is free, a package's nails to someone who only cuts. The views
+# check its picks; these are the pure halves of that check.
+
+
+def staff_key(value):
+    """A staff id in one spelling, the uuid's own lower case. None for anything else."""
+    try:
+        return str(uuid.UUID(str(value)))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def lane_staff(lanes, order):
+    """
+    Who booking-api gave each member, in the app's order: `lanes` are one of
+    its answers' (a start it says fits, or a hold), in the order the members
+    were sent (`order`, booker_first). Each is `staff_key`'s spelling, None
+    for a staff id that is not a uuid.
+
+    ValueError when a member has no lane: guessing whose lane is whose would
+    check the wrong person.
+    """
+    if not isinstance(lanes, list) or len(lanes) != len(order):
+        raise ValueError("an answer is missing a lane")
+    staff = [None] * len(order)
+    for position, lane in zip(order, lanes):
+        if not isinstance(lane, dict):
+            raise ValueError("a lane that is not an object")
+        staff[position] = staff_key(lane.get("staffId"))
+    return staff
+
+
+def qualified_assignment(members, staff, can_do):
+    """
+    One professional for each member, chosen among `staff` (who booking-api
+    found free for this party at one start, its pick for each member), each
+    able to do every service of that member's visit: `can_do(member,
+    staff_id)`. A member with a chosen stylist keeps them, and each
+    professional takes one member, since everyone starts together.
+
+    In the app's order, or None when there is no such sharing. Each member's
+    own pick is tried first, so picks that are already right come back as
+    they are; the member with the fewest able professionals is placed first.
+    Eight members at most, so trying every sharing is cheap.
+    """
+    pool = list(dict.fromkeys(s for s in staff if s))
+    options = []
+    for member, pick in zip(members, staff):
+        chosen = staff_key(member.get("stylist_id")) if member.get("stylist_id") else None
+        candidates = [chosen] if chosen else list(dict.fromkeys([pick, *pool]))
+        options.append([s for s in candidates if s and can_do(member, s)])
+
+    order = sorted(range(len(options)), key=lambda i: len(options[i]))
+    out, taken = [None] * len(options), set()
+
+    def place(k):
+        if k == len(order):
+            return True
+        i = order[k]
+        for s in options[i]:
+            if s in taken:
+                continue
+            out[i] = s
+            taken.add(s)
+            if place(k + 1):
+                return True
+            taken.discard(s)
+        out[i] = None
+        return False
+
+    return list(out) if place(0) else None
 
 
 # ------------------------------------------------------------ when
