@@ -2280,8 +2280,10 @@ _QUOTE_EXAMPLE = {
         422: OpenApiResponse(
             response={"type": "object"},
             description=(
-                "booking-api's own shape, as on create: unknown_service, "
-                "date_mismatch, products_not_supported, a key it does not take."
+                "booking-api's own shape, as on create: unknown_service (also "
+                "a service with no usable price here), currency_mismatch on "
+                "`services` (a basket in two currencies), date_mismatch, "
+                "products_not_supported, a key it does not take."
             ),
             examples=[
                 OpenApiExample(

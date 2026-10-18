@@ -372,9 +372,16 @@ booking-api's refusals are create's, in its envelope:
 }
 ```
 
-For example `unknown_service` (not sold here, or a package booking-api does
-not sell here), `date_mismatch` (`date` is not `start_time`'s day at the
-salon), `invalid_window`, `products_not_supported`.
+For example `unknown_service` (not sold here, a package booking-api does not
+sell here, or a service with no usable price here), `currency_mismatch` on
+`services` (the basket mixes currencies), `date_mismatch` (`date` is not
+`start_time`'s day at the salon), `invalid_window`, `products_not_supported`.
+
+> **Changed 2026-10-18 (booking-api `3ae8e53`).** A basket booking-api's
+> catalogue refuses now answers in this envelope too, on the quote and on
+> create alike: `currency_mismatch` and `unknown_service` on `services`
+> (§7, "When it cannot be booked"). They used to come in booking-api's own
+> shape, `{statusCode, code, message, details, error}` with no `errors`.
 
 **No `Idempotency-Key`.** None is sent, yours or a derived one: booking-api
 would store the answer under the key and replay it to the next quote with the
@@ -469,7 +476,39 @@ booking-api's fields, forwarded untouched:
 | Package Details, a Packages tab bundle | `can_book: false`: hide the button |
 | The slot search, if it changed after the screen was drawn | `422` `package_not_bookable` on `service_ids` |
 | The quote or create, if booking-api does not sell it here | `422` `unknown_service` ("Not sold at this salon: …") |
-| The quote or create, with a service beside it priced in another currency | `422` `BOOKING_CURRENCY_MIXED`, in booking-api's own shape (`{statusCode, code, message, details, error}`, no `errors`): take one of them off (added 2026-10-18) |
+| The quote or create, with a service beside it priced in another currency | `422` `currency_mismatch` on `services`: take one of them off (added 2026-10-18; changed 2026-10-18, below) |
+| The quote or create, with a part or a service that has no usable price here | `422` `unknown_service` on `services` ("That service has no usable price in the catalogue."): take that line off (added 2026-10-18) |
+
+**Changed 2026-10-18 (booking-api `3ae8e53`): both basket refusals come in
+the contract envelope**, the one the quote's and create's field refusals
+come in (§6), so branch on `errors[0].code` as for `unknown_service`:
+
+```json
+{
+  "detail": "Please correct the highlighted fields.",
+  "code": "validation_error",
+  "errors": [
+    {
+      "field": "services",
+      "code": "currency_mismatch",
+      "message": "This basket mixes AED and BDT. Prices in different currencies cannot be added, and there is no rate to convert them with."
+    }
+  ]
+}
+```
+
+- `currency_mismatch` on `services` is a basket that mixes currencies: a
+  package and a service beside it, two hand-picked services, or a package
+  and its own parts. A product priced in another currency than the services
+  is the same code on `products[i].id`, so `field` tells the two apart.
+- `unknown_service` on `services` is also a part or a service with no
+  usable price here (priced at 0 at this branch), besides an id not sold
+  here.
+- Until then they came in booking-api's own shape, `{statusCode, code,
+  message, details, error}` with no `errors`: `422 BOOKING_CURRENCY_MIXED`
+  and `409 BOOKING_STATE_INVALID`. booking-api's routes behind party
+  availability and the old group path's hold and confirm still answer them
+  that way (`BOOKING_GROUP_API.md` §12).
 
 `can_book` is true only when booking-api would sell it: published, online
 booking on, sold at this branch, every part on the menu and offered at this
@@ -477,8 +516,9 @@ branch (the platform's branch rule, for the service and its category), no
 part pinned to a size or length of a service (a variant), a price above 0,
 every part priced above 0 at this branch, and every part priced in the
 package's own currency here (changed 2026-10-18: booking-api refuses the
-whole basket for one part with no price, `409 BOOKING_STATE_INVALID`, and
-for a package and a part in two currencies, `422 BOOKING_CURRENCY_MIXED`).
+whole basket for one part with no price, and for a package and a part in two
+currencies; on the quote and create that is `unknown_service` and
+`currency_mismatch` above).
 
 ### Not built
 

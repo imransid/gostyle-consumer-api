@@ -133,12 +133,15 @@ def unbookable_cases():
             variants={LONG_HAIR: variant(service_id=CUT_ID)}),
         "free": dict(packages=[a_package([snap_item(CUT_ID)], price_minor=0)]),
         # booking-api's catalogue refuses the whole basket for it (409
-        # BOOKING_STATE_INVALID), on availability, hold and create alike.
+        # BOOKING_STATE_INVALID), on availability, hold and create alike; its
+        # mobile route answers that as 422 unknown_service.
         "a part priced 0 here": dict(
             packages=[groom()],
             svc={**PACKAGE_SERVICES, NAILS_ID: {**PACKAGE_SERVICES[NAILS_ID], "branch_price_minor": 0}}),
         # An AED package whose nails this branch prices in BDT: booking-api's
-        # 422 BOOKING_CURRENCY_MIXED, in its own envelope, otherwise.
+        # 422 BOOKING_CURRENCY_MIXED otherwise, in its own envelope on
+        # availability and the old path, and currency_mismatch on
+        # members[i].services, in the app's, on its mobile route.
         "a part in another currency": dict(
             packages=[groom()],
             svc={**PACKAGE_SERVICES, NAILS_ID: {**PACKAGE_SERVICES[NAILS_ID], "branch_currency": "BDT"}}),

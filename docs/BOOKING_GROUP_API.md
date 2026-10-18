@@ -422,8 +422,12 @@ its status: `statusCode`, `message`, `error`, `code`. Only an unexpected
 refusal is forwarded this way; everything the app can cause is in the
 table above, with one exception (added 2026-10-18): a member's package
 beside a hand-picked service priced in another currency is booking-api's
-`422 BOOKING_CURRENCY_MIXED`, in that shape, on availability and create
-(§12, "One currency per member"). Read the top-level `code` for it.
+`422 BOOKING_CURRENCY_MIXED`, in that shape, on availability and on this
+create's hold and confirm (§12, "One currency per member"). Read the
+top-level `code` for it. *Changed 2026-10-18 (booking-api `3ae8e53`):* with
+`GROUP_BOOKING_V2` on, create is booking-api's mobile route, and that route
+answers it in the app's envelope instead, `422 currency_mismatch` on
+`members[i].services`; availability still answers it in booking-api's shape.
 
 **The two 503s mean different things:**
 
@@ -590,7 +594,8 @@ slot search reads them (`BOOKING_NEAREST_AVAILABLE_API.md`).
   - *Changed 2026-10-18: a service in it priced in another currency.* The
     platform has services in different currencies at one branch, and
     booking-api refuses a package priced in one currency with a service
-    priced in another here (`422 BOOKING_CURRENCY_MIXED`, below). The
+    priced in another here (`422`, below: `currency_mismatch` from its
+    mobile route, `BOOKING_CURRENCY_MIXED` everywhere else). The
     service's currency here is its branch row's when the row names one,
     else its own, as the platform's ListServices sends it.
 - **The stylist** (§5, item 4): a chosen stylist must be able to do every
@@ -616,32 +621,60 @@ slot search reads them (`BOOKING_NEAREST_AVAILABLE_API.md`).
   services, and its `amount`. The one thing done to any id is its uuid
   spelling, lower case.
 
-booking-api checks again. If it does not sell the package at this branch,
-its refusal is forwarded in its own shape (§7): on the mobile route `422
-unknown_service` on `members[i].services` ("Not sold at this salon: …").
+booking-api checks again, and its refusal is forwarded as it came. If it does
+not sell the package at this branch: on availability and the old path's
+hold and confirm, in its own shape (§7); on its mobile route
+(`GROUP_BOOKING_V2`), in the app's envelope, `422 unknown_service` on
+`members[i].services` ("Not sold at this salon: …"). The mobile route
+answers a member's service with no usable price here (priced at 0 at this
+branch) the same way, with the message "That service has no usable price in
+the catalogue." (changed 2026-10-18, booking-api `3ae8e53`; a package with
+such a service is `package_not_bookable` here first).
 
 **One currency per member** (added 2026-10-18). booking-api adds a member's
 lines up as one figure and has no rate to convert with. `can_book` covers a
 package and its own services; what it cannot see is the member's basket. A
 package beside a hand-picked service priced in another currency (an AED
-package and a BDT Keratin) is refused by booking-api on availability, hold,
-confirm and its mobile route alike, as `422 BOOKING_CURRENCY_MIXED`, and
-forwarded **in booking-api's own envelope**, not this project's: no
-`errors[]`; read the top-level `code`.
+package and a BDT Keratin), or two hand-picked services in two, is refused
+by booking-api everywhere it is asked, in two envelopes:
 
-```json
-{
-  "statusCode": 422,
-  "code": "BOOKING_CURRENCY_MIXED",
-  "message": "This basket mixes AED and BDT. Prices in different currencies cannot be added, and there is no rate to convert them with.",
-  "details": { "currencies": ["AED", "BDT"] },
-  "error": "Unprocessable Entity"
-}
-```
+- **Create with `GROUP_BOOKING_V2` (its mobile route): the app's envelope**
+  (changed 2026-10-18, booking-api `3ae8e53`; it was booking-api's own, as
+  below): `422 currency_mismatch` on `members[i].services`, the member
+  named by its index in the request. Branch on `errors[0].code` as for any
+  of that route's refusals.
 
-With `GROUP_BOOKING_V2`, members each in one currency but not the same one
-are refused by its mobile route as `422 currency_mismatch` on `members`
-(the app's envelope): one party pays in one currency.
+  ```json
+  {
+    "detail": "Please correct the highlighted fields.",
+    "code": "validation_error",
+    "errors": [
+      {
+        "field": "members[0].services",
+        "code": "currency_mismatch",
+        "message": "This basket mixes AED and BDT. Prices in different currencies cannot be added, and there is no rate to convert them with."
+      }
+    ]
+  }
+  ```
+
+  The same code comes on two other fields, and the field says which: on
+  `members[i].products[j].id`, a product priced in another currency than
+  the party's services; on `members`, members each in one currency but not
+  the same one ("one party pays in one currency").
+- **Availability, and the old path's hold and confirm: booking-api's own
+  envelope**, `422 BOOKING_CURRENCY_MIXED`, forwarded as it came: no
+  `errors[]`; read the top-level `code`.
+
+  ```json
+  {
+    "statusCode": 422,
+    "code": "BOOKING_CURRENCY_MIXED",
+    "message": "This basket mixes AED and BDT. Prices in different currencies cannot be added, and there is no rate to convert them with.",
+    "details": { "currencies": ["AED", "BDT"] },
+    "error": "Unprocessable Entity"
+  }
+  ```
 
 ### The money (`GROUP_BOOKING_V2`, booking-api's mobile route)
 

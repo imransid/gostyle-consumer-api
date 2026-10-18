@@ -339,7 +339,7 @@ In the member's `products`:
 | `unknown_product` | 422 | `members[0].products[0].id` | The id is not a variant sold here. Check you sent `variant_id`; remove the item. |
 | `amount_mismatch` | 422 | `members[0].products[0].amount` | Price changed. Show `expected`, update, send again. |
 | `out_of_stock` | 422 | `members[0].products[0].quantity` | The message says how many are left. Lower the quantity or remove. |
-| `currency_mismatch` | 422 | `members[0].products[0].id` | Remove the item. Should not happen in one salon. |
+| `currency_mismatch` | 422 | `members[0].products[0].id` | On this field only: the item is priced in another currency than the party's services. Remove the item. Changed 2026-10-18: the same code also comes on `members[0].services` and on `members`, which are not about products (see [Packages](#packages) and [Errors](#errors)): branch on `field`, not on the code alone. |
 | `products_not_supported` | 422 | `members[0].products` | Products are switched off on the server. Remove them, or tell the backend team. |
 
 ## Packages
@@ -431,10 +431,29 @@ Sami's member row, for example:
 | `foreign_id` | 422 | `service_ids` / `services` | Not a package of this salon at all, or the switch is off | Reload the salon's services and packages. |
 | `stylist_mismatch` | 422 | `stylist_id` | The chosen stylist cannot do every service in the package | Pick another stylist, or "any". |
 | `packages_not_supported` | 422 | `packages` | `members[].packages` was sent | Send the package as a line of `services` instead. |
-| `unknown_service` | 422 | `members[0].services` | The booking service does not sell that package here | Reload the Packages tab. |
-| `BOOKING_CURRENCY_MIXED` | 422 | none: the booking service's own envelope, read the top-level `code` | Added 2026-10-18. One member's package and a service picked beside it are priced in different currencies (an AED package and a BDT Keratin); availability and create both | Take the service or the package off that member. |
+| `unknown_service` | 422 | `members[0].services` | The booking service does not sell that package here, or (Changed 2026-10-18) a service in that member's `services` has no usable price there (`message`: "That service has no usable price in the catalogue.") | Reload the Packages tab and services; take that line off. |
+| `currency_mismatch` | 422 | `members[0].services` | Changed 2026-10-18 (it was `BOOKING_CURRENCY_MIXED` in the booking service's own envelope). Create: one member's services are priced in different currencies (an AED package and a BDT Keratin picked beside it) | Take the service or the package off that member. |
+| `BOOKING_CURRENCY_MIXED` | 422 | none: the booking service's own envelope, read the top-level `code` | Added 2026-10-18. Availability only (Changed 2026-10-18): the same member as the row above | Take the service or the package off that member. |
 
-**`BOOKING_CURRENCY_MIXED` comes in the booking service's own shape**, forwarded as it is, with no `errors` list:
+**On create, a member in two currencies is `currency_mismatch` in this guide's envelope** (Changed 2026-10-18), with `field` naming the member by its index in `members`:
+
+```json
+{
+  "detail": "Please correct the highlighted fields.",
+  "code": "validation_error",
+  "errors": [
+    {
+      "field": "members[0].services",
+      "code": "currency_mismatch",
+      "message": "This basket mixes AED and BDT. Prices in different currencies cannot be added, and there is no rate to convert them with."
+    }
+  ]
+}
+```
+
+The field tells it apart from the other two `currency_mismatch`es: `members[0].products[0].id` is a product (see [Products](#products)), and `members` is a party whose members are each in one currency but not the same one.
+
+**On availability, it still comes in the booking service's own shape**, forwarded as it is, with no `errors` list:
 
 ```json
 {
@@ -503,7 +522,7 @@ No body. The booker cancels every member at once; the answer is `200` with the p
 
 ## Errors
 
-Every error uses one envelope; branch on `errors[0].code`, highlight `errors[0].field`, and show `message` or `detail`. Some refusals come from the booking service in its own shape instead, `{statusCode, code, message, details, error}` with no `errors` (Changed 2026-10-18, this sentence), among them `IDEMPOTENCY_KEY_REUSED` (see Retries) and `BOOKING_CURRENCY_MIXED` (see Packages). With no `errors`, branch on the top-level `code`.
+Every error uses one envelope; branch on `errors[0].code`, highlight `errors[0].field`, and show `message` or `detail`. Some refusals come from the booking service in its own shape instead, `{statusCode, code, message, details, error}` with no `errors` (Changed 2026-10-18, this sentence), among them `IDEMPOTENCY_KEY_REUSED` (see Retries) and, from availability only, `BOOKING_CURRENCY_MIXED` (see Packages; Changed 2026-10-18: on create the same refusal is `currency_mismatch` in this envelope). With no `errors`, branch on the top-level `code`.
 
 ```json
 {
@@ -529,9 +548,10 @@ Every error uses one envelope; branch on `errors[0].code`, highlight `errors[0].
 | `stylist_repeated` | 422 | One stylist chosen for two members | Each member needs their own stylist, or "any". |
 | `package_not_bookable` | 422 | A member's package cannot be booked at this salon now (Changed 2026-10-18) | Reload the Packages tab; take the package off that member. |
 | `packages_not_supported` | 422 | `members[].packages` was sent | Changed 2026-10-18: send the package as a line of `services` (see [Packages](#packages)). |
-| `unknown_product`, `out_of_stock`, `currency_mismatch`, `products_not_supported` | 422 | See Products | See Products. |
+| `unknown_product`, `out_of_stock`, `products_not_supported` | 422 | See Products | See Products. |
+| `currency_mismatch` | 422 | Changed 2026-10-18: three cases, told apart by `field`. `members[i].products[j].id`: a product priced in another currency (see Products). `members[i].services`: that member's services are in two currencies (see Packages). `members`: members each in one currency, but not the same one | Remove the item; take the service or the package off that member; give the party services in one currency. |
 | `amount_mismatch` | 422 | A figure differs from the server's | Show `expected`, update, send again. |
-| `unknown_service` | 422 | A service is no longer sold at this salon | Reload services. |
+| `unknown_service` | 422 | A service is no longer sold at this salon, or (Changed 2026-10-18) has no usable price there | Reload services. |
 | `date_mismatch` | 422 | `date` is not the salon-local day of `start_time` | App bug. |
 | `offset_required`, `invalid` (field `start_time`) | 422 | `start_time` has no offset or is not ISO 8601 | App bug. |
 | `salon_closed` | 422 | The salon is closed that day | Pick another day. |
