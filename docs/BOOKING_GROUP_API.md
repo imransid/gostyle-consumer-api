@@ -420,7 +420,10 @@ of struck-through slots and no reason.
 Anything else booking-api refuses is forwarded **in its own shape**, with
 its status: `statusCode`, `message`, `error`, `code`. Only an unexpected
 refusal is forwarded this way; everything the app can cause is in the
-table above.
+table above, with one exception (added 2026-10-18): a member's package
+beside a hand-picked service priced in another currency is booking-api's
+`422 BOOKING_CURRENCY_MIXED`, in that shape, on availability and create
+(§12, "One currency per member"). Read the top-level `code` for it.
 
 **The two 503s mean different things:**
 
