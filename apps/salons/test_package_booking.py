@@ -4,23 +4,30 @@ Booking a package as one visit at its price (docs/BOOKING_CREATE_API.md,
 
   * the slot search with a package (GET /booking/nearest-available,
     PACKAGE_BOOKING_V1): the package is searched as its parts, each as many
-    times as it holds it, by one stylist for all of them.
+    times as it holds it, by one stylist for all of them;
+  * the price check (POST /booking/quote): booking-api's quote, routed
+    exactly as create is, its answer unchanged.
 
 The selectors are mocked; no database. The package fixtures are
 test_package_detail's, so both modules read the same packages.
 """
 
+import json
 import types
+import urllib.error
 import uuid
 from contextlib import ExitStack
 from datetime import datetime, timedelta
 from unittest import mock
 
-from django.test import SimpleTestCase, override_settings
 from django.db.models import OuterRef, Q
+from django.test import SimpleTestCase, override_settings
+from django.urls import resolve, reverse
+from drf_spectacular.generators import SchemaGenerator
 from rest_framework.test import APIRequestFactory, force_authenticate
 
-from apps.salons import packages, selectors
+from apps.salons import booking_api, packages, selectors
+from apps.salons.booking_api import BookingApiUnavailable
 from apps.salons.test_group_booking import Customer
 from apps.salons.test_package_detail import (
     BEARD,
@@ -40,7 +47,12 @@ from apps.salons.test_package_detail import (
     snap_item,
     variant,
 )
-from apps.salons.views import PACKAGE_NOT_BOOKABLE, NearestAvailableView
+from apps.salons.views import (
+    PACKAGE_NOT_BOOKABLE,
+    BookingCreateView,
+    BookingQuoteView,
+    NearestAvailableView,
+)
 
 MAYA = uuid.UUID("99999999-9999-9999-9999-999999999990")
 ANYA = uuid.UUID("99999999-9999-9999-9999-999999999991")
@@ -275,3 +287,218 @@ class PackagesForSalonTests(SimpleTestCase):
         with mock.patch.object(selectors, "ServicePackageBranchAvailability") as rows:
             selectors._package_branch_row(BRANCH)
         rows.objects.filter.assert_called_once_with(package_id=OuterRef("pk"), branch_id=BRANCH)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/booking/quote: the price check, booking-api's own figures.
+# ---------------------------------------------------------------------------
+
+STOREFRONT = "55555555-5555-5555-5555-555555555555"
+BRANCH_ID = "66666666-6666-6666-6666-666666666666"
+TENANT_ID = "11111111-1111-1111-1111-111111111111"
+
+QUOTE = b'{"salon_id":"%s","services":[{"id":"%s"}],"date":"2026-10-20","start_time":"2026-10-20T14:00:00+04:00"}'
+
+
+def quote_body(salon=STOREFRONT, line=str(PACKAGE)):
+    return QUOTE % (salon.encode(), line.encode())
+
+
+class QuoteClientTests(SimpleTestCase):
+    """booking_api.quote_booking, with the network replaced (BookingApiClientTests' style)."""
+
+    URL = "http://booking/v1/mobile-booking/quote"
+
+    def urlopen(self, *, status=200, body=b'{"total":546}'):
+        response = mock.MagicMock()
+        response.status = status
+        response.read.return_value = body
+        response.__enter__.return_value = response
+        return mock.patch.object(booking_api.urllib.request, "urlopen", return_value=response)
+
+    def http_error(self, status, body):
+        error = urllib.error.HTTPError(self.URL, status, "", {}, None)
+        error.read = lambda: body
+        return mock.patch.object(booking_api.urllib.request, "urlopen", side_effect=error)
+
+    def quote(self, **kwargs):
+        return booking_api.quote_booking(quote_body(), authorization="Bearer t", **kwargs)
+
+    def test_the_quote_comes_back_whole(self):
+        with self.urlopen():
+            self.assertEqual(self.quote(), (200, {"total": 546}))
+
+    def test_a_refusal_is_returned_not_raised(self):
+        body = b'{"code":"validation_error","errors":[{"field":"services","code":"unknown_service"}]}'
+        with self.http_error(422, body):
+            self.assertEqual(self.quote(), (422, json.loads(body)))
+
+    def test_an_unreachable_or_html_booking_api_raises(self):
+        for patch in (
+            mock.patch.object(booking_api.urllib.request, "urlopen",
+                              side_effect=urllib.error.URLError("connection refused")),
+            mock.patch.object(booking_api.urllib.request, "urlopen", side_effect=TimeoutError("slow")),
+            self.http_error(502, b"<html>Bad Gateway</html>"),
+        ):
+            with self.subTest(patch=patch), patch, self.assertRaises(BookingApiUnavailable):
+                self.quote()
+
+    @override_settings(BOOKING_API_URL="http://booking/")
+    def test_the_path_the_bytes_and_only_these_headers(self):
+        with self.urlopen() as urlopen:
+            self.quote(tenant_id="ten-1")
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.get_full_url(), self.URL)
+        self.assertEqual(request.data, quote_body())
+        # No Idempotency-Key: booking-api would replay a stored, older price.
+        self.assertEqual(
+            {k.lower(): v for k, v in request.headers.items()},
+            {"content-type": "application/json", "authorization": "Bearer t", "x-tenant-id": "ten-1"},
+        )
+
+    def test_no_tenant_no_header(self):
+        with self.urlopen() as urlopen:
+            self.quote()
+        self.assertNotIn("x-tenant-id", {k.lower() for k in urlopen.call_args.args[0].headers})
+
+
+class QuoteViewTests(SimpleTestCase):
+    """POST /api/v1/booking/quote, with booking-api and the salon lookup replaced."""
+
+    def post(self, body=None, *, view=None, resolves="default", authenticated=True,
+             content_type="application/json", upstream=(200, {"total": 546}), **headers):
+        request = APIRequestFactory().post(
+            "/api/v1/booking/quote", data=quote_body() if body is None else body,
+            content_type=content_type, **headers,
+        )
+        if authenticated:
+            force_authenticate(request, user=Customer())
+        if resolves == "default":
+            resolves = {"tenant_id": TENANT_ID, "branch_id": BRANCH_ID}
+        with mock.patch(
+            "apps.salons.views.booking_route",
+            side_effect=lambda ref: resolves if isinstance(ref, str) and ref.strip() else None,
+        ), mock.patch("apps.salons.views.quote_booking", return_value=upstream) as quote, \
+                mock.patch("apps.salons.views.create_booking", return_value=(201, {})) as create:
+            response = (view or BookingQuoteView).as_view()(request)
+        self.quote_call, self.create_call = quote, create
+        return response
+
+    def sent(self):
+        return self.quote_call.call_args
+
+    def test_the_route(self):
+        self.assertIs(resolve("/api/v1/booking/quote").func.view_class, BookingQuoteView)
+        self.assertEqual(reverse("booking-quote"), "/api/v1/booking/quote")
+        # Still create's own route, and still a booking id's.
+        self.assertIs(resolve("/api/v1/booking").func.view_class, BookingCreateView)
+
+    def test_booking_api_s_answer_comes_back_unchanged(self):
+        for upstream in ((200, {"total": 546, "services": [{"id": str(PACKAGE), "amount": 520}]}),
+                         (422, {"detail": "Please correct the highlighted fields.",
+                                "code": "validation_error",
+                                "errors": [{"field": "date", "code": "date_mismatch", "message": "x"}]}),
+                         (401, {"code": "not_authenticated"})):
+            with self.subTest(status=upstream[0]):
+                response = self.post(upstream=upstream)
+                self.assertEqual((response.status_code, response.data), upstream)
+
+    def test_the_storefront_id_is_rewritten_to_the_branch_and_the_tenant_derived(self):
+        self.post()
+        body = json.loads(self.sent().args[0])
+        self.assertEqual(body["salon_id"], BRANCH_ID)
+        self.assertEqual(body["services"], [{"id": str(PACKAGE)}])
+        self.assertEqual(self.sent().kwargs["tenant_id"], TENANT_ID)
+
+    def test_a_branch_id_or_an_unknown_salon_crosses_byte_for_byte(self):
+        self.post(quote_body(salon=BRANCH_ID))
+        self.assertEqual(self.sent().args[0], quote_body(salon=BRANCH_ID))
+        self.post(quote_body(salon="marina-walk"), resolves=None)
+        self.assertEqual(self.sent().args[0], quote_body(salon="marina-walk"))
+        self.assertIsNone(self.sent().kwargs["tenant_id"])
+
+    def test_the_caller_s_tenant_header_wins_and_the_token_is_forwarded(self):
+        self.post(HTTP_X_TENANT_ID="ten-mine", HTTP_AUTHORIZATION="Bearer customer-token")
+        self.assertEqual(self.sent().kwargs["tenant_id"], "ten-mine")
+        self.assertEqual(self.sent().kwargs["authorization"], "Bearer customer-token")
+
+    def test_no_idempotency_key_even_when_one_is_sent(self):
+        self.post(HTTP_IDEMPOTENCY_KEY="key-1")
+        self.assertEqual(set(self.sent().kwargs), {"authorization", "tenant_id"})
+
+    def test_routed_exactly_as_create(self):
+        for body, resolves in ((quote_body(), "default"),
+                               (quote_body(salon=BRANCH_ID), "default"),
+                               (quote_body(salon="marina-walk"), None)):
+            with self.subTest(body=body):
+                self.post(body, resolves=resolves, HTTP_AUTHORIZATION="Bearer t")
+                quoted = self.sent()
+                self.post(body, view=BookingCreateView, resolves=resolves, HTTP_AUTHORIZATION="Bearer t")
+                created = self.create_call.call_args
+                self.assertEqual(quoted.args[0], created.args[0])
+                self.assertEqual(quoted.kwargs["tenant_id"], created.kwargs["tenant_id"])
+                self.assertEqual(quoted.kwargs["authorization"], created.kwargs["authorization"])
+
+    def test_an_unreachable_booking_api_is_create_s_503(self):
+        request = APIRequestFactory().post("/api/v1/booking/quote", data=quote_body(),
+                                           content_type="application/json")
+        force_authenticate(request, user=Customer())
+        with mock.patch("apps.salons.views.booking_route", return_value=None), \
+                mock.patch("apps.salons.views.quote_booking",
+                           side_effect=BookingApiUnavailable("connection refused")):
+            response = BookingQuoteView.as_view()(request)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data, {
+            "detail": "Booking is temporarily unavailable. Please try again.",
+            "code": "service_unavailable",
+            "errors": [{"field": None, "code": "booking_api_unavailable",
+                        "message": "Booking is temporarily unavailable. Please try again."}],
+        })
+
+    def test_refused_here_before_the_network(self):
+        cases = ((dict(content_type="application/x-www-form-urlencoded", body="salon_id=x"), 415),
+                 (dict(authenticated=False), 401))
+        for kwargs, code in cases:
+            with self.subTest(code=code):
+                response = self.post(**kwargs)
+                self.assertEqual(response.status_code, code)
+                self.quote_call.assert_not_called()
+
+    def test_not_behind_the_package_switch(self):
+        # It prices any basket, so it answers with PACKAGE_BOOKING_V1 off too.
+        with override_settings(PACKAGE_BOOKING_V1=False):
+            self.assertEqual(self.post().status_code, 200)
+
+
+class QuoteOpenApiTests(SimpleTestCase):
+    """The route's OpenAPI entry: placed in the flow, with its body and a package example."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.operation = SchemaGenerator().get_schema(request=None, public=True)[
+            "paths"]["/api/v1/booking/quote"]["post"]
+
+    def test_placed_before_book_it(self):
+        self.assertEqual(self.operation["tags"], ["8. Book one visit"])
+        self.assertTrue(self.operation["summary"].startswith("Step 2: Price it"))
+
+    def test_the_body_is_the_quote_s_keys_only(self):
+        schema = self.operation["requestBody"]["content"]["application/json"]["schema"]
+        self.assertEqual(sorted(schema["properties"]), ["date", "products", "salon_id", "services", "start_time"])
+        self.assertEqual(schema["properties"]["services"]["items"]["required"], ["id"])
+
+    def test_the_example_s_figures_add_up_by_the_contract(self):
+        example = self.operation["responses"]["200"]["content"]["application/json"]["examples"]
+        q = next(iter(example.values()))["value"]
+        package = q["packages"][0]
+        # The line is the package price; the parts carry it between them.
+        self.assertEqual(q["services"], [{"id": package["id"], "amount": package["amount"]}])
+        self.assertEqual(round(sum(p["amount"] for p in q["parts"]), 2), package["amount"])
+        self.assertEqual(package["savings"], package["parts_total"] - package["amount"])
+        # 5% of (lines - tier discount), and nothing paid on create.
+        self.assertEqual(q["tax_amount"], round((q["amount_without_tax"] - q["discount"]) * 0.05, 2))
+        self.assertEqual(q["total"], q["amount_without_tax"] - q["discount"] + q["tax_amount"])
+        self.assertEqual((q["advance_paid_amount"], q["due_amount"]), (0, q["total"]))
+        self.assertEqual(q["duration_min"], sum(p["duration_min"] for p in q["parts"]))

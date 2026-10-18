@@ -99,10 +99,11 @@ FLOW = (
     ),
     (
         "8. Book one visit",
-        "Find a free time, book it, read it, record the payment, move it, and "
-        "say I am here when I arrive.",
+        "Find a free time, price it, book it, read it, record the payment, "
+        "move it, and say I am here when I arrive.",
         (
             ("GET", "/api/v1/booking/nearest-available/{salon_id}", "The nearest free time"),
+            ("POST", "/api/v1/booking/quote", "Price it: the figures Book it will check"),
             ("POST", "/api/v1/booking", "Book it"),
             ("GET", "/api/v1/booking/{booking_id}", "Read one booking"),
             ("PATCH", "/api/v1/booking/{booking_id}", "Record the payment"),

@@ -43,6 +43,7 @@ from .booking_api import (
     busy_intervals,
     create_booking,
     list_bookings,
+    quote_booking,
     read_booking,
     read_group_booking,
     patch_booking,
@@ -2134,6 +2135,167 @@ class BookingCreateView(APIView):
 
         # Returned, not raised, so api_exception_handler never sees it and the
         # body reaches the app in booking-api's own shape.
+        return Response(body, status=upstream_status)
+
+
+# POST /booking/quote: what a basket will cost, priced by booking-api with
+# the same computation create checks against. Documented like create's body,
+# not validated here: booking-api's 422 is the only answer about it.
+_QUOTE_REQUEST = {
+    "type": "object",
+    "required": ["salon_id", "services", "date", "start_time"],
+    "properties": {
+        "salon_id": _BOOKING_REQUEST["properties"]["salon_id"],
+        "services": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                    "id": {"type": "string", "example": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"},
+                },
+            },
+            "description": (
+                "Service ids and package ids (bundles[].id), as create's "
+                "services[].id, each as `{id}` alone: an `amount` here is a 422. "
+                "The answer prices each line."
+            ),
+        },
+        "products": _BOOKING_REQUEST["properties"]["products"],
+        "date": _BOOKING_REQUEST["properties"]["date"],
+        "start_time": _BOOKING_REQUEST["properties"]["start_time"],
+    },
+    "description": (
+        "Exactly these keys: booking-api refuses any other with 422. No "
+        "stylists (who does the visit does not change its price), no end_time "
+        "and no money: those are what it answers."
+    ),
+}
+
+# Groom and Go at the seeded salon (520 for a cut, a scalp treatment at this
+# branch's 150, and a hot towel shave), for a customer with no tier: the
+# figures booking-api's rules give, each part's share by its own price.
+_QUOTE_EXAMPLE = {
+    "salon_id": "22222222-2222-2222-2222-222222222222",
+    "date": "2026-10-20",
+    "start_time": "2026-10-20T16:00:00+06:00",
+    "end_time": "2026-10-20T17:25:00+06:00",
+    "duration_min": 85,
+    "services": [{"id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1", "amount": 520}],
+    "parts": [
+        {"id": "66666666-6666-6666-6666-666666666660", "name": "The Gentleman's Cut",
+         "amount": 169.92, "duration_min": 30, "package_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"},
+        {"id": "66666666-6666-6666-6666-666666666663", "name": "Scalp Treatment",
+         "amount": 128.08, "duration_min": 20, "package_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"},
+        {"id": "66666666-6666-6666-6666-666666666662", "name": "Hot Towel Shave",
+         "amount": 222, "duration_min": 35, "package_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"},
+    ],
+    "packages": [{
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
+        "name": "Groom and Go",
+        "amount": 520,
+        "parts_total": 609,
+        "savings": 89,
+        "service_ids": [
+            "66666666-6666-6666-6666-666666666660",
+            "66666666-6666-6666-6666-666666666663",
+            "66666666-6666-6666-6666-666666666662",
+        ],
+    }],
+    "products": [],
+    "amount_without_tax": 520,
+    "discount": 0,
+    "tax_amount": 26,
+    "total": 546,
+    "advance_paid_amount": 0,
+    "due_amount": 546,
+    "deposit_amount": 0,
+}
+
+
+@extend_schema(
+    summary="Price a booking before creating it",
+    description=(
+        "What a basket will cost, priced by gostyle-booking-api with the "
+        "same computation create checks the app's figures against. Send it "
+        "before Book it and copy the answer into the create: `services` (a "
+        "package's line at the package price), `end_time`, "
+        "`amount_without_tax`, `discount`, `tax_amount`, `total`, "
+        "`advance_paid_amount` and `due_amount`. A create built from the "
+        "answer is accepted unless prices change in between.\n\n"
+        "Routed as create is: send the `salon_id` this service gave you, "
+        "and the branch and tenant are resolved here. Holds nothing, writes "
+        "nothing, and prices any basket, a package or not. booking-api's "
+        "status and body come back unchanged, its 422 included. See "
+        "docs/BOOKING_CREATE_API.md, Booking a package."
+    ),
+    request={"application/json": _QUOTE_REQUEST},
+    responses={
+        200: OpenApiResponse(
+            response={"type": "object", "description": "booking-api's quote, forwarded verbatim."},
+            description="The figures, and the lines to send on create.",
+            examples=[OpenApiExample("A package", value=_QUOTE_EXAMPLE)],
+        ),
+        401: OpenApiResponse(response=_OUR_ENVELOPE, description="No bearer token. Refused here."),
+        415: OpenApiResponse(
+            response=_OUR_ENVELOPE,
+            description="Not `Content-Type: application/json`. Refused before dialling out.",
+        ),
+        422: OpenApiResponse(
+            response={"type": "object"},
+            description=(
+                "booking-api's own shape, as on create: unknown_service, "
+                "date_mismatch, products_not_supported, a key it does not take."
+            ),
+            examples=[
+                OpenApiExample(
+                    "Not sold here",
+                    value={
+                        "detail": "Please correct the highlighted fields.",
+                        "code": "validation_error",
+                        "errors": [{
+                            "field": "services",
+                            "code": "unknown_service",
+                            "message": "Not sold at this salon: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1.",
+                        }],
+                    },
+                )
+            ],
+        ),
+        503: OpenApiResponse(
+            response=_OUR_ENVELOPE,
+            description=(
+                "booking-api unreachable, timed out, or not JSON: "
+                "booking_api_unavailable, the same as create. Safe to retry."
+            ),
+        ),
+    },
+)
+class BookingQuoteView(APIView):
+    """POST /api/v1/booking/quote — forwards to booking-api's POST /v1/mobile-booking/quote."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        # The same guard create has, for the same reason.
+        media_type = (request.content_type or "").split(";")[0].strip().lower()
+        if media_type != "application/json":
+            raise UnsupportedMediaType(media_type or "none")
+
+        # Routed exactly as create is (_route_booking), so the quote prices
+        # the basket at the branch and for the tenant the create will use.
+        body, tenant_id = _route_booking(request)
+
+        try:
+            upstream_status, body = quote_booking(
+                body,
+                authorization=request.META.get("HTTP_AUTHORIZATION", ""),
+                tenant_id=tenant_id,
+            )
+        except BookingApiUnavailable as exc:
+            raise BookingApiDown() from exc
+
         return Response(body, status=upstream_status)
 
 

@@ -13,6 +13,7 @@ from . import (
 )
 from .views import (
     BookingCreateView,
+    BookingQuoteView,
     BookingListView,
     DiscoverMapView,
     NearestAvailableView,
@@ -58,6 +59,8 @@ urlpatterns = [
         name="salon-expert-profile",
     ),
     path("booking", BookingCreateView.as_view(), name="booking-create"),
+    # Price it before booking it: booking-api's quote, routed as create is.
+    path("booking/quote", BookingQuoteView.as_view(), name="booking-quote"),
     path("bookings", BookingListView.as_view(), name="booking-list"),
     path(
         "booking/nearest-available/<uuid:salon_id>",
