@@ -42,6 +42,11 @@ BRANCH = uuid.UUID("22222222-2222-2222-2222-222222222222")
 PACKAGE = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1")
 PACKAGE_2 = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2")
 
+# The classes that compare whole answers compare them with PACKAGE_BOOKING_V1
+# off, so they pin it, whatever the environment says: on, every bundle and
+# every detail gains `can_book`, which the tests about it set themselves.
+BOOKING_OFF = {"PACKAGE_BOOKING_V1": False}
+
 
 def tab_url(salon=SALON):
     return f"/api/v1/salon/{salon}/packages"
@@ -75,6 +80,7 @@ class OldTabSeams:
             return self.client.get(tab_url())
 
 
+@override_settings(**BOOKING_OFF)
 class TabPinnedTests(OldTabSeams, SimpleTestCase):
     """GET /salon/<id>/packages as it answers today (P1)."""
 
@@ -792,6 +798,7 @@ class PackageLinesTests(Reads, SimpleTestCase):
         self.assertEqual(answer[PACKAGE][1:], ([], True))
 
 
+@override_settings(**BOOKING_OFF)
 class LiveTabTests(Reads, SimpleTestCase):
     """The tab with PACKAGES_LIVE_RULES_V1 on: the platform's rules (F1 to F4)."""
 
@@ -1137,6 +1144,7 @@ class DetailUrlTests(SimpleTestCase):
         self.assertEqual(match.kwargs, {"salon_id": SALON})
 
 
+@override_settings(**BOOKING_OFF)
 class DetailFieldsTests(DetailSeams, SimpleTestCase):
     """Every field, from the published content (F2) and the services here."""
 
@@ -1388,6 +1396,7 @@ def example_rows():
     return dict(package=package, svc=svc)
 
 
+@override_settings(**BOOKING_OFF)
 class ExampleIsRealTests(DetailSeams, SimpleTestCase):
     """
     EXAMPLE (the OpenAPI example and docs/PACKAGE_DETAIL_API.md's) was taken
