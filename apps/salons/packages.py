@@ -1,7 +1,8 @@
 """
 What the Packages tab and the Package Details screen must agree on: which
 packages are on sale at a salon, what a package holds, what it costs and
-what it saves (docs/PACKAGE_DETAIL_AUDIT.md).
+what it saves (docs/PACKAGE_DETAIL_AUDIT.md), and whether it can be booked
+as one visit at its price (`can_book`, docs/BOOKING_CREATE_API.md).
 
 Pure: rows in, values out. The rows come from selectors.py
 (`package_for_salon`, `live_salon_packages`, `package_lines`).
@@ -25,7 +26,7 @@ shows:
 
 import uuid
 
-from .menu import is_on_menu, service_price_minor
+from .menu import is_on_menu, offered_at_branch, service_price_minor
 from .money import major
 
 PARALLEL = "PARALLEL"
@@ -139,8 +140,9 @@ def lines(items, services, variants):
     `selectors.package_variant_rows` (id to row: live ones only).
 
     Each line: `{service_id, name, description, unit_minor, minutes,
-    quantity, bookable}`. `bookable` is the Services tab's own rule
-    (menu.is_on_menu).
+    quantity, bookable, offered_here}`. `bookable` is the Services tab's own
+    rule (menu.is_on_menu); `offered_here` is the platform's branch rule
+    (menu.offered_at_branch), which only `can_book` reads.
 
     An item whose service is not there (another tenant's, removed, an id
     that could not be read) cannot be shown: it is left out and `complete`
@@ -175,6 +177,7 @@ def lines(items, services, variants):
             "minutes": minutes,
             "quantity": item["quantity"],
             "bookable": is_on_menu(svc),
+            "offered_here": offered_at_branch(svc),
         })
     return out, complete
 
@@ -190,6 +193,39 @@ def is_active(pkg, package_lines, complete):
         and complete
         and bool(package_lines)
         and all(line["bookable"] for line in package_lines)
+    )
+
+
+def pinned_to_variant(items):
+    """
+    True when any item names a service variant ("Long hair"), live or not.
+    booking-api books services, not their variants, so it does not sell such
+    a package: it would hold the base service's minutes for a longer visit.
+    """
+    return any(item["variant_id"] for item in items)
+
+
+def can_book(pkg, content, package_lines, complete):
+    """
+    Can it be booked here now, as one visit at its price
+    (PACKAGE_BOOKING_V1, docs/BOOKING_CREATE_API.md): booking-api's rule
+    for selling a package (gostyle-booking-api,
+    platform-package-catalogue.ts, over the platform's ListPackages), on the
+    content the customer is shown (`live_content`).
+
+    `is_active` as it is, and three things it does not look at: every
+    service offered at this branch by the platform's branch rule
+    (`offered_here`), no item pinned to a variant, and a price above 0. A
+    package dearer than its services is still bookable: booking-api sells
+    it at its price, saving nothing.
+    """
+    price = content["price_minor"]
+    return (
+        is_active(pkg, package_lines, complete)
+        and all(line["offered_here"] for line in package_lines)
+        and not pinned_to_variant(content["items"])
+        and isinstance(price, int)
+        and price > 0
     )
 
 

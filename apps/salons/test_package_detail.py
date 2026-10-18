@@ -343,9 +343,11 @@ class LinesTests(SimpleTestCase):
         self.assertTrue(complete)
         self.assertEqual(rows, [
             {"service_id": TOWEL, "name": "Hot Towel Shave", "description": "A straight razor.",
-             "unit_minor": 26000, "minutes": 25, "quantity": 1, "bookable": True},
+             "unit_minor": 26000, "minutes": 25, "quantity": 1, "bookable": True,
+             "offered_here": True},
             {"service_id": CUT, "name": "The Gentleman's Cut", "description": "Cut, wash and style.",
-             "unit_minor": 19900, "minutes": 30, "quantity": 1, "bookable": True},
+             "unit_minor": 19900, "minutes": 30, "quantity": 1, "bookable": True,
+             "offered_here": True},
         ])
 
     def test_this_branch_s_price(self):
@@ -382,6 +384,17 @@ class LinesTests(SimpleTestCase):
                 self.assertTrue(complete)
                 self.assertFalse(rows[0]["bookable"])
 
+    def test_offered_here_is_the_platform_s_branch_rule(self):
+        for change, offered in (({}, True),
+                                ({"branch_available": False}, False),
+                                ({"branch_scoped": True}, False),
+                                ({"branch_scoped": True, "branch_available": True}, True)):
+            with self.subTest(**change):
+                rows, _ = lines_for([item(CUT)], services(cut=change))
+                self.assertIs(rows[0]["offered_here"], offered)
+                # Still on the menu: the two rules are separate.
+                self.assertTrue(rows[0]["bookable"])
+
 
 class IsActiveTests(SimpleTestCase):
     def active(self, pkg=None, items=None, svc=None):
@@ -402,6 +415,70 @@ class IsActiveTests(SimpleTestCase):
 
     def test_no_services(self):
         self.assertFalse(self.active(items=[]))
+
+    def test_the_branch_rule_for_services_is_not_part_of_it(self):
+        # is_active stays what it was; only can_book reads offered_here.
+        self.assertTrue(self.active(svc=services(cut={"branch_available": False})))
+
+
+class CanBookTests(SimpleTestCase):
+    """
+    packages.can_book: booking-api's rule for selling a package
+    (platform-package-catalogue.ts), on the content the customer sees.
+    """
+
+    def can_book(self, pkg=None, svc=None, variants=None):
+        pkg = pkg or package_row()
+        content = packages.live_content(pkg)
+        rows, complete = packages.lines(content["items"], svc or services(), variants or {})
+        return packages.can_book(pkg, content, rows, complete)
+
+    def test_on_sale_every_service_offered_here_no_variant_a_price(self):
+        self.assertTrue(self.can_book())
+
+    def test_not_when_it_is_not_active(self):
+        for pkg, svc in ((package_row(status="HIDDEN"), None),
+                         (package_row(branch_row=False), None),
+                         (None, services(towel={"online_booking_enabled": False}))):
+            with self.subTest(pkg=pkg, svc=svc):
+                self.assertFalse(self.can_book(pkg, svc))
+
+    def test_not_when_this_branch_does_not_offer_a_service(self):
+        # Each is still active (the tab lists it); booking-api would not sell it.
+        for change in ({"branch_available": False},
+                       {"branch_scoped": True},
+                       {"category_0_id": uuid.uuid4(), "category_branch_available": False}):
+            with self.subTest(**change):
+                self.assertFalse(self.can_book(svc=services(beard=change)))
+
+    def test_a_service_s_own_row_here_turns_it_back_on(self):
+        on = {"branch_scoped": True, "category_0_id": uuid.uuid4(),
+              "category_branch_available": False, "branch_available": True}
+        self.assertTrue(self.can_book(svc=services(beard=on)))
+
+    def test_not_when_an_item_is_pinned_to_a_variant_live_or_deleted(self):
+        pkg = package_row(published_snapshot=snap([snap_item(CUT, LONG_HAIR), snap_item(TOWEL)]))
+        for variants in ({LONG_HAIR: variant()}, {}):
+            with self.subTest(variants=variants):
+                self.assertFalse(self.can_book(pkg, variants=variants))
+
+    def test_not_at_a_price_of_0(self):
+        self.assertFalse(self.can_book(package_row(published_snapshot=snap(priceMinor=0))))
+
+    def test_a_package_dearer_than_its_services_is_still_sold_at_its_price(self):
+        pkg = package_row(published_snapshot=snap(priceMinor=90000))
+        content = packages.live_content(pkg)
+        rows, _ = packages.lines(content["items"], services(), {})
+        self.assertIsNone(packages.saving(content["price_minor"], rows)["save_amount"])
+        self.assertTrue(self.can_book(pkg))
+
+    def test_the_live_content_decides_not_the_draft(self):
+        # The draft has a price of 0; the published price is what is sold.
+        self.assertTrue(self.can_book(package_row(price_minor=0)))
+        # Never published: the row and its items are the live content.
+        pkg = package_row(published_snapshot=None, price_minor=0)
+        rows, complete = packages.lines([item(CUT)], services(), {})
+        self.assertFalse(packages.can_book(pkg, packages.live_content(pkg, [item(CUT)]), rows, complete))
 
 
 class SavingTests(SimpleTestCase):
@@ -545,6 +622,33 @@ class PackageSelectorTests(SimpleTestCase):
         price.assert_called_once_with(OuterRef("pk"), BRANCH)
         self.assertEqual(answer, {CUT: {"id": CUT, "name": "Cut"}})
 
+    def test_services_read_what_the_branch_rule_needs_in_the_same_query(self):
+        with mock.patch.object(selectors, "Service") as service, \
+                mock.patch.object(selectors, "service_branch_available", return_value="own") as own, \
+                mock.patch.object(selectors, "category_branch_available", return_value="cat") as cat:
+            selectors.package_service_rows(self.salon, {CUT})
+        own.assert_called_once_with(OuterRef("pk"), BRANCH)
+        cat.assert_called_once_with(OuterRef("category_0_id"), BRANCH)
+        annotate = service.objects.filter.return_value.annotate
+        annotate.assert_called_once()
+        self.assertEqual(annotate.call_args.kwargs["branch_available"], "own")
+        self.assertEqual(annotate.call_args.kwargs["category_branch_available"], "cat")
+        fields = annotate.return_value.values.call_args.args
+        for name in ("description", "branch_scoped", "category_0_id",
+                     "branch_available", "category_branch_available"):
+            self.assertIn(name, fields)
+
+    def test_the_branch_rows_are_this_branch_s(self):
+        with mock.patch.object(selectors, "ServiceBranchAvailability") as svc_rows, \
+                mock.patch.object(selectors, "CategoryBranchAvailability") as cat_rows:
+            selectors.service_branch_available(OuterRef("pk"), BRANCH)
+            selectors.category_branch_available(OuterRef("category_0_id"), BRANCH)
+        svc_rows.objects.filter.assert_called_once_with(service_id=OuterRef("pk"), branch_id=BRANCH)
+        svc_rows.objects.filter.return_value.values.assert_called_once_with("available")
+        cat_rows.objects.filter.assert_called_once_with(
+            category_id=OuterRef("category_0_id"), branch_id=BRANCH)
+        cat_rows.objects.filter.return_value.values.assert_called_once_with("available")
+
     def test_variants_live_only(self):
         with mock.patch.object(selectors, "ServiceVariant") as variants:
             variants.objects.filter.return_value.values.return_value = [variant()]
@@ -677,6 +781,32 @@ class LiveTabTests(Reads, SimpleTestCase):
         self.services_read.assert_called_once()
         self.per_bundle_lookup.assert_not_called()
 
+    def test_can_book_only_with_package_booking_v1(self):
+        with override_settings(PACKAGE_BOOKING_V1=False):
+            self.assertNotIn("can_book", self.tab([package_row()])["bundles"][0])
+        with override_settings(PACKAGE_BOOKING_V1=True):
+            self.assertIs(self.tab([package_row()])["bundles"][0]["can_book"], True)
+
+    def test_a_bundle_booking_api_would_not_sell_is_listed_but_cannot_be_booked(self):
+        third = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3")
+        rows = [package_row(PACKAGE, published_snapshot=snap([snap_item(CUT, LONG_HAIR)], name="A")),
+                package_row(PACKAGE_2, published_snapshot=snap([snap_item(CUT), snap_item(BEARD)], name="B")),
+                package_row(third, published_snapshot=snap([snap_item(TOWEL)], name="C"))]
+        with override_settings(PACKAGE_BOOKING_V1=True):
+            body = self.tab(rows, svc=services(towel={"branch_available": False}),
+                            variants={LONG_HAIR: variant()})
+        # All three on the tab (is_active), only B for sale as one visit.
+        self.assertEqual([(b["name"], b["can_book"]) for b in body["bundles"]],
+                         [("A", False), ("B", True), ("C", False)])
+
+    def test_the_tab_and_the_detail_say_the_same(self):
+        for svc in (services(), services(cut={"branch_available": False}),
+                    services(beard={"branch_scoped": True})):
+            with self.subTest(svc=svc), override_settings(PACKAGE_BOOKING_V1=True):
+                tab = self.tab([package_row()], svc=svc)["bundles"][0]["can_book"]
+                detail = DetailSeams.call(self, svc=svc).json()["can_book"]
+                self.assertEqual(tab, detail)
+
     def test_f1_sold_everywhere_without_a_branch_row(self):
         self.assertEqual(len(self.tab([package_row(branch_row=None)])["bundles"]), 1)
 
@@ -704,6 +834,41 @@ class LiveTabTests(Reads, SimpleTestCase):
         self.assertEqual(response.json()["bundles"][0]["name"], "Groom and Go")
 
 
+class OldTabCanBookTests(OldTabSeams, Reads, SimpleTestCase):
+    """
+    PACKAGE_BOOKING_V1 with the tab still on its old rules
+    (PACKAGES_LIVE_RULES_V1 off): the rows are as before, and `can_book` is
+    the live rule's answer for each row's id, never a draft's.
+    """
+
+    def tab_with_live(self, rows, live, **reads):
+        with ExitStack() as stack:
+            self.live_read = stack.enter_context(mock.patch(
+                "apps.salons.views.live_salon_packages", return_value=list(live)))
+            self.reads(stack, **reads)
+            return self.tab(rows).json()
+
+    def test_off_no_key_and_no_live_read(self):
+        with override_settings(PACKAGE_BOOKING_V1=False):
+            body = self.tab_with_live([old_tab_row()], [package_row()])
+        self.assertNotIn("can_book", body["bundles"][0])
+        self.live_read.assert_not_called()
+
+    def test_on_each_row_is_the_live_rule_for_its_id(self):
+        live = [package_row(PACKAGE),
+                package_row(PACKAGE_2, published_snapshot=snap([snap_item(CUT, LONG_HAIR)]))]
+        old = [old_tab_row(PACKAGE), old_tab_row(PACKAGE_2, name="B"),
+               old_tab_row(uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3"), name="C")]
+        with override_settings(PACKAGE_BOOKING_V1=True):
+            body = self.tab_with_live(old, live, variants={LONG_HAIR: variant()})
+        # Bookable live; pinned to a variant live; not live at all.
+        self.assertEqual([b["can_book"] for b in body["bundles"]], [True, False, False])
+        # The rows themselves are the old tab's, untouched.
+        self.assertEqual(body["bundles"][0]["name"], "Groom and Go")
+        self.assertNotIn("services", body["bundles"][0])
+        self.services_read.assert_called_once()
+
+
 class MenuForPackagesTests(SimpleTestCase):
     """menu.py, as packages.py reads it: dict rows, and the price in minor units."""
 
@@ -720,6 +885,30 @@ class MenuForPackagesTests(SimpleTestCase):
                 minor = menu.service_price_minor(row)
                 self.assertEqual(minor, 19900 if branch is None else branch)
                 self.assertEqual(menu.service_price(row), Decimal(minor) / 100)
+
+    def test_offered_at_branch_is_the_platform_s_rule(self):
+        # The cases of gostyle-platform's branch-visibility.spec.ts, in its order.
+        cat = uuid.uuid4()
+        for name, row, offered in (
+            ("the service's own row wins", {"branch_scoped": True, "category_0_id": cat,
+                                            "branch_available": True,
+                                            "category_branch_available": False}, True),
+            ("even against a yes from the category", {"category_0_id": cat,
+                                                      "branch_available": False,
+                                                      "category_branch_available": True}, False),
+            ("branch-scoped, no row", {"branch_scoped": True, "category_0_id": cat}, False),
+            ("branch-scoped, the category says yes", {"branch_scoped": True, "category_0_id": cat,
+                                                      "category_branch_available": True}, False),
+            ("the category says no", {"category_0_id": cat, "category_branch_available": False}, False),
+            ("the category says yes", {"category_0_id": cat, "category_branch_available": True}, True),
+            ("nothing said", {"category_0_id": cat}, True),
+            ("no category", {}, True),
+            ("a stray category row, no category", {"category_branch_available": False}, True),
+        ):
+            with self.subTest(name):
+                row = service(CUT, "Cut", 1, 1, **row)
+                self.assertIs(menu.offered_at_branch(row), offered)
+                self.assertIs(menu.offered_at_branch(types.SimpleNamespace(**row)), offered)
 
 
 
@@ -869,6 +1058,33 @@ class DetailFieldsTests(DetailSeams, SimpleTestCase):
                     "includes", "timeline", "terms"]
         self.assertEqual(list(self.call().json()), contract + ["theme"])
 
+    def test_can_book_only_with_package_booking_v1_after_theme(self):
+        with override_settings(PACKAGE_BOOKING_V1=False):
+            off = self.call().json()
+        with override_settings(PACKAGE_BOOKING_V1=True):
+            on = self.call().json()
+        self.assertNotIn("can_book", off)
+        self.assertEqual(list(on), list(off) + ["can_book"])
+        self.assertIs(on["can_book"], True)
+        # Nothing else moves.
+        self.assertEqual({k: v for k, v in on.items() if k != "can_book"}, off)
+
+    def test_can_book_is_false_where_booking_api_would_not_sell_it(self):
+        cases = {
+            "pulled from sale": dict(package=package_row(status="HIDDEN")),
+            "a service off at this branch": dict(svc=services(cut={"branch_available": False})),
+            "pinned to a variant": dict(
+                package=package_row(published_snapshot=snap([snap_item(CUT, LONG_HAIR)])),
+                variants={LONG_HAIR: variant()}),
+            "free": dict(package=package_row(published_snapshot=snap(priceMinor=0))),
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(name), override_settings(PACKAGE_BOOKING_V1=True):
+                self.assertIs(self.call(**kwargs).json()["can_book"], False)
+        # Only the first is inactive: the screen still says on sale for the rest.
+        with override_settings(PACKAGE_BOOKING_V1=True):
+            self.assertIs(self.call(**cases["a service off at this branch"]).json()["is_active"], True)
+
     def test_a_pulled_package_still_opens_inactive_with_every_field(self):
         for change in ({"status": "HIDDEN"}, {"status": "ARCHIVED"},
                        {"deleted_at": "2026-10-01"}, {"online_booking_enabled": False},
@@ -1011,8 +1227,14 @@ class DetailOpenApiTests(DetailSeams, SimpleTestCase):
         self.assertEqual(content["examples"]["APackageOnSale"]["value"], EXAMPLE)
 
     def test_the_shape_has_exactly_the_fields_the_view_answers(self):
-        self.assertEqual(list(self.component("SalonPackageDetailResponse")["properties"]),
-                         list(self.call().json()))
+        shape = self.component("SalonPackageDetailResponse")
+        with override_settings(PACKAGE_BOOKING_V1=True):
+            on = list(self.call().json())
+        self.assertEqual(list(shape["properties"]), on)
+        # Off, every one of them but can_book, which the shape marks optional.
+        with override_settings(PACKAGE_BOOKING_V1=False):
+            self.assertEqual(list(self.call().json()), [k for k in on if k != "can_book"])
+        self.assertEqual(sorted(shape["required"]), sorted(k for k in on if k != "can_book"))
 
     def test_the_nested_shapes_have_exactly_the_example_s_fields(self):
         for name, sample in (("SalonPackageDetailInclude", EXAMPLE["includes"][0]),

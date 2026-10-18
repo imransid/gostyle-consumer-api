@@ -771,6 +771,9 @@ class SalonPackagesView(APIView):
 
     PACKAGES_LIVE_RULES_V1 on: the bundles follow the platform's own rules,
     the Package Details screen's (packages.py). Off: as before.
+
+    PACKAGE_BOOKING_V1 on: each bundle carries `can_book` (packages.can_book),
+    under either rules. Off: no key.
     """
 
     permission_classes = [AllowAny]
@@ -805,6 +808,14 @@ class SalonPackagesView(APIView):
                 "theme": pkg.color_theme,
             })
 
+        if settings.PACKAGE_BOOKING_V1:
+            # These rows are the drafts, but what can be booked is the live
+            # package's question, the one Package Details answers; so it is
+            # asked of the live rows with the same ids, and never of a draft.
+            bookable = self.bookable_ids(salon)
+            for bundle in bundles:
+                bundle["can_book"] = bundle["id"] in bookable
+
         return Response({"my_packages": [], "bundles": bundles})
 
     @staticmethod
@@ -822,11 +833,21 @@ class SalonPackagesView(APIView):
         for row in rows:
             content, lines, complete = reads[row.id]
             if package_rules.is_active(row, lines, complete):
-                bundles.append(package_rules.tab_row(row, content, lines))
+                bundle = package_rules.tab_row(row, content, lines)
+                if settings.PACKAGE_BOOKING_V1:
+                    bundle["can_book"] = package_rules.can_book(row, content, lines, complete)
+                bundles.append(bundle)
         # By the name the customer sees (the published one), then the id, so
         # the order never changes between two calls.
         bundles.sort(key=lambda bundle: (bundle["name"].casefold(), bundle["id"]))
         return bundles
+
+    @staticmethod
+    def bookable_ids(salon):
+        """The ids (text) of this salon's packages that packages.can_book says yes to."""
+        rows = list(live_salon_packages(salon))
+        reads = package_lines(salon, rows)
+        return {str(row.id) for row in rows if package_rules.can_book(row, *reads[row.id])}
 
 
 class ProductDetailView(APIView):

@@ -333,6 +333,16 @@ GROUP_CANCEL_LANES_V1 = env.bool("GROUP_CANCEL_LANES_V1", default=False)
 # rules, so ON the tab and the detail agree. OFF here, the tab answers
 # exactly what it did.
 PACKAGES_LIVE_RULES_V1 = env.bool("PACKAGES_LIVE_RULES_V1", default=False)
+
+# Booking a package as one visit at its price (docs/BOOKING_CREATE_API.md,
+# "Booking a package"; option A in docs/PACKAGE_DETAIL_AUDIT.md). ON, each
+# Packages tab bundle and the Package Details answer carry `can_book`:
+# booking-api's rule for selling it (packages.can_book), whichever tab rules
+# are on. OFF here, the key is absent and both answer exactly what they did.
+# Turn it on only where booking-api runs with PACKAGES_FROM_PLATFORM=true:
+# without it booking-api sells no package, and every one answers 422
+# unknown_service.
+PACKAGE_BOOKING_V1 = env.bool("PACKAGE_BOOKING_V1", default=False)
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",

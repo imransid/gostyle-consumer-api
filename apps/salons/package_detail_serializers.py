@@ -65,7 +65,8 @@ class SalonPackageDetailResponseSerializer(serializers.Serializer):
     is_active = serializers.BooleanField(
         help_text=(
             "On sale at this salon now, and every included service can be "
-            "booked here. False hides Book with this Package."
+            "booked here. False hides Book with this Package; where "
+            "`can_book` is sent, it decides the button."
         )
     )
     includes = SalonPackageDetailIncludeSerializer(many=True)
@@ -76,6 +77,15 @@ class SalonPackageDetailResponseSerializer(serializers.Serializer):
     )
     theme = serializers.CharField(
         allow_null=True, help_text="The same colour theme the Packages tab row has."
+    )
+    can_book = serializers.BooleanField(
+        required=False,
+        help_text=(
+            "Sent only while PACKAGE_BOOKING_V1 is on (absent otherwise). True: "
+            "it can be booked here now as one visit at `price`, so show Book "
+            "with this Package. Never true when `is_active` is false. "
+            "docs/BOOKING_CREATE_API.md, Booking a package."
+        ),
     )
 
 

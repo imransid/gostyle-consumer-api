@@ -1,7 +1,8 @@
 """
 What the Services tab, the Service Detail screen and the Expert Profile
 screen must agree on: a service's price, its row, the group and the chip it
-is filed under, and whether it is on the menu.
+is filed under, and whether it is on the menu. And the platform's branch
+rule for a service, which booking-api sells packages by (packages.can_book).
 
 One place for each, so the screens cannot drift
 (docs/SERVICE_DETAIL_AUDIT.md, 2.1, 2.4 and 3.1; docs/EXPERT_PROFILE_AUDIT.md,
@@ -141,3 +142,44 @@ def is_on_menu(svc):
     else:
         status, deleted_at, online = svc.status, svc.deleted_at, svc.online_booking_enabled
     return status == "PUBLISHED" and deleted_at is None and bool(online)
+
+
+def offered_at_branch(svc):
+    """
+    True when the salon's branch offers the service, by the platform's own
+    rule, isServiceAvailableAtBranch (gostyle-platform,
+    packages/nest-service-menu/src/domain/services/branch-visibility.ts).
+    Its ListServices and ListPackages sell by it, so booking-api books by
+    it. In its order:
+
+      1. this branch's own row for the service decides, either way;
+      2. else a `branch_scoped` service is not offered: only a row turns
+         one on;
+      3. else this branch's row for the service's category decides (none
+         for a service with no category);
+      4. else it is offered.
+
+    `svc` is a dict from `.values()`, or a model row annotated the same:
+    `branch_available` and `category_branch_available` are this branch's
+    rows (True, False, or None for no row), as
+    selectors.package_service_rows reads them.
+
+    Not the filter BRANCH_AVAILABILITY_ENABLED puts on the Services tab,
+    which is still off and keeps only services WITH a true row
+    (docs/SERVICE_DETAIL_AUDIT.md, F2).
+    """
+    if isinstance(svc, dict):
+        get = svc.get
+    else:
+        def get(name):
+            return getattr(svc, name, None)
+
+    own = get("branch_available")
+    if own is not None:
+        return bool(own)
+    if get("branch_scoped"):
+        return False
+    category = get("category_branch_available")
+    if get("category_0_id") is not None and category is not None:
+        return bool(category)
+    return True
