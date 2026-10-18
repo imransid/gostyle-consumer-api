@@ -951,6 +951,7 @@ class SalonPackagesView(APIView):
         if package_images.is_on():
             covers = package_images.for_packages(salon, [pkg.id for pkg in rows])
 
+        # Old rules, kept as they were (currency-blind): they retire with PACKAGES_LIVE_RULES_V1.
         bundles = []
         for pkg in rows:
             sum_minor = pkg.sum_minor or 0

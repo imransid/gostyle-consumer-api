@@ -19,9 +19,10 @@ shows:
   * A package is sold at every branch unless that branch's row says false;
     a `branch_scoped` one only where that branch's row says true
     (`listForBranch`).
-  * An item's price and minutes are its variant's when it names a live one,
-    else its service's (`subtotalForItems`). A service's price is this
-    branch's (menu.service_price_minor), as on the Services tab.
+  * An item's price, its currency and its minutes are its variant's when it
+    names a live one, else its service's (`subtotalForItems`). A service's
+    price is this branch's (menu.service_price_minor), as on the Services
+    tab.
 """
 
 import uuid
@@ -146,18 +147,22 @@ def lines(items, services, variants):
     `selectors.package_variant_rows` (id to row: live ones only).
 
     Each line: `{service_id, name, description, unit_minor, currency,
-    minutes, quantity, bookable, offered_here}`. `currency` is the one
-    booking-api prices the service in here (menu.service_currency), the
-    service's and never a variant's: it books services, not their variants.
+    minutes, quantity, bookable, offered_here}`. `currency` is what
+    `unit_minor` is in: the variant's own when the price is the variant's
+    (subtotalForItems: `variant?.currency`), else the one booking-api
+    prices the service in here (menu.service_currency). booking-api books
+    services, not their variants, so `can_book` refuses a package pinned to
+    one whatever its currency (`pinned_to_variant`).
     `bookable` is the Services tab's own rule (menu.is_on_menu);
     `offered_here` is the platform's branch rule (menu.offered_at_branch).
-    Only `can_book` reads `currency` and `offered_here`.
+    Only `can_book` reads `offered_here`; `currency` is read by
+    `one_currency`, for `can_book` and `saving`.
 
     An item whose service is not there (another tenant's, removed, an id
     that could not be read) cannot be shown: it is left out and `complete`
     is False. A variant that was deleted, or is not this service's, is
-    ignored, and the service's own price and minutes are used, as the
-    platform does.
+    ignored, and the service's own price, currency and minutes are used, as
+    the platform does.
     """
     out, complete = [], True
     for item in items:
@@ -172,8 +177,10 @@ def lines(items, services, variants):
 
         if variant is None:
             unit, minutes = service_price_minor(svc), svc["duration_minutes"]
+            currency = service_currency(svc)
         else:
-            unit = variant["price_minor"]
+            # The variant's price, so the variant's currency with it.
+            unit, currency = variant["price_minor"], variant["currency"]
             minutes = variant["duration_minutes"]
             if minutes is None:
                 minutes = svc["duration_minutes"]
@@ -183,7 +190,7 @@ def lines(items, services, variants):
             "name": svc["name"],
             "description": svc.get("description"),
             "unit_minor": unit,
-            "currency": service_currency(svc),
+            "currency": currency,
             "minutes": minutes,
             "quantity": item["quantity"],
             "bookable": is_on_menu(svc),
@@ -231,7 +238,8 @@ def _currency(code):
 def one_currency(content, package_lines):
     """
     True when the package is priced in the currency of every service in it,
-    as each is priced here (`lines`' `currency`).
+    as each is priced here (`lines`' `currency`: a variant's own when the
+    line is priced from one). `can_book` and `saving` both ask it.
 
     booking-api adds a package's price and its services' up as one figure,
     and refuses a basket that mixes currencies rather than convert them
@@ -280,23 +288,29 @@ def can_book(pkg, content, package_lines, complete):
     )
 
 
-def saving(price_minor, package_lines):
+def saving(content, package_lines):
     """
-    `{price_before, save_amount, save_percent}`.
+    `{price_before, save_amount, save_percent}`, for the package's live
+    content (`live_content`: its `price_minor` and the `currency` it is in).
 
     `price_before` is the services at their prices here, each times its
     quantity: what they cost booked separately. So `save_amount` is always
     `price_before - price`. All three are None when that is not more than
-    the price (no saving: no chip, no strikethrough, no saving card), or
-    when there is nothing to add up.
+    the price (no saving: no chip, no strikethrough, no saving card), when
+    there is nothing to add up, or when the package and its lines are not
+    in one currency (`one_currency`): AED 297.50 against BDT 350 is not a
+    saving of 52.50 in either.
 
     `save_percent` is a whole number, rounded half up, and at least 1, so
     the chip never says "SAVE 0%".
     """
+    nothing = {"price_before": None, "save_amount": None, "save_percent": None}
+    if not package_lines or not one_currency(content, package_lines):
+        return nothing
     before = sum(line["unit_minor"] * line["quantity"] for line in package_lines)
-    save = before - price_minor
-    if not package_lines or save <= 0:
-        return {"price_before": None, "save_amount": None, "save_percent": None}
+    save = before - content["price_minor"]
+    if save <= 0:
+        return nothing
     percent = max(1, (save * 200 + before) // (before * 2))
     return {
         "price_before": major(before),
@@ -398,7 +412,7 @@ def detail(salon, pkg, content, package_lines, complete):
         "name": content["name"],
         "description": content["description"],
         "price": major(content["price_minor"]),
-        **saving(content["price_minor"], package_lines),
+        **saving(content, package_lines),
         "duration_minutes": duration_minutes(package_lines),
         "is_active": is_active(pkg, package_lines, complete),
         "includes": includes(package_lines),
@@ -418,7 +432,7 @@ def tab_row(pkg, content, package_lines, images=None, covers=None):
     (package_images.for_packages); the bundle then has `image_url` right
     after `theme`, null for a package not in it. None: no key.
     """
-    money = saving(content["price_minor"], package_lines)
+    money = saving(content, package_lines)
     row = {
         "id": str(pkg.id),
         "name": content["name"],

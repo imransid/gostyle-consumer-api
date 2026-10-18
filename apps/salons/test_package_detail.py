@@ -242,9 +242,10 @@ def services(**changes):
     return rows
 
 
-def variant(variant_id=LONG_HAIR, service_id=CUT, price_minor=30000, minutes=50):
+def variant(variant_id=LONG_HAIR, service_id=CUT, price_minor=30000, minutes=50, currency="AED"):
+    """A row of `selectors.package_variant_rows`."""
     return {"id": variant_id, "service_id": service_id, "price_minor": price_minor,
-            "duration_minutes": minutes}
+            "currency": currency, "duration_minutes": minutes}
 
 
 def item(service_id, variant_id=None, quantity=1):
@@ -254,6 +255,27 @@ def item(service_id, variant_id=None, quantity=1):
 def lines_for(items=None, svc=None, variants=None):
     items = [item(CUT), item(BEARD), item(TOWEL)] if items is None else items
     return packages.lines(items, services() if svc is None else svc, variants or {})
+
+
+def two_currencies():
+    """
+    Packages on sale whose saving would be a figure in two currencies, as
+    `package`, `svc` and `variants` for the screens' seams: production's
+    Green Wave (AED 297.50, one service at BDT 350), and a BDT package whose
+    one service is BDT here but is pinned to a variant priced in AED.
+    """
+    return {
+        "an AED package of a BDT service": dict(
+            package=package_row(published_snapshot=snap([snap_item(TOWEL)], priceMinor=29750)),
+            svc=services(towel={"price_minor": 35000, "currency": "BDT"}),
+        ),
+        "a BDT package of an AED variant": dict(
+            package=package_row(published_snapshot=snap([snap_item(CUT, LONG_HAIR)],
+                                                        priceMinor=25000, currency="BDT")),
+            svc=services(cut={"currency": "BDT"}),
+            variants={LONG_HAIR: variant(currency="AED")},
+        ),
+    }
 
 
 class SoldHereTests(SimpleTestCase):
@@ -379,16 +401,29 @@ class LinesTests(SimpleTestCase):
 
     def test_this_branch_s_currency(self):
         # The branch row's when it names one, else the service's own: what
-        # ListServices sends booking-api. A variant does not change it.
+        # ListServices sends booking-api.
         for change, currency in (({"currency": "BDT"}, "BDT"),
                                  ({"currency": "BDT", "branch_currency": "AED"}, "AED"),
                                  ({"branch_currency": "BDT"}, "BDT")):
             with self.subTest(**change):
                 rows, _ = lines_for([item(CUT)], services(cut=change))
                 self.assertEqual(rows[0]["currency"], currency)
-        rows, _ = lines_for([item(CUT, LONG_HAIR)], services(cut={"currency": "BDT"}),
-                            variants={LONG_HAIR: variant()})
-        self.assertEqual(rows[0]["currency"], "BDT")
+
+    def test_a_variant_s_price_comes_in_the_variant_s_currency(self):
+        # The line is priced from the variant, so it is in the variant's
+        # currency (subtotalForItems: variant?.currency), whatever the
+        # service's here: an AED variant of a BDT service is an AED line.
+        for change in ({"currency": "BDT"}, {"branch_currency": "BDT"}):
+            with self.subTest(**change):
+                rows, _ = lines_for([item(CUT, LONG_HAIR)], services(cut=change),
+                                    variants={LONG_HAIR: variant(currency="AED")})
+                self.assertEqual((rows[0]["unit_minor"], rows[0]["currency"]), (30000, "AED"))
+        # A variant that is ignored leaves the service's price, and its currency.
+        for variants in ({}, {LONG_HAIR: variant(service_id=TOWEL, currency="AED")}):
+            with self.subTest(variants=variants):
+                rows, _ = lines_for([item(CUT, LONG_HAIR)], services(cut={"currency": "BDT"}),
+                                    variants=variants)
+                self.assertEqual((rows[0]["unit_minor"], rows[0]["currency"]), (19900, "BDT"))
 
     def test_a_variant_sets_price_and_minutes(self):
         rows, _ = lines_for([item(CUT, LONG_HAIR)], variants={LONG_HAIR: variant()})
@@ -492,7 +527,8 @@ class CanBookTests(SimpleTestCase):
 
     def test_not_when_an_item_is_pinned_to_a_variant_live_or_deleted(self):
         pkg = package_row(published_snapshot=snap([snap_item(CUT, LONG_HAIR), snap_item(TOWEL)]))
-        for variants in ({LONG_HAIR: variant()}, {}):
+        # The variant's currency changes nothing: no pinned package is sold.
+        for variants in ({LONG_HAIR: variant()}, {LONG_HAIR: variant(currency="BDT")}, {}):
             with self.subTest(variants=variants):
                 self.assertFalse(self.can_book(pkg, variants=variants))
 
@@ -546,7 +582,7 @@ class CanBookTests(SimpleTestCase):
         pkg = package_row(published_snapshot=snap(priceMinor=90000))
         content = packages.live_content(pkg)
         rows, _ = packages.lines(content["items"], services(), {})
-        self.assertIsNone(packages.saving(content["price_minor"], rows)["save_amount"])
+        self.assertIsNone(packages.saving(content, rows)["save_amount"])
         self.assertTrue(self.can_book(pkg))
 
     def test_the_live_content_decides_not_the_draft(self):
@@ -559,11 +595,14 @@ class CanBookTests(SimpleTestCase):
 
 
 class SavingTests(SimpleTestCase):
-    """packages.saving: against the services booked separately here."""
+    """packages.saving: against the services booked separately here, in one currency."""
 
-    def saving(self, price, *units):
-        rows = [{"unit_minor": u, "quantity": 1} for u in units]
-        return packages.saving(price, rows)
+    nothing = {"price_before": None, "save_amount": None, "save_percent": None}
+
+    def saving(self, price, *units, currency="AED", line_currency="AED"):
+        content = {"price_minor": price, "currency": currency}
+        rows = [{"unit_minor": u, "currency": line_currency, "quantity": 1} for u in units]
+        return packages.saving(content, rows)
 
     def test_their_example_s_rule(self):
         # 199 + 230 + 260 = 689 against 586: saves 103, 14.95% -> 15.
@@ -587,16 +626,58 @@ class SavingTests(SimpleTestCase):
                 self.assertEqual(self.saving(price, 100000)["save_percent"], percent)
 
     def test_quantity_counts(self):
-        rows = [{"unit_minor": 10000, "quantity": 3}]
-        self.assertEqual(packages.saving(25000, rows)["price_before"], Decimal("300"))
+        rows = [{"unit_minor": 10000, "currency": "AED", "quantity": 3}]
+        content = {"price_minor": 25000, "currency": "AED"}
+        self.assertEqual(packages.saving(content, rows)["price_before"], Decimal("300"))
 
     def test_no_saving_is_all_none(self):
-        nothing = {"price_before": None, "save_amount": None, "save_percent": None}
         for price, units in ((68900, (19900, 23000, 26000)),   # the same
                              (70000, (19900, 23000, 26000)),   # dearer
                              (46000, ())):                     # nothing to add up
             with self.subTest(price=price, units=units):
-                self.assertEqual(self.saving(price, *units), nothing)
+                self.assertEqual(self.saving(price, *units), self.nothing)
+
+    def test_no_saving_across_two_currencies(self):
+        # Production's Green Wave: AED 297.50 over one service at BDT 350.
+        # 350 - 297.50 is not a saving of 52.50 in either currency.
+        self.assertEqual(self.saving(29750, 35000, currency="AED", line_currency="BDT"),
+                         self.nothing)
+        # One line in another currency is enough.
+        rows = [{"unit_minor": 19900, "currency": "AED", "quantity": 1},
+                {"unit_minor": 23000, "currency": "BDT", "quantity": 1}]
+        self.assertEqual(packages.saving({"price_minor": 30000, "currency": "AED"}, rows),
+                         self.nothing)
+
+    def test_one_currency_saves_as_before(self):
+        # The same figures, all in BDT: 350 - 297.50 = 52.50, 15%.
+        self.assertEqual(self.saving(29750, 35000, currency="BDT", line_currency="BDT"), {
+            "price_before": Decimal("350"),
+            "save_amount": Decimal("52.50"),
+            "save_percent": 15,
+        })
+
+    def test_one_currency_is_can_book_s_rule(self):
+        # packages.one_currency: codes compare upper case and trimmed, and
+        # one that cannot be read matches nothing.
+        answer = self.saving(29750, 35000, currency="bdt", line_currency=" BDT")
+        self.assertEqual(answer["save_amount"], Decimal("52.50"))
+        for currency, line_currency in ((None, "BDT"), ("", "BDT"), ("BDT", None), ("BDT", "")):
+            with self.subTest(currency=currency, line_currency=line_currency):
+                self.assertEqual(self.saving(29750, 35000, currency=currency,
+                                             line_currency=line_currency), self.nothing)
+
+    def test_a_variant_line_in_another_currency(self):
+        # A BDT package of a service priced in BDT here, pinned to a variant
+        # priced in AED: the line is the variant's, AED, so no saving.
+        pkg = package_row(published_snapshot=snap([snap_item(CUT, LONG_HAIR)],
+                                                  priceMinor=25000, currency="BDT"))
+        content = packages.live_content(pkg)
+        svc = services(cut={"currency": "BDT"})
+        rows, _ = packages.lines(content["items"], svc, {LONG_HAIR: variant(currency="AED")})
+        self.assertEqual(packages.saving(content, rows), self.nothing)
+        # The same variant priced in BDT: 300 - 250 saves 50.
+        rows, _ = packages.lines(content["items"], svc, {LONG_HAIR: variant(currency="BDT")})
+        self.assertEqual(packages.saving(content, rows)["save_amount"], Decimal("50"))
 
 
 class DurationAndTimelineTests(SimpleTestCase):
@@ -750,6 +831,14 @@ class PackageSelectorTests(SimpleTestCase):
         variants.objects.filter.assert_called_once_with(id__in={LONG_HAIR}, deleted_at__isnull=True)
         self.assertEqual(answer, {LONG_HAIR: variant()})
 
+    def test_variants_read_the_currency_they_are_priced_in(self):
+        with mock.patch.object(selectors, "ServiceVariant") as variants:
+            selectors.package_variant_rows({LONG_HAIR})
+        fields = variants.objects.filter.return_value.values.call_args.args
+        self.assertIn("currency", fields)
+        # The fixture is the selector's row, key for key.
+        self.assertEqual(set(fields), set(variant()))
+
 
 class Reads:
     """selectors.package_lines with its three reads mocked."""
@@ -902,6 +991,19 @@ class LiveTabTests(Reads, SimpleTestCase):
                 tab = self.tab([package_row()], svc=svc)["bundles"][0]["can_book"]
                 detail = DetailSeams.call(self, svc=svc).json()["can_book"]
                 self.assertEqual(tab, detail)
+
+    def test_no_saving_across_two_currencies(self):
+        # Listed at its price, with no struck-through price and no saving.
+        prices = {"an AED package of a BDT service": 297.5,
+                  "a BDT package of an AED variant": 250.0}
+        cases = two_currencies()
+        self.assertEqual(sorted(cases), sorted(prices))
+        for name, case in cases.items():
+            with self.subTest(name):
+                reads = {k: v for k, v in case.items() if k != "package"}
+                bundles = self.tab([case["package"]], **reads)["bundles"]
+                self.assertEqual([(b["price"], b["price_before"], b["save_amount"]) for b in bundles],
+                                 [(prices[name], None, None)])
 
     def test_f1_sold_everywhere_without_a_branch_row(self):
         self.assertEqual(len(self.tab([package_row(branch_row=None)])["bundles"]), 1)
@@ -1239,6 +1341,24 @@ class DetailFieldsTests(DetailSeams, SimpleTestCase):
                          (None, None, None))
         self.assertEqual(body["price"], 700.0)
 
+    def test_no_saving_across_two_currencies(self):
+        # Production's Green Wave said "save 52.50" and 15%: AED 297.50
+        # against BDT 350. The rest of the screen is drawn as before.
+        cases = two_currencies()
+        expected = {
+            "an AED package of a BDT service": (297.5, [("Hot Towel Shave", 350.0)]),
+            "a BDT package of an AED variant": (250.0, [("The Gentleman's Cut", 300.0)]),
+        }
+        self.assertEqual(sorted(cases), sorted(expected))
+        for name, case in cases.items():
+            with self.subTest(name):
+                body = self.call(**case).json()
+                self.assertEqual((body["price_before"], body["save_amount"], body["save_percent"]),
+                                 (None, None, None))
+                includes = [(i["name"], i["price"]) for i in body["includes"]]
+                self.assertEqual((body["price"], includes), expected[name])
+                self.assertIs(body["is_active"], True)
+
     def test_blank_text_is_null(self):
         body = self.call(package=package_row(cancellation_policy="  ",
                                              published_snapshot=snap(description=""))).json()
@@ -1279,6 +1399,8 @@ class TabAndDetailAgreeTests(Reads, SimpleTestCase):
             (package_row(published_snapshot=snap([snap_item(CUT, LONG_HAIR, 2)])), services()),
             (package_row(published_snapshot=snap(priceMinor=90000)), services()),
             (package_row(), services(cut={"branch_price_minor": 15000})),
+            # Priced in BDT, its services in AED (no saving: SavingTests).
+            (package_row(published_snapshot=snap(currency="BDT")), services()),
         ]
         keys = ("name", "description", "price", "price_before", "save_amount",
                 "duration_minutes", "theme")

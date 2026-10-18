@@ -427,10 +427,13 @@ def package_service_rows(salon, service_ids):
 
 
 def package_variant_rows(variant_ids):
-    """The live (not deleted) variants packages name, by id: price and minutes."""
+    """
+    The live (not deleted) variants packages name, by id: price, the
+    currency it is in, and minutes.
+    """
     rows = ServiceVariant.objects.filter(
         id__in=variant_ids, deleted_at__isnull=True,
-    ).values("id", "service_id", "price_minor", "duration_minutes")
+    ).values("id", "service_id", "price_minor", "currency", "duration_minutes")
     return {row["id"]: row for row in rows}
 
 

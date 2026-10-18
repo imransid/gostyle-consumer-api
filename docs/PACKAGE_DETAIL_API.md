@@ -39,9 +39,11 @@ The screen a customer opens from a salon's Packages tab by tapping a bundle.
    agree. Your design's 540 and 103 cannot both happen.
 5. **`price_before`, `save_amount` and `save_percent` are `null` together**
    when the package saves nothing (it costs the same as its services, or
-   more). Your table has `save_amount` and `save_percent` as numbers; treat
-   them as `number | null`. Null hides the chip, the struck-through price and
-   the saving card.
+   more), and when the package and a service in it are priced in different
+   currencies (changed 2026-10-19: AED 297.50 against BDT 350 is not a
+   saving of 52.50 in either). Your table has `save_amount` and
+   `save_percent` as numbers; treat them as `number | null`. Null hides the
+   chip, the struck-through price and the saving card.
 6. **`includes[]` has `quantity`** (1 almost always). `price` is ONE of that
    service, here. A row with `quantity: 2` is "2 x The Gentleman's Cut".
 7. **The timeline is built from the same services as `includes`**, in the
@@ -187,8 +189,10 @@ else. Minutes are whole numbers.
   publishes again. The screen never shows a half-finished edit.
 - **`price_before`** = each included service at this branch's price (the
   price the Services tab shows) times its quantity, added up. If a package
-  names a size or length of a service (a variant), that variant's price and
-  minutes are used.
+  names a size or length of a service (a variant), that variant's price,
+  currency and minutes are used. When any of them is priced in another
+  currency than the package, there is no `price_before`, so no saving
+  (changed 2026-10-19).
 - **`save_percent`** = `save_amount / price_before`, rounded to the nearest
   whole number (half up), and at least 1, so the chip never says "SAVE 0%".
 - **`duration_minutes`** = the included services' minutes added up, each

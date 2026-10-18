@@ -351,7 +351,10 @@ live menu, exactly as the Package Details screen does:
 - a bundle holding a service the salon hid, archived or took off online
   booking is not listed;
 - a size or length of a service (a variant) in a bundle counts at its own
-  price and minutes.
+  price and minutes;
+- a bundle priced in another currency than a service in it (or a variant
+  of one) shows no saving: `price_before` and `save_amount` are null
+  (changed 2026-10-19).
 
 > **Changed 2026-10-18: with that change on, each bundle also has
 > `services`.**
