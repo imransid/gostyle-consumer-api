@@ -340,11 +340,16 @@ PACKAGES_LIVE_RULES_V1 = env.bool("PACKAGES_LIVE_RULES_V1", default=False)
 # booking-api's rule for selling it (packages.can_book), whichever tab rules
 # are on. And GET /booking/nearest-available takes a package id among
 # service_ids, searching for its parts (each as many times as the package
-# holds it), or answers 422 package_not_bookable. OFF here, the key is absent,
-# a package id there is answered as before (as no service of the salon), and
-# both screens answer exactly what they did. Turn it on only where
-# booking-api runs with PACKAGES_FROM_PLATFORM=true: without it booking-api
-# sells no package, and every one answers 422 unknown_service.
+# holds it), or answers 422 package_not_bookable. And a party member may hold
+# a package as a line of `services` (POST /booking/group) or among
+# `service_ids` (its availability): this service's checks count it as its
+# parts (foreign_id, the stylist, the party's length and notice) or answer
+# 422 package_not_bookable, and booking-api is sent the line as it came.
+# OFF here, the key is absent, a package id there is answered as before (as
+# no service of the salon), and the screens and the party routes answer
+# exactly what they did. Turn it on only where booking-api runs with
+# PACKAGES_FROM_PLATFORM=true: without it booking-api sells no package, and
+# every one answers 422 unknown_service.
 PACKAGE_BOOKING_V1 = env.bool("PACKAGE_BOOKING_V1", default=False)
 CACHES = {
     "default": {

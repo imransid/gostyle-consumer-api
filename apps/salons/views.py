@@ -1450,8 +1450,9 @@ def _bookable_packages(salon, ids, field="service_ids"):
     something nobody can book.
 
     THE ONE EXPANSION. Whatever needs a package's parts reads them here (the
-    slot search, `_with_packages_as_parts`), so a package is the same visit
-    wherever it is booked.
+    slot search, `_with_packages_as_parts`; a party's members,
+    group_views._visits), so a package is the same visit wherever it is
+    booked.
     """
     rows = packages_for_salon(salon, ids)
     if not rows:

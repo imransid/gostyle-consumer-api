@@ -57,6 +57,7 @@ from .group_serializers import (
     GroupBookingRequestSerializer,
 )
 from .menu import service_price
+from .money import major
 from .selectors import (
     booking_route,
     salon_cards_for_refs,
@@ -68,6 +69,8 @@ from .selectors import (
 from .views import (
     _OUR_ENVELOPE,
     BookingApiDown,
+    _as_parts,
+    _bookable_packages,
     _check_in_fields,
     _idempotency_key,
     _member_check_in_fields,
@@ -135,6 +138,43 @@ def _salon_and_route(salon_id):
     if route is None:
         raise Http404("Salon not found")
     return salon, route
+
+
+def _visits(salon, members, field):
+    """
+    What each member's visit performs, for this service's own checks: with
+    PACKAGE_BOOKING_V1 on, a package among a member's services counts as its
+    parts. Returns `(visits, packages)`.
+
+    `visits` are copies of the members whose `service_ids` are the services
+    performed: a package's parts in its place, each as many times as the
+    package holds it ("2 x Cut" is two cuts), read by the slot search's own
+    expansion (views._bookable_packages), once for the whole party. The
+    foreign_id check, the stylist who must do every part, the party's length
+    (each member's parts end to end) and its notice all read these.
+    `packages` is what was found, `{id: (content, parts)}`, so the old path
+    can name and price a package's line.
+
+    THE MEMBERS KEEP THEIR LINES AS SENT. booking-api expands a package
+    itself (party-member.ts, on availability, hold, confirm and its mobile
+    route), so it is sent the package id, never the parts.
+
+    A package of this salon's business that packages.can_book refuses is 422
+    package_not_bookable on `field`. Any other id is left as sent, and the
+    foreign_id check answers it as before. Off, or no package in the party:
+    the members themselves, and with the switch off nothing is read.
+    """
+    if not settings.PACKAGE_BOOKING_V1:
+        return members, {}
+    ids = list(dict.fromkeys(sid for m in members for sid in m["service_ids"]))
+    packages = _bookable_packages(salon, ids, field=field)
+    if not packages:
+        return members, {}
+    visits = [
+        {**m, "service_ids": [str(sid) for sid in _as_parts(m["service_ids"], packages)]}
+        for m in members
+    ]
+    return visits, packages
 
 
 def _service_rows(salon, members, field):
@@ -273,18 +313,26 @@ def _party_timing(rows, members):
     return longest, lead
 
 
-def _catalogue(rows):
+def _catalogue(rows, packages=None):
     """
     Each chosen service's name and price, as the services tab shows them
     (menu.service_price: the branch price when set, as booking-api charges).
+
+    And each chosen package's (`_visits`, PACKAGE_BOOKING_V1): the name and
+    price the Package Details screen shows. A package is one line at its
+    price, which is what booking-api charges for it, its parts carrying the
+    price between them.
     """
-    return {
+    catalogue = {
         sid: {
             "name": row.get("name"),
             "price": service_price(row),
         }
         for sid, row in rows.items()
     }
+    for pid, (content, _parts) in (packages or {}).items():
+        catalogue[pid] = {"name": content["name"], "price": major(content["price_minor"])}
+    return catalogue
 
 
 def _clock(authorization, route):
@@ -306,7 +354,9 @@ _PARTY_422 = (
     "`duplicate_ref`, `member_no_services`, `foreign_id` (a service or "
     "stylist not at this salon), `stylist_repeated` (one stylist chosen for "
     "two members), `stylist_mismatch` (a stylist who cannot do that member's "
-    "services)."
+    "services, a package's every part included), and with PACKAGE_BOOKING_V1 "
+    "on `package_not_bookable` (a package of this salon that cannot be booked "
+    "here now)."
 )
 
 
@@ -377,9 +427,13 @@ class GroupAvailabilityView(APIView):
         data = _validated(GroupAvailabilityRequestSerializer, request)
         salon, route = _salon_and_route(data["salon_id"])
         members = data["members"]
-        rows = _service_rows(salon, members, "service_ids")
+        # What each member performs, a package as its parts. booking-api is
+        # still asked about `members`, the ids as sent: it expands a package
+        # itself.
+        visits, _ = _visits(salon, members, "service_ids")
+        rows = _service_rows(salon, visits, "service_ids")
         roster = _roster(salon)
-        _check_stylists(salon, members, roster)
+        _check_stylists(salon, visits, roster)
 
         tz = timezones.resolve(salon.branch_timezone, salon.id)
         day = data["date"]
@@ -391,7 +445,7 @@ class GroupAvailabilityView(APIView):
             # Asked of nobody: a closed salon offers no starts.
             return Response(answer)
 
-        longest, lead = _party_timing(rows, members)
+        longest, lead = _party_timing(rows, visits)
         authorization = request.META.get("HTTP_AUTHORIZATION", "")
         clock = _clock(authorization, route)
         offered = gt.offered_starts(
@@ -710,9 +764,13 @@ class GroupBookingCreateView(APIView):
         salon, route = _salon_and_route(data["salon_id"])
         members = data["members"]
         _name_members(request.user, members)
-        rows = _service_rows(salon, members, "services")
+        # What each member performs, a package as its parts, named: the
+        # checks read `visits`, and booking-api is sent `members`, the lines
+        # as the app sent them.
+        visits, packages = _visits(salon, members, "services")
+        rows = _service_rows(salon, visits, "services")
         roster = _roster(salon)
-        _check_stylists(salon, members, roster)
+        _check_stylists(salon, visits, roster)
 
         tz = timezones.resolve(salon.branch_timezone, salon.id)
         start = data["start_time"]
@@ -726,14 +784,16 @@ class GroupBookingCreateView(APIView):
         if settings.GROUP_BOOKING_V2:
             # One call to booking-api's mobile route. Every check above has
             # already run, exactly as for the old path.
-            return self._book_v2(request, data, salon, route, tz, rows, idempotency_key)
+            return self._book_v2(request, data, salon, route, tz, rows, idempotency_key, visits)
 
         existing = _claim(key, fingerprint)
         if existing is not None:
             return _replay(existing, fingerprint)
 
         try:
-            kind, code, body = self._book(request, data, salon, route, tz, rows, roster)
+            kind, code, body = self._book(
+                request, data, salon, route, tz, rows, roster, visits, packages
+            )
         except Exception:
             # A refusal, or booking-api unreachable before anything was
             # booked. Nothing to remember: the same request may be sent again
@@ -754,7 +814,7 @@ class GroupBookingCreateView(APIView):
         _forget(key)
         return Response(body, status=code)
 
-    def _book(self, request, data, salon, route, tz, rows, roster):
+    def _book(self, request, data, salon, route, tz, rows, roster, visits, packages):
         """
         Hold, then confirm. Returns (kind, status, body).
 
@@ -762,13 +822,17 @@ class GroupBookingCreateView(APIView):
         (booking-api's answer, forwarded as it is) or "unknown" (body is the
         group id). Raises for anything this service refuses itself,
         `slot_taken` included.
+
+        `visits` and `packages` come from `_visits`: the party's length and
+        notice are read from the parts, and a package's line is named and
+        priced as one line, at the package's price.
         """
         authorization = request.META.get("HTTP_AUTHORIZATION", "")
         members = data["members"]
         start, day = data["start_time"], data["date"]
         day_start = datetime.combine(day, time.min, tzinfo=tz)
 
-        longest, lead = _party_timing(rows, members)
+        longest, lead = _party_timing(rows, visits)
         clock = _clock(authorization, route)
         engine_day, minute = gt.to_engine(start, clock)
 
@@ -849,7 +913,7 @@ class GroupBookingCreateView(APIView):
             body, problems = gt.booking_from_confirm(
                 held, confirmed or {},
                 day_iso=engine_day, members=members, order=order, clock=clock,
-                tz=tz, cards=roster, catalogue=_catalogue(rows),
+                tz=tz, cards=roster, catalogue=_catalogue(rows, packages),
                 salon_id=str(salon.id), date_iso=day.isoformat(),
                 created_at=_now(tz).replace(microsecond=0).isoformat(),
             )
@@ -864,7 +928,7 @@ class GroupBookingCreateView(APIView):
 
         return "done", status.HTTP_201_CREATED, body
 
-    def _book_v2(self, request, data, salon, route, tz, rows, idempotency_key):
+    def _book_v2(self, request, data, salon, route, tz, rows, idempotency_key, visits):
         """
         GROUP_BOOKING_V2: the party in ONE call to POST
         /v1/mobile-booking/group, saved to pay at the salon.
@@ -874,6 +938,10 @@ class GroupBookingCreateView(APIView):
         prices (child price, VAT, products, deposit) and books every member,
         or none. Its answer is the app's shape already; only the salon, the
         clock and the date are put back to the salon's.
+
+        A package is a line of a member's `services`, sent on as it came
+        (gt.mobile_group_body): booking-api expands and prices it. Only the
+        start's checks read `visits`, the parts (`_visits`).
 
         RETRY-SAFE through booking-api's own Idempotency-Key store: the same
         key POST /booking derives (the caller's, or a hash of the customer
@@ -886,7 +954,7 @@ class GroupBookingCreateView(APIView):
         start, day = data["start_time"], data["date"]
         day_start = datetime.combine(day, time.min, tzinfo=tz)
 
-        longest, lead = _party_timing(rows, members)
+        longest, lead = _party_timing(rows, visits)
         clock = _clock(authorization, route)
         engine_day, _ = gt.to_engine(start, clock)
         refusal = gt.start_refusal(
