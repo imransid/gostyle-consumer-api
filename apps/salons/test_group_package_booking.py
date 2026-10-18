@@ -14,14 +14,19 @@ Driven through test_group_booking's seams, with the package reads mocked as
 test_package_booking mocks them: no database, no network.
 """
 
+import json
 import uuid
 from contextlib import ExitStack, contextmanager
+from datetime import datetime
 from decimal import Decimal
 from unittest import mock
 
 from django.core.cache import cache
 from django.test import SimpleTestCase, override_settings
+from rest_framework.test import APIRequestFactory, force_authenticate
 
+from apps.salons import booking_api
+from apps.salons import tests as list_tests
 from apps.salons.group_serializers import (
     PACKAGES_AS_A_LINE,
     PACKAGES_REFUSED,
@@ -38,14 +43,16 @@ from apps.salons.test_group_booking import (
     RANA,
     STAFF,
     USER_ID,
+    Customer,
     ViewSeams,
     at,
     availability_body,
     booking_body,
     confirmed_answer,
     party,
+    plan_entry,
 )
-from apps.salons.test_group_booking_v2 import ANSWER
+from apps.salons.test_group_booking_v2 import ANSWER, ReadSeams
 from apps.salons.test_package_detail import (
     LONG_HAIR,
     PACKAGE,
@@ -57,7 +64,7 @@ from apps.salons.test_package_detail import (
     snap_item,
     variant,
 )
-from apps.salons.views import PACKAGE_NOT_BOOKABLE
+from apps.salons.views import PACKAGE_NOT_BOOKABLE, BookingListView
 
 CUT_ID, NAILS_ID = uuid.UUID(CUT), uuid.UUID(NAILS)
 
@@ -527,3 +534,163 @@ class MembersPackagesFieldTests(PackageSeams, SimpleTestCase):
                 self.assertEqual(response.data["errors"][0]["message"], message)
                 self.packages_read.assert_not_called()
                 s.hold_group.assert_not_called()
+
+
+# ------------------------------------------------------------ what booking-api is sent
+
+
+def upstream(body, status=201):
+    """urlopen's answer: `body` as booking-api's JSON."""
+    response = mock.MagicMock(status=status)
+    response.read.return_value = json.dumps(body).encode()
+    response.__enter__.return_value = response
+    return response
+
+
+def compact(body):
+    return json.dumps(body, separators=(",", ":")).encode()
+
+
+@override_settings(BOOKING_API_URL="http://booking/")
+class PackageLineOnTheWireTests(PackageSeams, SimpleTestCase):
+    """
+    The bytes booking-api receives, through the real client (only urlopen is
+    replaced). booking-api expands a package itself, so a package line must
+    reach it as the app sent it: gt.mobile_group_body copies each line's `id`
+    and `amount` and nothing else (booking-api refuses any other key), and
+    booking_api encodes them compactly, so a line the app wrote compactly
+    crosses as the same bytes. Not swapped for its parts, not dropped, not
+    moved, not repriced.
+    """
+
+    PATH = "/api/v1/booking/group"
+
+    @override_settings(GROUP_BOOKING_V2=True)
+    def test_create_carries_the_package_line_byte_for_byte(self):
+        body = booking_body()
+        body["members"][1]["services"] = [{"id": str(PACKAGE), "amount": 370},
+                                          {"id": NAILS, "amount": 187.5}]
+        body["members"][2]["services"] = [{"id": str(PACKAGE_2), "amount": 100}]
+        sent = compact(body)
+        dana = compact(body["members"][1]["services"])
+        rana = compact(body["members"][2]["services"])
+        self.assertIn(dana, sent)
+
+        with self.with_packages([groom(), cuts(1)],
+                                create_group_booking=booking_api.create_group_booking), \
+                mock.patch.object(booking_api.urllib.request, "urlopen",
+                                  return_value=upstream(ANSWER)) as urlopen:
+            response = self.post(GroupBookingCreateView, self.PATH, sent)
+        self.assertEqual(response.status_code, 201, response.data)
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.get_full_url(), "http://booking/v1/mobile-booking/group")
+        self.assertIn(b'"services":' + dana, request.data)
+        self.assertIn(b'"services":' + rana, request.data)
+        members = json.loads(request.data)["members"]
+        self.assertEqual([m["services"] for m in members],
+                         [[{"id": CUT, "amount": 120}],
+                          body["members"][1]["services"],
+                          body["members"][2]["services"]])
+
+    @override_settings(GROUP_BOOKING_V2=True)
+    def test_an_id_in_capitals_crosses_in_its_one_spelling(self):
+        # The one thing done to an id, a service's or a package's alike: the
+        # uuid's own spelling. booking-api matches a package id either way.
+        body = booking_body()
+        body["members"][1]["services"] = [{"id": str(PACKAGE).upper(), "amount": 370}]
+        with self.with_packages([groom()],
+                                create_group_booking=booking_api.create_group_booking), \
+                mock.patch.object(booking_api.urllib.request, "urlopen",
+                                  return_value=upstream(ANSWER)) as urlopen:
+            response = self.post(GroupBookingCreateView, self.PATH, compact(body))
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertIn(b'"services":[{"id":"%s","amount":370}]' % str(PACKAGE).encode(),
+                      urlopen.call_args.args[0].data)
+
+    def test_availability_asks_about_the_package_ids_as_sent(self):
+        body = visit_of({0: [PACKAGE, CUT], 1: [PACKAGE_2]}, availability_body())
+
+        def answer(request, timeout=None):
+            if "/v1/bookings/settings" in request.get_full_url():
+                return upstream({"branch": {"utcOffsetMinutes": 360},
+                                 "tradingWindow": {"fromMin": 600, "toMin": 1320}}, 200)
+            asked = json.loads(request.data)
+            return upstream({"starts": [plan_entry(m, asked["participants"], fits=False)
+                                        for m in asked["targetMins"]]}, 200)
+
+        with self.with_packages([groom(), cuts(2)], engine_clock=booking_api.engine_clock,
+                                plan_group=booking_api.plan_group), \
+                mock.patch.object(booking_api.urllib.request, "urlopen", side_effect=answer) as urlopen:
+            response = self.post(GroupAvailabilityView, "/api/v1/booking/group-availability",
+                                 compact(body))
+        self.assertEqual(response.status_code, 200, response.data)
+
+        plans = [c.args[0] for c in urlopen.call_args_list
+                 if c.args[0].get_full_url().endswith("/v1/bookings/availability/group")]
+        self.assertTrue(plans)
+        for request in plans:
+            self.assertIn(b'"serviceIds":' + compact([str(PACKAGE), CUT]), request.data)
+            self.assertIn(b'"serviceIds":' + compact([str(PACKAGE_2)]), request.data)
+            self.assertIn(b'"serviceIds":' + compact([NAILS]), request.data)
+
+
+# ------------------------------------------------------------ what the reads carry
+
+
+@override_settings(GROUP_BOOKING_V2=True)
+class PartyReadPackagesTests(ReadSeams, SimpleTestCase):
+    """
+    GET /booking/<group id>: booking-api's members[].packages, present only
+    on a member whose lane holds one, comes back as booking-api sent it.
+    """
+
+    HELD = {"id": str(PACKAGE), "name": "The Full Groom", "amount": 185,
+            "service_ids": [CUT, CUT, NAILS]}
+
+    def test_a_member_s_packages_come_back_untouched_and_nobody_gains_the_key(self):
+        answer = json.loads(json.dumps(ANSWER))
+        answer["members"][2]["packages"] = [self.HELD]
+        response, _ = self.run_with(self.get, **{
+            "apps.salons.group_views.read_group_booking": mock.Mock(return_value=(200, answer))})
+        self.assertEqual(response.status_code, 200, response.data)
+        members = response.data["members"]
+        self.assertEqual(members[2].get("packages"), [self.HELD])
+        self.assertEqual(["packages" in m for m in members], [False, False, True])
+
+
+class MyBookingsPackagesTests(SimpleTestCase):
+    """
+    GET /bookings: a GROUP row's `packages` ([{id, name}], only when a member
+    holds one) comes back as booking-api sent it.
+    """
+
+    # The list's own fixtures, borrowed: the module, not the class, is
+    # imported, or the runner would collect the class here a second time.
+    NOW = list_tests.BookingListViewTests.NOW
+    CARD = list_tests.BookingListViewTests.CARD
+    row = list_tests.BookingListViewTests.row
+    page = list_tests.BookingListViewTests.page
+
+    def results(self, rows):
+        request = APIRequestFactory().get("/api/v1/bookings", HTTP_AUTHORIZATION="Bearer cus")
+        force_authenticate(request, user=Customer())
+        with mock.patch("apps.salons.views.list_bookings", return_value=(200, self.page(rows))), \
+                mock.patch("apps.salons.views.salon_cards_for_refs",
+                           return_value={"marina-walk": self.CARD}), \
+                mock.patch("apps.salons.views.datetime") as clock:
+            clock.now.return_value = self.NOW
+            clock.fromisoformat = datetime.fromisoformat
+            response = BookingListView.as_view()(request)
+        self.assertEqual(response.status_code, 200)
+        return response.data["results"]
+
+    def test_a_group_row_s_packages_come_back_untouched(self):
+        names = [{"id": str(PACKAGE), "name": "The Full Groom"}]
+        rows = self.results([
+            self.row(id=GROUP_ID, booking_type="GROUP", member_count=3, packages=names),
+            self.row(id="b2c6b0a9-0000-4000-8000-000000000002", booking_type="GROUP",
+                     member_count=2),
+        ])
+        self.assertEqual(rows[0].get("packages"), names)
+        self.assertNotIn("packages", rows[1])
