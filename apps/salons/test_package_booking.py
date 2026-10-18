@@ -6,7 +6,9 @@ Booking a package as one visit at its price (docs/BOOKING_CREATE_API.md,
     PACKAGE_BOOKING_V1): the package is searched as its parts, each as many
     times as it holds it, by one stylist for all of them;
   * the price check (POST /booking/quote): booking-api's quote, routed
-    exactly as create is, its answer unchanged.
+    exactly as create is, its answer unchanged;
+  * create (POST /booking) with the package as a line of `services`:
+    forwarded as it came, nothing here reads it.
 
 The selectors are mocked; no database. The package fixtures are
 test_package_detail's, so both modules read the same packages.
@@ -502,3 +504,49 @@ class QuoteOpenApiTests(SimpleTestCase):
         self.assertEqual(q["total"], q["amount_without_tax"] - q["discount"] + q["tax_amount"])
         self.assertEqual((q["advance_paid_amount"], q["due_amount"]), (0, q["total"]))
         self.assertEqual(q["duration_min"], sum(p["duration_min"] for p in q["parts"]))
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/booking with a package as a line: nothing here reads it.
+# ---------------------------------------------------------------------------
+
+
+class CreateWithAPackageLineTests(SimpleTestCase):
+    """
+    booking-api takes a package as a line of `services` ({id, amount}, the
+    package price), with no package_id field. Nothing in this service's
+    create path reads `services`: _route_booking reads `salon_id` alone, and
+    the bytes go on as they came.
+    """
+
+    LINES = b'"services":[{"id":"%s","amount":520},{"id":"%s","amount":230.5}]' % (
+        str(PACKAGE).encode(), str(BEARD).encode())
+
+    def body(self, salon):
+        return (b'{"salon_id":"%s",%s,"stylists":["%s"],"total":787.5}'
+                % (salon.encode(), self.LINES, str(MAYA).encode()))
+
+    def create(self, body, *, flag):
+        request = APIRequestFactory().post("/api/v1/booking", data=body, content_type="application/json")
+        force_authenticate(request, user=Customer())
+        with override_settings(PACKAGE_BOOKING_V1=flag), mock.patch(
+            "apps.salons.views.booking_route",
+            return_value={"tenant_id": TENANT_ID, "branch_id": BRANCH_ID},
+        ), mock.patch("apps.salons.views.create_booking", return_value=(201, {"id": "bkg_1"})) as create:
+            response = BookingCreateView.as_view()(request)
+        self.assertEqual(response.status_code, 201)
+        return create.call_args
+
+    def test_a_package_line_reaches_booking_api_byte_for_byte(self):
+        for flag in (False, True):
+            with self.subTest(PACKAGE_BOOKING_V1=flag):
+                body = self.body(BRANCH_ID)
+                self.assertEqual(self.create(body, flag=flag).args[0], body)
+
+    def test_also_when_the_storefront_id_is_rewritten_to_the_branch(self):
+        # Only salon_id changes; the lines are the same bytes, in the same place.
+        for flag in (False, True):
+            with self.subTest(PACKAGE_BOOKING_V1=flag):
+                sent = self.create(self.body(STOREFRONT), flag=flag).args[0]
+                self.assertEqual(sent, self.body(BRANCH_ID))
+                self.assertIn(self.LINES, sent)

@@ -1826,7 +1826,12 @@ _BOOKING_REQUEST = {
             "type": "array",
             "minItems": 1,
             "items": _LINE,
-            "description": "At least one. An empty basket is refused upstream.",
+            "description": (
+                "At least one. An empty basket is refused upstream. A package "
+                "is a line too, `{id, amount}` with its id (bundles[].id) and "
+                "the package price, as POST /booking/quote answers it; there "
+                "is no package_id field."
+            ),
         },
         "products": {
             "type": "array",
