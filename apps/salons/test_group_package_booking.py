@@ -35,16 +35,17 @@ from apps.salons.group_serializers import (
     PACKAGES_REFUSED,
     GroupBookingRequestSerializer,
 )
-from apps.salons.group_views import GroupAvailabilityView, GroupBookingCreateView
+from apps.salons.group_views import NO_ABLE_STYLIST, GroupAvailabilityView, GroupBookingCreateView
 from apps.salons.test_group_booking import (
     ANYA,
     CUT,
+    GROUP_COVERAGE,
     GROUP_ID,
     HOLD_ID,
     MAYA,
     NAILS,
     RANA,
-    STAFF,
+    STRANGER,
     USER_ID,
     Customer,
     ViewSeams,
@@ -52,8 +53,10 @@ from apps.salons.test_group_booking import (
     availability_body,
     booking_body,
     confirmed_answer,
+    engine_pick,
     party,
     plan_entry,
+    planned,
 )
 from apps.salons.test_group_booking_v2 import ANSWER, ReadSeams
 from apps.salons.test_package_detail import (
@@ -70,6 +73,11 @@ from apps.salons.test_package_detail import (
 from apps.salons.views import PACKAGE_NOT_BOOKABLE, BookingListView
 
 CUT_ID, NAILS_ID = uuid.UUID(CUT), uuid.UUID(NAILS)
+
+# Who can do what here (stylist_service_coverage): Maya cuts and does nails,
+# Anya only cuts, and the engine's third pick (off the app's roster) does
+# both, so a package of cuts and nails has two people who can take it.
+PACKAGE_COVERAGE = {**GROUP_COVERAGE, uuid.UUID(STRANGER): [CUT_ID, NAILS_ID]}
 
 # What the package reads find (selectors.package_service_rows): this salon's
 # cut and nails, on the menu and offered at its branch.
@@ -145,6 +153,7 @@ class PackageSeams(Reads, ViewSeams):
 
     @contextmanager
     def with_packages(self, packages=(), *, flag=True, svc=None, variants=None, **over):
+        over.setdefault("stylist_service_coverage", mock.Mock(return_value=PACKAGE_COVERAGE))
         with ExitStack() as stack:
             stack.enter_context(override_settings(PACKAGE_BOOKING_V1=flag))
             self.packages_read = stack.enter_context(mock.patch(
@@ -210,7 +219,7 @@ class AvailabilityWithAPackageTests(PackageSeams, SimpleTestCase):
                                            (cuts(2), PACKAGE_2, 16 * 60)):
             with self.subTest(package=package_id), self.with_packages([package]) as s:
                 self.slots(self.send({2: [CUT], 0: [package_id]}))
-                self.assertEqual(s.plan_group.call_args.args[0]["targetMins"][0], first)
+                self.assertEqual(s.plan_group.call_args_list[0].args[0]["targetMins"][0], first)
 
     def test_the_chosen_stylist_must_do_every_part(self):
         # Anya cuts and does no nails: the groom's nails are hers to do.
@@ -431,7 +440,7 @@ def held_with_packages(body):
         "groupId": GROUP_ID, "holdId": HOLD_ID, "mode": "TOGETHER",
         "expiresAt": "2026-10-11T09:15:00.000Z", "expiresInSeconds": 900,
         "lanes": [
-            {"label": p["label"], "staffId": STAFF[i], "start": hhmm(minute),
+            {"label": p["label"], "staffId": engine_pick(i, p), "start": hhmm(minute),
              "end": hhmm(minute + sum(HELD_MINUTES.get(s, 0) for s in p["serviceIds"]))}
             for i, p in enumerate(body["participants"])
         ],
@@ -495,6 +504,287 @@ class OldPathWithAPackageTests(PackageSeams, SimpleTestCase):
                                  visit_of({2: [PACKAGE]}, booking_body()))
         self.assert_not_bookable(response, "services")
         s.hold_group.assert_not_called()
+
+
+# ------------------------------------------------------------ who does a member's package
+#
+# booking-api checks no skills for the platform's services (SKILLS_UNVERIFIED
+# counts every professional as qualified), so a member with no chosen stylist
+# is planned and held with whoever it finds free: the groom's nails with
+# Anya, who only cuts. Every professional it picks is checked here, as the
+# Expert step checks one (group_views._who_can_do).
+
+
+def engine_planning(picks, fits=frozenset({660, 1020}), pinned_fits=None):
+    """
+    plan_group's fake: booking-api's own `picks`, by position, for a member
+    sent with no stylist, and the stylist pinned otherwise, with no skill
+    looked at, as booking-api looks at none. Asked with every member pinned,
+    the party fits at `pinned_fits` (`fits` unless given).
+    """
+    def plan(body, **kw):
+        repinned = all("preferredStaffId" in p for p in body["participants"])
+        _, answer = planned(body, pinned_fits if repinned and pinned_fits is not None else fits)
+        for entry in answer["starts"]:
+            for i, (lane, p) in enumerate(zip(entry["lanes"], body["participants"])):
+                lane["staffId"] = p.get("preferredStaffId") or picks[i]
+        return 201, answer
+    return mock.Mock(side_effect=plan)
+
+
+class AvailabilityStylistCheckTests(PackageSeams, SimpleTestCase):
+    """POST /booking/group-availability: each planned lane checked."""
+
+    PATH = "/api/v1/booking/group-availability"
+
+    @staticmethod
+    def members():
+        """Member 0 books the groom (2 x Cut, Nails), member 1 a cut; neither chose a stylist."""
+        return [{"ref": 0, "service_ids": [str(PACKAGE)], "stylist_id": None},
+                {"ref": 1, "service_ids": [CUT], "stylist_id": None}]
+
+    def available(self, members, **over):
+        with self.with_packages([groom()], **over) as s:
+            response = self.post(GroupAvailabilityView, self.PATH, availability_body(members=members))
+        self.assertEqual(response.status_code, 200, response.data)
+        self.seen = s
+        return {slot["start"]: slot for band in response.data["bands"]
+                for slot in band["slots"] if slot["available"]}
+
+    @staticmethod
+    def stylists(slot):
+        return [(p["ref"], p["stylist"]["id"]) for p in slot["plan"]]
+
+    def test_a_member_planned_with_someone_unable_is_asked_again_pinned(self):
+        # booking-api gives the groom to Anya, who only cuts, and the cut to Maya.
+        slots = self.available(self.members(), plan_group=engine_planning([ANYA, MAYA]))
+        first, again = self.seen.plan_group.call_args_list
+        self.assertNotIn("preferredStaffId", first.args[0]["participants"][0])
+        # Asked again once for both starts it said fit, every member pinned to
+        # a share of the same two people: the nails to Maya, the cut to Anya.
+        body = again.args[0]
+        self.assertEqual(body["targetMins"], [660, 1020])
+        self.assertEqual([(p["serviceIds"], p["preferredStaffId"]) for p in body["participants"]],
+                         [([str(PACKAGE)], MAYA), ([CUT], ANYA)])
+        # What the app is shown is that second plan.
+        self.assertEqual(sorted(slots), ["2026-10-11T09:00:00+04:00", "2026-10-11T15:00:00+04:00"])
+        for slot in slots.values():
+            self.assertEqual(self.stylists(slot), [(0, MAYA), (1, ANYA)])
+        # One read of who can do what, for everyone booking-api planned.
+        _, service_ids, staff_ids = self.seen.stylist_service_coverage.call_args.args
+        self.assertEqual(sorted(staff_ids), sorted([uuid.UUID(ANYA), uuid.UUID(MAYA)]))
+        self.assertEqual(service_ids, sorted([CUT_ID, NAILS_ID], key=str))
+
+    def test_a_plan_that_is_already_right_is_kept_and_asked_once(self):
+        slots = self.available(self.members(), plan_group=engine_planning([MAYA, ANYA]))
+        self.seen.plan_group.assert_called_once()
+        self.assertEqual([self.stylists(s) for s in slots.values()], [[(0, MAYA), (1, ANYA)]] * 2)
+
+    def test_a_start_nobody_planned_there_can_take_is_unavailable(self):
+        # Member 1 wants nails with Maya, the only one planned who does them:
+        # nobody is left for the groom's nails. Not asked again.
+        members = self.members()
+        members[1].update(service_ids=[NAILS], stylist_id=MAYA)
+        slots = self.available(members, plan_group=engine_planning([ANYA, MAYA]))
+        self.assertEqual(slots, {})
+        self.seen.plan_group.assert_called_once()
+
+    def test_a_start_that_does_not_fit_pinned_is_unavailable(self):
+        # Maya was free for the cut at 15:00, not for the groom's longer lane.
+        slots = self.available(self.members(),
+                               plan_group=engine_planning([ANYA, MAYA], pinned_fits={660}))
+        self.assertEqual(list(slots), ["2026-10-11T09:00:00+04:00"])
+        self.assertEqual(self.seen.plan_group.call_count, 2)
+
+    def test_a_refused_second_ask_leaves_those_starts_unavailable(self):
+        engine = engine_planning([ANYA, MAYA])
+        refusal = {"statusCode": 422, "message": "no", "error": "Unprocessable Entity"}
+
+        def plan(body, **kw):
+            if all("preferredStaffId" in p for p in body["participants"]):
+                return 422, refusal
+            return engine(body, **kw)
+
+        with self.assertLogs("apps.salons.group_views", level="WARNING"):
+            slots = self.available(self.members(), plan_group=mock.Mock(side_effect=plan))
+        self.assertEqual(slots, {})
+
+    def test_hand_picked_services_are_checked_the_same_way(self):
+        members = [{"ref": 0, "service_ids": [CUT, NAILS], "stylist_id": None},
+                   {"ref": 1, "service_ids": [CUT], "stylist_id": None}]
+        slots = self.available(members, plan_group=engine_planning([ANYA, MAYA]))
+        self.assertEqual(self.seen.plan_group.call_count, 2)
+        self.assertEqual([self.stylists(s) for s in slots.values()], [[(0, MAYA), (1, ANYA)]] * 2)
+
+    def test_off_booking_api_s_picks_are_shown_as_before(self):
+        members = [{"ref": 0, "service_ids": [CUT, NAILS], "stylist_id": None},
+                   {"ref": 1, "service_ids": [CUT], "stylist_id": None}]
+        slots = self.available(members, plan_group=engine_planning([ANYA, MAYA]), flag=False)
+        self.seen.plan_group.assert_called_once()
+        self.seen.stylist_service_coverage.assert_not_called()
+        self.assertEqual([self.stylists(s) for s in slots.values()], [[(0, ANYA), (1, MAYA)]] * 2)
+
+
+@override_settings(CACHES={"default": {
+    "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+    "LOCATION": "group-stylist-check-tests",
+}})
+class OldPathStylistCheckTests(PackageSeams, SimpleTestCase):
+    """
+    POST /booking/group, GROUP_BOOKING_V2 off: the professionals held are
+    checked before the party is confirmed, and confirmed as held.
+
+    Amal (a guest) books the groom with no stylist, Dana (the booker) nails
+    with Maya, Rana a cut with no stylist. Sent booker first, booking-api's
+    own picks are Maya, Anya and the third (STAFF): the groom goes to Anya.
+    """
+
+    PATH = "/api/v1/booking/group"
+
+    # Groom 370 + nails 175 + cut 120: the booker carries it all.
+    SHARES = ("AED 665.00", "AED 0.00", "AED 0.00")
+
+    def setUp(self):
+        cache.clear()
+
+    def book(self, body=None, **over):
+        over.setdefault("hold_group", mock.Mock(side_effect=lambda b, **kw: (201, held_with_packages(b))))
+        over.setdefault("confirm_group", mock.Mock(side_effect=lambda gid, b, **kw: (
+            201, confirmed_answer(b, shares=self.SHARES))))
+        with self.with_packages([groom()], **over) as s:
+            response = self.post(GroupBookingCreateView, self.PATH,
+                                 body or visit_of({0: [PACKAGE]}, booking_body()))
+        self.seen = s
+        return response
+
+    @staticmethod
+    def pins(call):
+        return [p.get("preferredStaffId") for p in call["participants"]]
+
+    def test_a_hold_with_someone_unable_is_given_back_and_held_again_pinned(self):
+        with self.assertNoLogs("apps.salons.group_views", level="ERROR"):
+            response = self.book()
+        self.assertEqual(response.status_code, 201, response.data)
+        s = self.seen
+        first, again = s.hold_group.call_args_list
+        self.assertEqual(self.pins(first.args[0]), [MAYA, None, None])
+        s.release_group_hold.assert_called_once()
+        self.assertEqual(s.release_group_hold.call_args.args, (HOLD_ID,))
+        # Held again with the same three people shared out so each can: the
+        # groom to the one who also does nails, the cut to Anya.
+        self.assertEqual(self.pins(again.args[0]), [MAYA, STRANGER, ANYA])
+        self.assertEqual(self.pins(s.confirm_group.call_args.args[1]), [MAYA, STRANGER, ANYA])
+        self.assertEqual([m["stylist"]["id"] for m in response.data["members"]],
+                         [STRANGER, MAYA, ANYA])
+
+    def test_a_hold_nobody_held_can_put_right_is_slot_taken(self):
+        # Only Maya does nails here, and Dana has her.
+        response = self.book(stylist_service_coverage=mock.Mock(return_value=GROUP_COVERAGE))
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(response.data["errors"], [
+            {"field": None, "code": "slot_taken", "message": NO_ABLE_STYLIST}])
+        self.seen.hold_group.assert_called_once()
+        self.seen.release_group_hold.assert_called_once()
+        self.seen.confirm_group.assert_not_called()
+
+    def test_a_second_hold_that_does_not_fit_is_slot_taken_in_booking_api_s_words(self):
+        def hold(body, **kw):
+            if all("preferredStaffId" in p for p in body["participants"]):
+                return 409, {"message": "Maya is not free for 150 minutes."}
+            return 201, held_with_packages(body)
+        response = self.book(hold_group=mock.Mock(side_effect=hold))
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(response.data["detail"], "Maya is not free for 150 minutes.")
+        self.assertEqual(self.seen.hold_group.call_count, 2)
+        self.seen.release_group_hold.assert_called_once()
+        self.seen.confirm_group.assert_not_called()
+
+    def test_a_hold_that_is_right_is_confirmed_with_the_professionals_it_holds(self):
+        response = self.book(booking_body())
+        self.assertEqual(response.status_code, 201, response.data)
+        self.seen.hold_group.assert_called_once()
+        self.seen.release_group_hold.assert_not_called()
+        # booking-api re-plans on confirm: pinned, it cannot move anyone.
+        self.assertEqual(self.pins(self.seen.confirm_group.call_args.args[1]), [MAYA, ANYA, STRANGER])
+
+    def test_off_the_hold_is_confirmed_as_before(self):
+        # A party of services with no stylist chosen, the package switch
+        # off: booking-api's picks are neither read nor pinned.
+        body = booking_body()
+        body["members"][1]["stylist_id"] = None
+        with self.with_packages([], flag=False, hold_group=mock.Mock(
+                side_effect=lambda b, **kw: (201, held_with_packages(b)))) as s:
+            response = self.post(GroupBookingCreateView, self.PATH, body)
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(self.pins(s.confirm_group.call_args.args[1]), [None, None, None])
+        s.stylist_service_coverage.assert_not_called()
+        s.release_group_hold.assert_not_called()
+
+    def test_a_hold_whose_lanes_cannot_be_read_is_given_back_and_503(self):
+        held = {"groupId": GROUP_ID, "holdId": HOLD_ID, "mode": "TOGETHER", "lanes": []}
+        response = self.book(hold_group=mock.Mock(return_value=(201, held)))
+        self.assertEqual(response.status_code, 503, response.data)
+        self.assertEqual(response.data["errors"][0]["code"], "booking_api_unavailable")
+        self.seen.release_group_hold.assert_called_once()
+        self.seen.confirm_group.assert_not_called()
+
+
+@override_settings(GROUP_BOOKING_V2=True)
+class MobileRouteStylistCheckTests(PackageSeams, SimpleTestCase):
+    """
+    POST /booking/group, GROUP_BOOKING_V2 on: one call books the party, so
+    booking-api's picks are checked after, and only logged.
+    """
+
+    PATH = "/api/v1/booking/group"
+
+    @staticmethod
+    def answer(stylists):
+        answer = json.loads(json.dumps(ANSWER))
+        for m in answer["members"]:
+            m["stylist"] = {"id": stylists[m["ref"]], "name": None}
+        return answer
+
+    def book(self, stylists, **over):
+        over.setdefault("create_group_booking", mock.Mock(return_value=(201, self.answer(stylists))))
+        with self.with_packages([groom()], **over) as s:
+            response = self.post(GroupBookingCreateView, self.PATH,
+                                 visit_of({0: [PACKAGE]}, booking_body()))
+        self.seen = s
+        return response
+
+    def test_a_member_booked_with_someone_unable_is_logged_and_the_party_stands(self):
+        with self.assertLogs("apps.salons.group_views", level="ERROR") as logs:
+            response = self.book({0: ANYA, 1: MAYA, 2: STRANGER})
+        self.assertEqual(response.status_code, 201, response.data)
+        [line] = logs.output
+        for said in (GROUP_ID, "member 0", ANYA):
+            self.assertIn(said, line)
+        # Read for the members with no chosen stylist only: Amal and Rana.
+        _, _, staff_ids = self.seen.stylist_service_coverage.call_args.args
+        self.assertEqual(staff_ids, [uuid.UUID(ANYA), uuid.UUID(STRANGER)])
+
+    def test_able_stylists_log_nothing(self):
+        with self.assertNoLogs("apps.salons.group_views", level="ERROR"):
+            response = self.book({0: STRANGER, 1: MAYA, 2: ANYA})
+        self.assertEqual(response.status_code, 201, response.data)
+
+    def test_off_nothing_is_read_after(self):
+        body = booking_body()
+        body["members"][1]["stylist_id"] = None
+        create = mock.Mock(return_value=(201, self.answer({0: ANYA, 1: MAYA, 2: STRANGER})))
+        with self.with_packages([], flag=False, create_group_booking=create) as s, \
+                self.assertNoLogs("apps.salons.group_views", level="ERROR"):
+            response = self.post(GroupBookingCreateView, self.PATH, body)
+        self.assertEqual(response.status_code, 201, response.data)
+        s.stylist_service_coverage.assert_not_called()
+
+    def test_the_check_failing_never_fails_the_booking(self):
+        coverage = mock.Mock(side_effect=[PACKAGE_COVERAGE, RuntimeError("database gone")])
+        with self.assertLogs("apps.salons.group_views", level="WARNING"):
+            response = self.book({0: ANYA, 1: MAYA, 2: STRANGER}, stylist_service_coverage=coverage)
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(coverage.call_count, 2)
 
 
 # ------------------------------------------------------------ members[].packages

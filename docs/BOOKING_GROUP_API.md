@@ -176,6 +176,16 @@ the whole URL.
 - **`available: true` only if every member fits.** The `plan` then says who
   is with whom, and when. `stylist` is the one actually reserved, even when
   the request sent `null`.
+  - *Changed 2026-10-18, with `PACKAGE_BOOKING_V1` on:* every `stylist` in a
+    `plan` can do all of that member's services, a package's every service
+    included, by the rule `/salon/<id>/stylists?service_ids=` applies.
+    booking-api does not check that (§5, item 4), so this service checks
+    each stylist it plans. A start where booking-api gave a member someone
+    who cannot is asked again with the stylists it planned there shared out
+    so that each member's can; if there is no such sharing, or it does not
+    fit, the start is unavailable. So the `plan` may name other stylists
+    than booking-api first chose, and one more call may be made for those
+    starts.
 - **Starts already gone are listed as unavailable.** That covers past times
   and times inside the chosen services' notice period. booking-api is not
   asked about them.
@@ -263,6 +273,27 @@ What each kind becomes:
    all of that member's services, every service in a package included
    (§12). That last test is the one `/salon/<id>/stylists?service_ids=`
    applies. A `null` is filled in by booking-api.
+   - *Changed 2026-10-18: booking-api does not check skills.* It gives each
+     member one professional for all of their services, but the platform's
+     services reach it with no skill, and its `SKILLS_UNVERIFIED` switch
+     (which they cannot be booked without) counts every professional as
+     qualified. So for a `null` it picks whoever is free, the groom's nails
+     to someone who only cuts, and this check is the only one a chosen
+     stylist gets. With `PACKAGE_BOOKING_V1` on (it brings packages, often
+     more than one person's work), its picks for a `null` are checked here
+     too, by the same test; off, as before, they are not. On availability
+     (§3). On the old path, the professionals held, before the party is
+     confirmed: a hold with someone who cannot is given back and the party
+     held again once, with the professionals it held shared out so each
+     member's can, or it is `slot_taken` and nothing is booked; the confirm
+     then names the professional held for every member, so its re-plan
+     cannot move anyone. With `GROUP_BOOKING_V2` the party is held and
+     booked in one call, so a `null`'s pick can only be checked once it is
+     booked: a wrong one is logged as an error, for the salon to put right,
+     and the party stands. To book exactly the stylists a start's `plan`
+     shows, checked, send each member's `plan[].stylist.id` as
+     `stylist_id`. The lasting fix is booking-api's: skills from the
+     platform (`GROUP_BOOKING_FOLLOW_UPS.md`, M9).
 5. **The slot is re-checked for the whole party.** If it no longer fits,
    nothing is written and the call fails with `slot_taken`.
 6. **`start_time` is held to §3's rule.** booking-api plans against its diary
@@ -375,7 +406,10 @@ one: `validation_error` for a 422, `error` for a 409.
 
 `slot_taken`'s `message` is booking-api's own reason where it gives one
 ("Only 1 professional can cover this party, and each of the 3 participants
-needs their own."), and is worth showing.
+needs their own."), and is worth showing. When booking-api held a member with
+someone who cannot do their services and nobody it held can (§5, item 4), it
+is this service's: "There is no stylist free at that time who can do all of
+each member's services. Pick another time." (added 2026-10-18).
 
 `duplicate_ref`, `stylist_repeated`, `products_not_supported`,
 `packages_not_supported` and `package_not_bookable` are not in the spec.
@@ -559,7 +593,14 @@ slot search reads them (`BOOKING_NEAREST_AVAILABLE_API.md`).
 - **The stylist** (§5, item 4): a chosen stylist must be able to do every
   service in the package, or `stylist_mismatch`.
   `/salon/<id>/stylists?service_ids=` takes services only: ask it with the
-  package's services (`includes[].service_id` on Package Details).
+  package's services (`includes[].service_id` on Package Details). For a
+  member with no chosen stylist, booking-api's own pick is checked by the
+  same rule (changed 2026-10-18: booking-api checks no skills, and a
+  package's services are often more than one person's work): on
+  availability, a start whose plan gives the package to someone who cannot
+  do all of it is asked again with the stylists shared out, or unavailable;
+  on the old path the hold is checked the same way before it is confirmed;
+  with `GROUP_BOOKING_V2`, only once booked, and logged.
 - **The party's length:** each member's services end to end, a package's
   included, each as many times as the package holds it ("2 × Cut" is two
   cuts). The longest member decides which starts are offered (§3) and

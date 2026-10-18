@@ -140,6 +140,7 @@ Returns every half-hour start of the day in Morning, Afternoon and Evening bands
 - **`available: false`** rows are for drawing struck through. Past times and times inside a service's notice period are always unavailable.
 - **`end`** is when the last member finishes.
 - **`plan`** is for the Review timeline: who is with which stylist, and when. Today everyone starts at the slot's start; draw each member's own `start` and `end` anyway.
+- **Every stylist in `plan` can do all of that member's services** (Changed 2026-10-18, while the server's package switch is on: the Packages tab's bundles carry `can_book`), a package's included, by the same rule as `GET /salon/:id/stylists?service_ids=`. The booking service does not check skills when it picks for "any stylist", so the server checks its picks, and a start with nobody free who can is unavailable. To book exactly the stylists a start's `plan` shows, send each member's `plan[].stylist.id` as their `stylist_id` on create; with `null`, the stylist is picked again when the party is booked.
 - **One stylist per member.** The same stylist chosen for two members is refused (`stylist_repeated`).
 
 ## Book the party: POST /booking/group
@@ -192,7 +193,7 @@ One call books every member, or nobody: `201` with the whole party, saved to pay
 | `members[].age_group` | yes | `adult` or `child`. A child pays half of each service, and half of a package's price. |
 | `members[].services` | yes | At least one: `{ id, amount }`, `amount` = the price you showed for that member. A package is one line: `{ id: bundles[].id, amount: the package price }` (Changed 2026-10-18, see [Packages](#packages)). |
 | `members[].products` | no | `{ id, amount, quantity }`, `id` = the **variant_id**. See Products. |
-| `members[].stylist_id` | no | `null` or left out: the salon assigns one. |
+| `members[].stylist_id` | no | `null` or left out: the salon assigns one. Changed 2026-10-18: to keep the stylist the chosen start's `plan` showed for this member (checked to do all of their services), send that `plan[].stylist.id`. With `null` the booking service picks again as it books the party, without checking skills, and the server can only check that pick once the party exists. |
 | `members[].packages` | no | Must be empty: anything here is `packages_not_supported`. Changed 2026-10-18: a package goes in `services` instead. |
 | `amount_without_tax` | yes | Party total before VAT. See Money. |
 | `tax_amount` | yes | VAT, 5%, on the party total. |
@@ -365,7 +366,7 @@ In create, it is one line of that member's `services`, at the package's price:
 - **`amount`** is the package's price as you showed it for that member: half of it for a child. The server checks the party's figures, not each line.
 - A package can sit beside hand-picked services in the same member's `services`, and any number of members can each have one, the same package or different ones.
 
-**The stylist step.** `GET /salon/:id/stylists?service_ids=` takes services, not a package id (a package id there is `422 unknown_service`). Ask it with the package's own services, `includes[].service_id` from Package Details (or the tab's `bundles[].services[].id`, where the tab sends them), and offer only a stylist whose `service_ids` holds every one of them, or "any stylist" (`null`). The server refuses a stylist who cannot do every service in the package (`stylist_mismatch`).
+**The stylist step.** `GET /salon/:id/stylists?service_ids=` takes services, not a package id (a package id there is `422 unknown_service`). Ask it with the package's own services, `includes[].service_id` from Package Details (or the tab's `bundles[].services[].id`, where the tab sends them), and offer only a stylist whose `service_ids` holds every one of them, or "any stylist" (`null`). The server refuses a stylist who cannot do every service in the package (`stylist_mismatch`). For "any stylist", the stylist availability's `plan` names for that member can do every service in the package (checked by the server, since the booking service does not check skills); send it as `stylist_id` on create to keep them (see [Pick a time](#pick-a-time-post-bookinggroup-availability)).
 
 **Times.** A member's visit is the package's services end to end, so the slot's `end` and that member's `plan[].end` include all of them. The longest notice any service in the package needs applies to the whole party, as it does for hand-picked services.
 

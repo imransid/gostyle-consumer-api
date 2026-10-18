@@ -345,6 +345,12 @@ PACKAGES_LIVE_RULES_V1 = env.bool("PACKAGES_LIVE_RULES_V1", default=False)
 # `service_ids` (its availability): this service's checks count it as its
 # parts (foreign_id, the stylist, the party's length and notice) or answer
 # 422 package_not_bookable, and booking-api is sent the line as it came.
+# And booking-api's own pick of a stylist for a member with no chosen one
+# is checked, since it checks no skills (a package is often more than one
+# person's work): a group plan or hold giving a member someone who cannot do
+# all of their services is asked again with the stylists shared out, or the
+# start is unavailable (slot_taken on create); after the fact, logged, on
+# GROUP_BOOKING_V2 (docs/BOOKING_GROUP_API.md, section 5).
 # OFF here, the key is absent, a package id there is answered as before (as
 # no service of the salon), and the screens and the party routes answer
 # exactly what they did. Turn it on only where booking-api runs with

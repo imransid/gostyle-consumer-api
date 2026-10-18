@@ -297,7 +297,11 @@ class BookingMemberSerializer(serializers.Serializer):
     stylist_id = serializers.UUIDField(
         required=False,
         allow_null=True,
-        help_text="A stylist this member wants. Null or left out: the salon assigns one.",
+        help_text=(
+            "A stylist this member wants. Null or left out: the salon assigns "
+            "one. To keep the stylist the chosen start's `plan` named for this "
+            "member, send it here."
+        ),
     )
 
     class Meta:

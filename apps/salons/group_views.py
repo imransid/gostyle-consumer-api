@@ -204,6 +204,44 @@ def _roster(salon):
     }
 
 
+def _who_can_do(salon, members, staff_ids):
+    """
+    {staff id: the services of `members`' visits that person can do alone},
+    for `staff_ids`, measured exactly as the Expert step measures it (GET
+    /salon/<id>/stylists?service_ids=, stylist_service_coverage): one person
+    holding every skill a service needs. One read for all of them. A staff
+    id that is not a uuid is shown to do nothing.
+    """
+    staff = [s for s in dict.fromkeys(gt.staff_key(s) for s in staff_ids) if s]
+    service_ids = sorted({sid for m in members for sid in m["service_ids"]})
+    if not staff or not service_ids:
+        return {}
+    coverage = stylist_service_coverage(
+        salon, [uuid.UUID(s) for s in service_ids], [uuid.UUID(s) for s in staff]
+    )
+    return {str(who): {str(s) for s in done} for who, done in coverage.items()}
+
+
+def _able(covered):
+    """`can_do(member, staff_id)` over `_who_can_do`'s answer: every service of the member's visit."""
+    def can_do(member, staff_id):
+        return staff_id is not None and set(member["service_ids"]) <= covered.get(staff_id, set())
+    return can_do
+
+
+def _checks_picks():
+    """
+    Are booking-api's own picks checked: who it gives a member with no chosen
+    stylist (GroupAvailabilityView._qualified, the old path's
+    _qualified_hold, and after the fact on GROUP_BOOKING_V2).
+
+    With PACKAGE_BOOKING_V1, which brings them: a package is often more than
+    one person's work (a cut and nails), and booking-api checks no skills.
+    Off, every party is planned, held and confirmed exactly as before.
+    """
+    return settings.PACKAGE_BOOKING_V1
+
+
 def _check_stylists(salon, members, roster):
     """
     Every stylist the app chose: at this salon, once each, and able to do
@@ -214,9 +252,14 @@ def _check_stylists(salon, members, roster):
     member their own professional, so that party fits at no time at all --
     better said now than as a day of struck-through slots. `stylist_mismatch`
     for one who cannot do the member's work, measured exactly as the Expert
-    step measures it (GET /salon/<id>/stylists?service_ids=), and as
-    booking-api does: one person holding every skill the member's services
-    need.
+    step measures it (`_who_can_do`).
+
+    NOT booking-api's check too. It gives each member one professional for
+    all of their services, but checks no skills for the platform's services
+    (SKILLS_UNVERIFIED counts every professional as qualified), so this is
+    the only check a chosen stylist gets. A member with no chosen stylist is
+    given whoever booking-api finds free: with PACKAGE_BOOKING_V1 on, its
+    picks are checked the same way once it answers (`_checks_picks`).
     """
     chosen = [m for m in members if m["stylist_id"]]
     if not chosen:
@@ -234,13 +277,9 @@ def _check_stylists(salon, members, roster):
             "stylist_repeated",
         )
 
-    service_ids = sorted({sid for m in chosen for sid in m["service_ids"]})
-    coverage = stylist_service_coverage(
-        salon, [uuid.UUID(s) for s in service_ids], [uuid.UUID(s) for s in picked]
-    )
-    covered = {str(staff): {str(s) for s in done} for staff, done in coverage.items()}
+    can_do = _able(_who_can_do(salon, chosen, picked))
     for m in chosen:
-        if not set(m["service_ids"]) <= covered.get(m["stylist_id"], set()):
+        if not can_do(m, m["stylist_id"]):
             who = f"{m['name']}: t" if m.get("name") else "T"
             raise _refuse(
                 "stylist_id",
@@ -366,8 +405,11 @@ _PARTY_422 = (
         "Every half-hour start the salon offers the party on `date`, in "
         "Morning / Afternoon / Evening bands. A start is `available` only if "
         "every member fits; then `plan` says who is with whom, and when. "
-        "Starts already gone, or inside the services' notice, are offered "
-        "but unavailable.\n\n"
+        "With PACKAGE_BOOKING_V1 on, every stylist in a `plan` can do all of "
+        "that member's services, a package's included: booking-api does not "
+        "check skills, so its picks are checked here, and a start with "
+        "nobody free who can is unavailable. Starts already gone, or inside "
+        "the services' notice, are offered but unavailable.\n\n"
         "Nothing is held: another customer may take a time before the party "
         "is booked. See docs/BOOKING_GROUP_API.md §3."
     ),
@@ -464,6 +506,10 @@ class GroupAvailabilityView(APIView):
             answers.update(zip(batch, entries))
 
         try:
+            if _checks_picks():
+                answers = self._qualified(
+                    salon, answers, visits, members, order, engine_day, clock, route, authorization
+                )
             found = gt.day_slots(
                 offered, answers, engine_day, members, order, clock, tz, roster, longest
             )
@@ -472,6 +518,64 @@ class GroupAvailabilityView(APIView):
             raise BookingApiDown() from exc
 
         return Response({**answer, "bands": gt.banded(offered, found, day_start)})
+
+    def _qualified(self, salon, answers, visits, members, order, engine_day, clock, route,
+                   authorization):
+        """
+        `answers` with every start booking-api says fits checked, lane by
+        lane: each member given someone who can do all of that member's
+        services (`_who_can_do`, a package's every part included), or the
+        start is not available.
+
+        booking-api checks no skills for the platform's services, so a member
+        with no chosen stylist gets whoever it finds free first, and the same
+        roster order gives the same wrong pick at every start where that
+        person is free. Striking those starts would strike most of a day a
+        party can be served on, so a start whose plan is wrong is first
+        shared out again among the professionals booking-api planned there
+        (gt.qualified_assignment: they are free at that start) and asked
+        again with every member pinned to their share: only booking-api
+        knows whether someone free for a cut is free for a longer package.
+        The starts one sharing fixes are asked in one call. A start with no
+        sharing, or that does not fit pinned, is unavailable; a plan that is
+        already right is kept as it came, and nothing more is asked.
+
+        `visits` are the members as performed (`_visits`); `members` are as
+        the app sent them, which is what booking-api is asked about.
+        """
+        picks = {
+            start: gt.lane_staff(entry.get("lanes"), order)
+            for start, entry in answers.items()
+            if isinstance(entry, dict) and entry.get("feasible")
+        }
+        if not picks:
+            return answers
+        can_do = _able(_who_can_do(salon, visits, [s for staff in picks.values() for s in staff]))
+
+        checked, repairs = dict(answers), {}
+        for start, staff in picks.items():
+            if all(can_do(m, s) for m, s in zip(visits, staff)):
+                continue
+            checked[start] = {"feasible": False}
+            pins = gt.qualified_assignment(visits, staff, can_do)
+            if pins is not None:
+                repairs.setdefault(tuple(pins), []).append(start)
+
+        for pins, starts in repairs.items():
+            pinned = [{**m, "stylist_id": pin} for m, pin in zip(members, pins)]
+            for batch in gt.batches(sorted(starts)):
+                code, entries = self._plan(batch, engine_day, clock, route, pinned, order, authorization)
+                if code is not None:
+                    # The same party with its stylists named: nothing new to
+                    # refuse. Those starts stay unavailable.
+                    logger.warning("booking-api refused a group plan with its stylists pinned: %s %r",
+                                   code, entries)
+                    continue
+                for start, entry in zip(batch, entries):
+                    if (isinstance(entry, dict) and entry.get("feasible")
+                            and gt.lane_staff(entry.get("lanes"), order) == list(pins)):
+                        checked[start] = entry
+        return checked
 
     @staticmethod
     def _plan(batch, engine_day, clock, route, members, order, authorization):
@@ -528,6 +632,14 @@ class SlotTaken(APIException):
     status_code = status.HTTP_409_CONFLICT
     default_detail = "That time no longer fits the whole party. Pick another time."
     default_code = "slot_taken"
+
+
+# slot_taken's words when booking-api held the party with someone who cannot
+# do a member's services and nobody it held can (GroupBookingCreateView._qualified_hold).
+NO_ABLE_STYLIST = (
+    "There is no stylist free at that time who can do all of each member's "
+    "services. Pick another time."
+)
 
 
 def _engine_sentence(body):
@@ -824,7 +936,8 @@ class GroupBookingCreateView(APIView):
         `slot_taken` included.
 
         `visits` and `packages` come from `_visits`: the party's length and
-        notice are read from the parts, and a package's line is named and
+        notice are read from the parts, the professionals held are checked
+        against them (`_qualified_hold`), and a package's line is named and
         priced as one line, at the package's price.
         """
         authorization = request.META.get("HTTP_AUTHORIZATION", "")
@@ -849,37 +962,34 @@ class GroupBookingCreateView(APIView):
 
         order = gt.booker_first(members)
         tenant = route["tenant_id"]
+        branch = route["branch_id"]
 
         # ---- hold. Every lane or none.
-        try:
-            code, held = hold_group(
-                gt.hold_body(route["branch_id"], engine_day, minute, members, order),
-                authorization=authorization, tenant_id=tenant,
-            )
-        except BookingApiUnavailable as exc:
-            # Unknown whether a hold was placed; if it was, nothing was
-            # booked on it and it lapses on its own in fifteen minutes.
-            raise BookingApiDown() from exc
-        if code == status.HTTP_409_CONFLICT:
-            # The party does not fit at that time. booking-api says why in
-            # words ("Only 1 professional can cover this party"), worth
-            # showing as they are.
-            raise SlotTaken(_engine_sentence(held))
-        if code not in (200, 201):
-            if code == 400:
-                logger.warning("booking-api refused a group hold body: %r", held)
-            return "refused", code, held
+        held, refused = self._hold(
+            gt.hold_body(branch, engine_day, minute, members, order), authorization, tenant
+        )
+        if refused is not None:
+            return ("refused", *refused)
 
-        group_id = (held or {}).get("groupId")
-        hold_id = (held or {}).get("holdId")
-        if not group_id or not hold_id:
-            logger.error("booking-api held a group without naming it: %r", held)
-            raise BookingApiDown()
+        # ---- who it holds, checked: booking-api checks no skills.
+        confirming, staff = members, None
+        if _checks_picks():
+            held, refused, staff = self._qualified_hold(
+                salon, held, visits, members, order, branch, engine_day, minute,
+                authorization, tenant,
+            )
+            if refused is not None:
+                return ("refused", *refused)
+            # Every member pinned to the professional held for them:
+            # booking-api re-plans on confirm, and left to itself it could
+            # move a member to someone else free, checked by nobody.
+            confirming = [{**m, "stylist_id": who} for m, who in zip(members, staff)]
+        group_id, hold_id = held["groupId"], held["holdId"]
 
         # ---- confirm. Anything but a booked party gives the lanes back.
         try:
             code, confirmed = confirm_group(
-                group_id, gt.confirm_body(hold_id, members, order),
+                group_id, gt.confirm_body(hold_id, confirming, order),
                 authorization=authorization, tenant_id=tenant,
             )
         except BookingApiUnavailable:
@@ -925,8 +1035,98 @@ class GroupBookingCreateView(APIView):
             return "unknown", None, group_id
         if problems:
             logger.error("group %s confirmed with unreadable parts: %s", group_id, problems)
+        if staff is not None:
+            try:
+                booked_with = gt.lane_staff((confirmed or {}).get("bookings"), order)
+            except ValueError:
+                booked_with = None
+            if booked_with != staff:
+                # Booked, so nothing to undo; but not with the professionals checked.
+                logger.error("group %s confirmed with stylists other than the ones it held: %r",
+                             group_id, confirmed)
 
         return "done", status.HTTP_201_CREATED, body
+
+    @staticmethod
+    def _hold(body, authorization, tenant):
+        """
+        One hold. Returns `(held, None)`, or `(None, (status, body))` for
+        booking-api's refusal to forward as it is. Raises SlotTaken when the
+        party does not fit, and BookingApiDown when booking-api cannot be
+        reached or names no hold.
+        """
+        try:
+            code, held = hold_group(body, authorization=authorization, tenant_id=tenant)
+        except BookingApiUnavailable as exc:
+            # Unknown whether a hold was placed; if it was, nothing was
+            # booked on it and it lapses on its own in fifteen minutes.
+            raise BookingApiDown() from exc
+        if code == status.HTTP_409_CONFLICT:
+            # The party does not fit at that time. booking-api says why in
+            # words ("Only 1 professional can cover this party"), worth
+            # showing as they are.
+            raise SlotTaken(_engine_sentence(held))
+        if code not in (200, 201):
+            if code == 400:
+                logger.warning("booking-api refused a group hold body: %r", held)
+            return None, (code, held)
+        if not (held or {}).get("groupId") or not (held or {}).get("holdId"):
+            logger.error("booking-api held a group without naming it: %r", held)
+            raise BookingApiDown()
+        return held, None
+
+    def _qualified_hold(self, salon, held, visits, members, order, branch, engine_day, minute,
+                        authorization, tenant):
+        """
+        The hold with each member's professional checked, as `(held, refused,
+        staff)`: `staff` is who it holds for each member, in the app's order,
+        and `refused` booking-api's refusal to forward when there is one.
+
+        booking-api checks no skills for the platform's services
+        (`_check_stylists`), so a member with no chosen stylist can be held
+        with someone who cannot do all of their services. Then that hold is
+        given back, and the party held again once, with the professionals it
+        held shared out so each member's can (gt.qualified_assignment) and
+        every member pinned to theirs: the same people at the same time,
+        booking-api deciding whether they are free for the lanes they now
+        take. No such sharing, or no fit pinned, is slot_taken: nothing is
+        booked. A hold that is already right is kept as it came.
+
+        A hold whose lanes cannot be read is given back too, and 503: a party
+        this cannot check is not confirmed.
+        """
+        try:
+            staff = gt.lane_staff(held.get("lanes"), order)
+        except ValueError:
+            logger.error("booking-api held a group without a lane per member: %r", held)
+            self._release(held["holdId"], authorization, tenant)
+            raise BookingApiDown() from None
+
+        can_do = _able(_who_can_do(salon, visits, staff))
+        if all(can_do(m, who) for m, who in zip(visits, staff)):
+            return held, None, staff
+
+        self._release(held["holdId"], authorization, tenant)
+        pins = gt.qualified_assignment(visits, staff, can_do)
+        if pins is None:
+            raise SlotTaken(NO_ABLE_STYLIST)
+
+        pinned = [{**m, "stylist_id": pin} for m, pin in zip(members, pins)]
+        held, refused = self._hold(
+            gt.hold_body(branch, engine_day, minute, pinned, order), authorization, tenant
+        )
+        if refused is not None:
+            return None, refused, None
+        try:
+            again = gt.lane_staff(held.get("lanes"), order)
+        except ValueError:
+            again = None
+        if again != pins:
+            logger.error("booking-api held group %s with other stylists than were pinned: %r",
+                         held.get("groupId"), held)
+            self._release(held["holdId"], authorization, tenant)
+            raise SlotTaken(NO_ABLE_STYLIST)
+        return held, None, pins
 
     def _book_v2(self, request, data, salon, route, tz, rows, idempotency_key, visits):
         """
@@ -984,7 +1184,51 @@ class GroupBookingCreateView(APIView):
             if code == 400:
                 logger.warning("booking-api refused a mobile group body: %r", answer)
             return Response(answer, status=code)
+        if _checks_picks():
+            self._log_unable_stylists(salon, answer, visits)
         return Response(gt.present_group(answer, salon_id=salon.id, tz=tz), status=code)
+
+    @staticmethod
+    def _log_unable_stylists(salon, answer, visits):
+        """
+        booking-api's own picks on its mobile route, checked once the party
+        is booked: an ERROR for each member with no chosen stylist who was
+        booked with someone unable to do all of their services, for the
+        salon to put right.
+
+        Only after, and only logged. That route holds and confirms in one
+        call, and booking-api checks no skills for the platform's services
+        (`_check_stylists`). Checking first and pinning the stylists would
+        send a retry a different body under the same Idempotency-Key, which
+        booking-api refuses instead of answering with the party already
+        booked. The app books the stylists availability's `plan` showed,
+        checked, by sending them as `stylist_id`.
+
+        Never fails the answer: the party is booked.
+        """
+        try:
+            by_ref = {m.get("ref"): m for m in answer.get("members") or [] if isinstance(m, dict)}
+            booked = []
+            for member in visits:
+                if member["stylist_id"]:
+                    continue
+                stylist = (by_ref.get(member["ref"]) or {}).get("stylist")
+                who = gt.staff_key(stylist.get("id")) if isinstance(stylist, dict) else None
+                if who is not None:
+                    booked.append((member, who))
+            if not booked:
+                return
+            can_do = _able(_who_can_do(salon, [m for m, _ in booked], [who for _, who in booked]))
+            for member, who in booked:
+                if not can_do(member, who):
+                    logger.error(
+                        "group %s: member %s was booked with stylist %s, who cannot do all of "
+                        "their services (booking-api checks no skills for the platform's)",
+                        answer.get("id"), member["ref"], who,
+                    )
+        except Exception:  # noqa: BLE001 -- the party is booked; nothing may undo that
+            logger.warning("could not check the stylists of group %s", answer.get("id"),
+                           exc_info=True)
 
     @staticmethod
     def _release(hold_id, authorization, tenant):
