@@ -26,7 +26,7 @@ shows:
 
 import uuid
 
-from .menu import is_on_menu, offered_at_branch, service_price_minor
+from .menu import is_on_menu, offered_at_branch, service_currency, service_price_minor
 from .money import major
 
 PARALLEL = "PARALLEL"
@@ -96,9 +96,13 @@ def _snapshot_item(item):
 
 def live_content(pkg, draft_items=()):
     """
-    `{name, description, price_minor, items}` as the customer sees them:
-    from the published snapshot, or from the row and `draft_items`
+    `{name, description, price_minor, currency, items}` as the customer sees
+    them: from the published snapshot, or from the row and `draft_items`
     (`selectors.package_item_rows`) when there is none.
+
+    `currency` is what `price_minor` is in: the snapshot freezes it with the
+    price (the platform's PackageSnapshot), and the row's is read when the
+    snapshot has none, as for the price.
 
     Each item is `{service_id, variant_id, quantity}`, in the package's own
     order.
@@ -109,6 +113,7 @@ def live_content(pkg, draft_items=()):
             "name": pkg.name,
             "description": text_or_none(pkg.description),
             "price_minor": pkg.price_minor,
+            "currency": pkg.currency,
             "items": [
                 {
                     "service_id": item["service_id"],
@@ -127,6 +132,7 @@ def live_content(pkg, draft_items=()):
         "name": text_or_none(snap.get("name")) or pkg.name,
         "description": text_or_none(snap.get("description")),
         "price_minor": price,
+        "currency": text_or_none(snap.get("currency")) or pkg.currency,
         "items": [_snapshot_item(i) for i in items] if isinstance(items, list) else [],
     }
 
@@ -139,10 +145,13 @@ def lines(items, services, variants):
     only, in whatever state they are in now). `variants` is
     `selectors.package_variant_rows` (id to row: live ones only).
 
-    Each line: `{service_id, name, description, unit_minor, minutes,
-    quantity, bookable, offered_here}`. `bookable` is the Services tab's own
-    rule (menu.is_on_menu); `offered_here` is the platform's branch rule
-    (menu.offered_at_branch), which only `can_book` reads.
+    Each line: `{service_id, name, description, unit_minor, currency,
+    minutes, quantity, bookable, offered_here}`. `currency` is the one
+    booking-api prices the service in here (menu.service_currency), the
+    service's and never a variant's: it books services, not their variants.
+    `bookable` is the Services tab's own rule (menu.is_on_menu);
+    `offered_here` is the platform's branch rule (menu.offered_at_branch).
+    Only `can_book` reads `currency` and `offered_here`.
 
     An item whose service is not there (another tenant's, removed, an id
     that could not be read) cannot be shown: it is left out and `complete`
@@ -174,6 +183,7 @@ def lines(items, services, variants):
             "name": svc["name"],
             "description": svc.get("description"),
             "unit_minor": unit,
+            "currency": service_currency(svc),
             "minutes": minutes,
             "quantity": item["quantity"],
             "bookable": is_on_menu(svc),
@@ -210,6 +220,30 @@ def _priced(minor):
     return isinstance(minor, int) and not isinstance(minor, bool) and minor > 0
 
 
+def _currency(code):
+    """
+    A currency code as booking-api compares them, upper case, and trimmed as
+    the platform writes them. Not text is ''.
+    """
+    return code.strip().upper() if isinstance(code, str) else ""
+
+
+def one_currency(content, package_lines):
+    """
+    True when the package is priced in the currency of every service in it,
+    as each is priced here (`lines`' `currency`).
+
+    booking-api adds a package's price and its services' up as one figure,
+    and refuses a basket that mixes currencies rather than convert them
+    (basket.ts: 422 BOOKING_CURRENCY_MIXED, its own package list leaving such
+    a package out). The platform has services in different currencies at
+    one branch (booking-api's errors.ts: Keratin in BDT, NO Kampos in AED).
+    A currency that cannot be read matches nothing.
+    """
+    currency = _currency(content["currency"])
+    return bool(currency) and all(_currency(line["currency"]) == currency for line in package_lines)
+
+
 def can_book(pkg, content, package_lines, complete):
     """
     Can it be booked here now, as one visit at its price
@@ -218,10 +252,11 @@ def can_book(pkg, content, package_lines, complete):
     platform-package-catalogue.ts, over the platform's ListPackages), on the
     content the customer is shown (`live_content`).
 
-    `is_active` as it is, and four things it does not look at: every
+    `is_active` as it is, and five things it does not look at: every
     service offered at this branch by the platform's branch rule
-    (`offered_here`), no item pinned to a variant, a price above 0, and
-    every service in it priced above 0 at this branch. A package dearer
+    (`offered_here`), no item pinned to a variant, a price above 0, every
+    service in it priced above 0 at this branch, and every service in it
+    priced in the package's own currency (`one_currency`). A package dearer
     than its services is still bookable: booking-api sells it at its price,
     saving nothing.
 
@@ -241,6 +276,7 @@ def can_book(pkg, content, package_lines, complete):
         and not pinned_to_variant(content["items"])
         and _priced(content["price_minor"])
         and all(_priced(line["unit_minor"]) for line in package_lines)
+        and one_currency(content, package_lines)
     )
 
 

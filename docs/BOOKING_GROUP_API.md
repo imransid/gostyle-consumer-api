@@ -539,10 +539,10 @@ slot search reads them (`BOOKING_NEAREST_AVAILABLE_API.md`).
 - **`package_not_bookable`** (`422`, on `service_ids` or `services`): a
   package of this salon's business that cannot be booked here now, by the
   `can_book` rule (published, online booking on, sold at this branch, every
-  service in it on the menu, offered at this branch and priced above 0
-  here, none pinned to a variant, a price above 0). Another business's
-  package, or one never on sale, is `foreign_id`, as is any id that is not
-  this salon's.
+  service in it on the menu, offered at this branch, priced above 0 here
+  and priced in the package's own currency, none pinned to a variant, a
+  price above 0). Another business's package, or one never on sale, is
+  `foreign_id`, as is any id that is not this salon's.
   - *Changed 2026-10-18: a service in it priced at 0 here.* booking-api
     refuses the whole basket for one service with no price above 0 (`409
     BOOKING_STATE_INVALID`, "That service has no usable price in the
@@ -550,6 +550,12 @@ slot search reads them (`BOOKING_NEAREST_AVAILABLE_API.md`).
     `slot_taken` from the old path's hold, so Pick a time could only loop.
     `can_book` is false for such a package now, and this is
     `package_not_bookable` before booking-api is asked.
+  - *Changed 2026-10-18: a service in it priced in another currency.* The
+    platform has services in different currencies at one branch, and
+    booking-api refuses a package priced in one currency with a service
+    priced in another here (`422 BOOKING_CURRENCY_MIXED`, below). The
+    service's currency here is its branch row's when the row names one,
+    else its own, as the platform's ListServices sends it.
 - **The stylist** (§5, item 4): a chosen stylist must be able to do every
   service in the package, or `stylist_mismatch`.
   `/salon/<id>/stylists?service_ids=` takes services only: ask it with the
@@ -569,6 +575,29 @@ slot search reads them (`BOOKING_NEAREST_AVAILABLE_API.md`).
 booking-api checks again. If it does not sell the package at this branch,
 its refusal is forwarded in its own shape (§7): on the mobile route `422
 unknown_service` on `members[i].services` ("Not sold at this salon: …").
+
+**One currency per member** (added 2026-10-18). booking-api adds a member's
+lines up as one figure and has no rate to convert with. `can_book` covers a
+package and its own services; what it cannot see is the member's basket. A
+package beside a hand-picked service priced in another currency (an AED
+package and a BDT Keratin) is refused by booking-api on availability, hold,
+confirm and its mobile route alike, as `422 BOOKING_CURRENCY_MIXED`, and
+forwarded **in booking-api's own envelope**, not this project's: no
+`errors[]`; read the top-level `code`.
+
+```json
+{
+  "statusCode": 422,
+  "code": "BOOKING_CURRENCY_MIXED",
+  "message": "This basket mixes AED and BDT. Prices in different currencies cannot be added, and there is no rate to convert them with.",
+  "details": { "currencies": ["AED", "BDT"] },
+  "error": "Unprocessable Entity"
+}
+```
+
+With `GROUP_BOOKING_V2`, members each in one currency but not the same one
+are refused by its mobile route as `422 currency_mismatch` on `members`
+(the app's envelope): one party pays in one currency.
 
 ### The money (`GROUP_BOOKING_V2`, booking-api's mobile route)
 

@@ -423,7 +423,9 @@ What A needed (section 3), and how it came:
   parts is sold at its price. And what booking it then needs
   (`basket.ts`, `platform-service-catalogue.ts`, found in review
   2026-10-18): every part priced above 0 at the branch, or the whole basket
-  is `409 BOOKING_STATE_INVALID`. `can_book` checks that too.
+  is `409 BOOKING_STATE_INVALID`; and the package and every part in one
+  currency, each part's as ListServices sends it (the branch row's, else the
+  service's), or it is `422 BOOKING_CURRENCY_MIXED`. `can_book` checks both.
 
 This service, branch `feat/package-booking` from `imransid/main` =
 `86507b4`, behind `PACKAGE_BOOKING_V1` (off) except the quote:

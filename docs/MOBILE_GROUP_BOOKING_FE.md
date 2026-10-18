@@ -426,11 +426,26 @@ Sami's member row, for example:
 
 | Code | Status | Field | When | App action |
 | --- | --- | --- | --- | --- |
-| `package_not_bookable` | 422 | `service_ids` / `services` | The package cannot be booked at this salon now: taken off sale, not sold at this branch, a service in it not offered here, pinned to a size or length, or with no price here (Changed 2026-10-18), or nothing to pay | Reload the Packages tab and take the package off that member. |
+| `package_not_bookable` | 422 | `service_ids` / `services` | The package cannot be booked at this salon now: taken off sale, not sold at this branch, a service in it not offered here, pinned to a size or length, with no price here or priced in another currency than the package (Changed 2026-10-18), or nothing to pay | Reload the Packages tab and take the package off that member. |
 | `foreign_id` | 422 | `service_ids` / `services` | Not a package of this salon at all, or the switch is off | Reload the salon's services and packages. |
 | `stylist_mismatch` | 422 | `stylist_id` | The chosen stylist cannot do every service in the package | Pick another stylist, or "any". |
 | `packages_not_supported` | 422 | `packages` | `members[].packages` was sent | Send the package as a line of `services` instead. |
 | `unknown_service` | 422 | `members[0].services` | The booking service does not sell that package here | Reload the Packages tab. |
+| `BOOKING_CURRENCY_MIXED` | 422 | none: the booking service's own envelope, read the top-level `code` | Added 2026-10-18. One member's package and a service picked beside it are priced in different currencies (an AED package and a BDT Keratin); availability and create both | Take the service or the package off that member. |
+
+**`BOOKING_CURRENCY_MIXED` comes in the booking service's own shape**, forwarded as it is, with no `errors` list:
+
+```json
+{
+  "statusCode": 422,
+  "code": "BOOKING_CURRENCY_MIXED",
+  "message": "This basket mixes AED and BDT. Prices in different currencies cannot be added, and there is no rate to convert them with.",
+  "details": { "currencies": ["AED", "BDT"] },
+  "error": "Unprocessable Entity"
+}
+```
+
+A package whose own services are in another currency never gets this far: its `can_book` is `false`, and sent anyway it is `package_not_bookable`.
 
 ## Read, My Bookings and cancel
 
@@ -487,7 +502,7 @@ No body. The booker cancels every member at once; the answer is `200` with the p
 
 ## Errors
 
-Every error uses one envelope; branch on `errors[0].code`, highlight `errors[0].field`, and show `message` or `detail`.
+Every error uses one envelope; branch on `errors[0].code`, highlight `errors[0].field`, and show `message` or `detail`. Some refusals come from the booking service in its own shape instead, `{statusCode, code, message, details, error}` with no `errors` (Changed 2026-10-18, this sentence), among them `IDEMPOTENCY_KEY_REUSED` (see Retries) and `BOOKING_CURRENCY_MIXED` (see Packages). With no `errors`, branch on the top-level `code`.
 
 ```json
 {

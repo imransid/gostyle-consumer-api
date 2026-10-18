@@ -376,7 +376,8 @@ live menu, exactly as the Package Details screen does:
 > `PACKAGE_DETAIL_API.md` §5. Absent while the switch is off: offer no Book
 > button then. A bundle can be listed and still have `can_book: false` (a
 > service in it is not offered at this branch, it names a size or length of
-> a service, it costs nothing, or a service in it costs nothing here).
+> a service, it costs nothing, or a service in it costs nothing here or is
+> priced in another currency than the package).
 
 ---
 

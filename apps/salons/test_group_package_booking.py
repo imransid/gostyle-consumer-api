@@ -129,6 +129,11 @@ def unbookable_cases():
         "a part priced 0 here": dict(
             packages=[groom()],
             svc={**PACKAGE_SERVICES, NAILS_ID: {**PACKAGE_SERVICES[NAILS_ID], "branch_price_minor": 0}}),
+        # An AED package whose nails this branch prices in BDT: booking-api's
+        # 422 BOOKING_CURRENCY_MIXED, in its own envelope, otherwise.
+        "a part in another currency": dict(
+            packages=[groom()],
+            svc={**PACKAGE_SERVICES, NAILS_ID: {**PACKAGE_SERVICES[NAILS_ID], "branch_currency": "BDT"}}),
     }
 
 

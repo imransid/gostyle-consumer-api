@@ -382,12 +382,15 @@ def package_service_rows(salon, service_ids):
 
     With what the platform's branch rule needs (menu.offered_at_branch):
     `branch_scoped`, the category, and this branch's rows for the service
-    and for its category. Two scalar subqueries in the same read.
+    and for its category. And the currency booking-api prices the service
+    in here (menu.service_currency): the service's own, and this branch's
+    row's. Scalar subqueries in the same read.
     """
     rows = (
         Service.objects.filter(id__in=service_ids, tenant_id=salon.tenant_id)
         .annotate(
             branch_price_minor=branch_price_minor(OuterRef("pk"), salon.branch_id),
+            branch_currency=branch_currency(OuterRef("pk"), salon.branch_id),
             branch_available=service_branch_available(OuterRef("pk"), salon.branch_id),
             category_branch_available=category_branch_available(
                 OuterRef("category_0_id"), salon.branch_id,
@@ -395,6 +398,7 @@ def package_service_rows(salon, service_ids):
         )
         .values(
             "id", "name", "description", "price_minor", "branch_price_minor",
+            "currency", "branch_currency",
             "duration_minutes", "status", "deleted_at", "online_booking_enabled",
             "branch_scoped", "category_0_id", "branch_available", "category_branch_available",
         )
@@ -610,6 +614,23 @@ def branch_price_minor(service_ref, branch_id):
             branch_id=branch_id,
         ).values("price_minor")[:1],
         output_field=IntegerField(),
+    )
+
+
+def branch_currency(service_ref, branch_id):
+    """
+    The currency of one service's own price at one branch, as a subquery:
+    `service_branch_availability.currency`, or NULL when the branch has no
+    row for the service or a row with no currency. Beside branch_price_minor
+    and read the same way: menu.service_currency turns it into the currency
+    booking-api prices the service in here.
+    """
+    return Subquery(
+        ServiceBranchAvailability.objects.filter(
+            service_id=service_ref,
+            branch_id=branch_id,
+        ).values("currency")[:1],
+        output_field=TextField(),
     )
 
 

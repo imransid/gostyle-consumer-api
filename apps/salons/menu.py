@@ -41,6 +41,23 @@ def service_price_minor(svc):
     return branch if branch is not None else base
 
 
+def service_currency(svc):
+    """
+    The currency `service_price_minor` is in, by the same rule: the
+    platform's ListServices sends `override?.currency ?? s.currency`, so the
+    branch row's currency when it has one, else the service's own. A row's
+    price and its currency fall back separately, as they do there.
+
+    `svc` as for `service_price_minor`, with `currency` and
+    `branch_currency` (selectors.package_service_rows reads both).
+    """
+    if isinstance(svc, dict):
+        base, branch = svc.get("currency"), svc.get("branch_currency")
+    else:
+        base, branch = getattr(svc, "currency", None), getattr(svc, "branch_currency", None)
+    return branch if branch is not None else base
+
+
 def category_chip(categories, category_id):
     """
     `{id, label, icon}` of the chip a service is filed under on the tab: its

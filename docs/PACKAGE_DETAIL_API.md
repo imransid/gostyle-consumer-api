@@ -207,9 +207,11 @@ else. Minutes are whole numbers.
   the service and its category), no included service pinned to a size or
   length (a variant: booking-api books services, not their variants), a
   `price` above 0, and every included service priced above 0 at this branch
-  (changed 2026-10-18: booking-api refuses the whole booking for one service
-  with no price). A package dearer than its services can be booked: it is
-  sold at its price. The Packages tab's `can_book` is the same rule.
+  and in the package's own currency (changed 2026-10-18: booking-api refuses
+  the whole booking for one service with no price, and for a package and a
+  service in two currencies). A package dearer than its services can be
+  booked: it is sold at its price. The Packages tab's `can_book` is the same
+  rule.
 - **Plain text only.** `description` and `terms` are sent as the salon typed
   them, trimmed. Blank is `null`.
 - **Nothing is booked or held.** It is a read.

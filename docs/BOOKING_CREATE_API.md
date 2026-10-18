@@ -469,14 +469,16 @@ booking-api's fields, forwarded untouched:
 | Package Details, a Packages tab bundle | `can_book: false`: hide the button |
 | The slot search, if it changed after the screen was drawn | `422` `package_not_bookable` on `service_ids` |
 | The quote or create, if booking-api does not sell it here | `422` `unknown_service` ("Not sold at this salon: …") |
+| The quote or create, with a service beside it priced in another currency | `422` `BOOKING_CURRENCY_MIXED`, in booking-api's own shape (`{statusCode, code, message, details, error}`, no `errors`): take one of them off (added 2026-10-18) |
 
 `can_book` is true only when booking-api would sell it: published, online
 booking on, sold at this branch, every part on the menu and offered at this
 branch (the platform's branch rule, for the service and its category), no
 part pinned to a size or length of a service (a variant), a price above 0,
-and every part priced above 0 at this branch (changed 2026-10-18: booking-api
-refuses the whole basket for one part with no price, `409
-BOOKING_STATE_INVALID`).
+every part priced above 0 at this branch, and every part priced in the
+package's own currency here (changed 2026-10-18: booking-api refuses the
+whole basket for one part with no price, `409 BOOKING_STATE_INVALID`, and
+for a package and a part in two currencies, `422 BOOKING_CURRENCY_MIXED`).
 
 ### Not built
 

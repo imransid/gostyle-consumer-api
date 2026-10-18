@@ -214,6 +214,10 @@ class SlotSearchWithAPackageTests(SlotSearchSeams, SimpleTestCase):
             # booking-api's catalogue would refuse the whole basket (409).
             "a part priced 0 here": dict(packages=[package_row()],
                                          svc=services(beard={"branch_price_minor": 0})),
+            # An AED package holding a service priced in BDT here: 422
+            # BOOKING_CURRENCY_MIXED from booking-api otherwise.
+            "a part in another currency": dict(packages=[package_row()],
+                                               svc=services(towel={"currency": "BDT"})),
         }
         for name, kwargs in cases.items():
             with self.subTest(name):

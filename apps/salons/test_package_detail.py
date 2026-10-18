@@ -189,6 +189,7 @@ def package_row(package_id=PACKAGE, **overrides):
         "name": "The Full Groom (draft)",
         "description": "Draft text.",
         "price_minor": 50000,
+        "currency": "AED",
         "status": "PUBLISHED",
         "deleted_at": None,
         "online_booking_enabled": True,
@@ -212,6 +213,8 @@ def service(service_id, name, price_minor, minutes, **overrides):
         "description": None,
         "price_minor": price_minor,
         "branch_price_minor": None,
+        "currency": "AED",
+        "branch_currency": None,
         "duration_minutes": minutes,
         "status": "PUBLISHED",
         "deleted_at": None,
@@ -285,6 +288,7 @@ class LiveContentTests(SimpleTestCase):
             "name": "The Full Groom",
             "description": "The complete reset: cut, beard, hot towel.",
             "price_minor": 46000,
+            "currency": "AED",
             "items": [item(CUT), item(BEARD), item(TOWEL)],
         })
 
@@ -295,6 +299,7 @@ class LiveContentTests(SimpleTestCase):
             "name": "The Full Groom (draft)",
             "description": "Draft text.",
             "price_minor": 50000,
+            "currency": "AED",
             "items": [item(TOWEL, quantity=2)],
         })
 
@@ -334,6 +339,16 @@ class LiveContentTests(SimpleTestCase):
         content = packages.live_content(package_row(published_snapshot=snap(items="x")))
         self.assertEqual(content["items"], [])
 
+    def test_the_currency_is_frozen_with_the_price(self):
+        # The snapshot's beside its price; the row's for a snapshot with none,
+        # and for a package never published.
+        for pkg, currency in ((package_row(currency="AED", published_snapshot=snap(currency="BDT")), "BDT"),
+                              (package_row(currency="AED", published_snapshot=snap(currency=" ")), "AED"),
+                              (package_row(currency="AED", published_snapshot=snap(currency=None)), "AED"),
+                              (package_row(currency="BDT", published_snapshot=None), "BDT")):
+            with self.subTest(currency=currency):
+                self.assertEqual(packages.live_content(pkg)["currency"], currency)
+
 
 class LinesTests(SimpleTestCase):
     """packages.lines: each item's price and minutes here (F3), bookable (F4)."""
@@ -343,11 +358,11 @@ class LinesTests(SimpleTestCase):
         self.assertTrue(complete)
         self.assertEqual(rows, [
             {"service_id": TOWEL, "name": "Hot Towel Shave", "description": "A straight razor.",
-             "unit_minor": 26000, "minutes": 25, "quantity": 1, "bookable": True,
-             "offered_here": True},
+             "unit_minor": 26000, "currency": "AED", "minutes": 25, "quantity": 1,
+             "bookable": True, "offered_here": True},
             {"service_id": CUT, "name": "The Gentleman's Cut", "description": "Cut, wash and style.",
-             "unit_minor": 19900, "minutes": 30, "quantity": 1, "bookable": True,
-             "offered_here": True},
+             "unit_minor": 19900, "currency": "AED", "minutes": 30, "quantity": 1,
+             "bookable": True, "offered_here": True},
         ])
 
     def test_this_branch_s_price(self):
@@ -355,6 +370,19 @@ class LinesTests(SimpleTestCase):
             with self.subTest(branch=branch):
                 rows, _ = lines_for([item(CUT)], services(cut={"branch_price_minor": branch}))
                 self.assertEqual(rows[0]["unit_minor"], unit)
+
+    def test_this_branch_s_currency(self):
+        # The branch row's when it names one, else the service's own: what
+        # ListServices sends booking-api. A variant does not change it.
+        for change, currency in (({"currency": "BDT"}, "BDT"),
+                                 ({"currency": "BDT", "branch_currency": "AED"}, "AED"),
+                                 ({"branch_currency": "BDT"}, "BDT")):
+            with self.subTest(**change):
+                rows, _ = lines_for([item(CUT)], services(cut=change))
+                self.assertEqual(rows[0]["currency"], currency)
+        rows, _ = lines_for([item(CUT, LONG_HAIR)], services(cut={"currency": "BDT"}),
+                            variants={LONG_HAIR: variant()})
+        self.assertEqual(rows[0]["currency"], "BDT")
 
     def test_a_variant_sets_price_and_minutes(self):
         rows, _ = lines_for([item(CUT, LONG_HAIR)], variants={LONG_HAIR: variant()})
@@ -482,6 +510,31 @@ class CanBookTests(SimpleTestCase):
     def test_a_branch_price_above_0_sells_a_service_whose_own_price_is_0(self):
         self.assertTrue(self.can_book(svc=services(beard={"price_minor": 0,
                                                           "branch_price_minor": 15000})))
+
+    def test_not_when_a_service_in_it_is_priced_in_another_currency(self):
+        # booking-api adds the package and its services up as one figure and
+        # refuses a mix (422 BOOKING_CURRENCY_MIXED): an AED package holding
+        # Keratin priced in BDT, by the service or by this branch's row.
+        for change in ({"currency": "BDT"}, {"branch_currency": "BDT"}):
+            with self.subTest(**change):
+                pkg = package_row()
+                content = packages.live_content(pkg)
+                rows, complete = packages.lines(content["items"], services(towel=change), {})
+                self.assertTrue(packages.is_active(pkg, rows, complete))
+                self.assertFalse(packages.can_book(pkg, content, rows, complete))
+        # Priced in BDT itself, its services in AED: the same mix.
+        self.assertFalse(self.can_book(package_row(published_snapshot=snap(currency="BDT"))))
+
+    def test_one_currency_is_the_branch_s_and_any_case(self):
+        # This branch prices the service in the package's currency: one figure.
+        self.assertTrue(self.can_book(svc=services(towel={"currency": "BDT",
+                                                          "branch_currency": "AED"})))
+        # booking-api compares the codes upper-cased.
+        self.assertTrue(self.can_book(package_row(published_snapshot=snap(currency="aed"))))
+        # A currency that cannot be read matches none.
+        for change in ({"currency": None}, {"currency": ""}):
+            with self.subTest(**change):
+                self.assertFalse(self.can_book(svc=services(cut=change)))
 
     def test_a_package_dearer_than_its_services_is_still_sold_at_its_price(self):
         pkg = package_row(published_snapshot=snap(priceMinor=90000))
@@ -639,6 +692,23 @@ class PackageSelectorTests(SimpleTestCase):
         service.objects.filter.assert_called_once_with(id__in={CUT}, tenant_id=TENANT)
         price.assert_called_once_with(OuterRef("pk"), BRANCH)
         self.assertEqual(answer, {CUT: {"id": CUT, "name": "Cut"}})
+
+    def test_services_read_the_currency_they_are_priced_in_here(self):
+        with mock.patch.object(selectors, "Service") as service, \
+                mock.patch.object(selectors, "branch_currency", return_value="cur") as currency:
+            selectors.package_service_rows(self.salon, {CUT})
+        currency.assert_called_once_with(OuterRef("pk"), BRANCH)
+        annotate = service.objects.filter.return_value.annotate
+        self.assertEqual(annotate.call_args.kwargs["branch_currency"], "cur")
+        fields = annotate.return_value.values.call_args.args
+        for name in ("currency", "branch_currency"):
+            self.assertIn(name, fields)
+
+    def test_the_branch_currency_is_this_branch_s_row_s(self):
+        with mock.patch.object(selectors, "ServiceBranchAvailability") as rows:
+            selectors.branch_currency(OuterRef("pk"), BRANCH)
+        rows.objects.filter.assert_called_once_with(service_id=OuterRef("pk"), branch_id=BRANCH)
+        rows.objects.filter.return_value.values.assert_called_once_with("currency")
 
     def test_services_read_what_the_branch_rule_needs_in_the_same_query(self):
         with mock.patch.object(selectors, "Service") as service, \
@@ -904,6 +974,15 @@ class MenuForPackagesTests(SimpleTestCase):
                 minor = menu.service_price_minor(row)
                 self.assertEqual(minor, 19900 if branch is None else branch)
                 self.assertEqual(menu.service_price(row), Decimal(minor) / 100)
+
+    def test_service_currency_is_list_services_rule(self):
+        # `override?.currency ?? s.currency`, apart from the price: a branch
+        # row with a price and no currency keeps the service's currency.
+        for branch, currency in ((None, "AED"), ("BDT", "BDT")):
+            with self.subTest(branch=branch):
+                row = service(CUT, "Cut", 19900, 30, branch_price_minor=15000, branch_currency=branch)
+                self.assertEqual(menu.service_currency(row), currency)
+                self.assertEqual(menu.service_currency(types.SimpleNamespace(**row)), currency)
 
     def test_offered_at_branch_is_the_platform_s_rule(self):
         # The cases of gostyle-platform's branch-visibility.spec.ts, in its order.
