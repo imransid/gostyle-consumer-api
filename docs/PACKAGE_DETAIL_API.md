@@ -205,8 +205,10 @@ else. Minutes are whole numbers.
   booking-api would sell the package as one booking: `is_active`, and every
   included service offered at this branch (the platform's branch rule, for
   the service and its category), no included service pinned to a size or
-  length (a variant: booking-api books services, not their variants), and a
-  `price` above 0. A package dearer than its services can be booked: it is
+  length (a variant: booking-api books services, not their variants), a
+  `price` above 0, and every included service priced above 0 at this branch
+  (changed 2026-10-18: booking-api refuses the whole booking for one service
+  with no price). A package dearer than its services can be booked: it is
   sold at its price. The Packages tab's `can_book` is the same rule.
 - **Plain text only.** `description` and `terms` are sent as the salon typed
   them, trimmed. Blank is `null`.

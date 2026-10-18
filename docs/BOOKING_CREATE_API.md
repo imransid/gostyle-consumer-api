@@ -473,7 +473,10 @@ booking-api's fields, forwarded untouched:
 `can_book` is true only when booking-api would sell it: published, online
 booking on, sold at this branch, every part on the menu and offered at this
 branch (the platform's branch rule, for the service and its category), no
-part pinned to a size or length of a service (a variant), and a price above 0.
+part pinned to a size or length of a service (a variant), a price above 0,
+and every part priced above 0 at this branch (changed 2026-10-18: booking-api
+refuses the whole basket for one part with no price, `409
+BOOKING_STATE_INVALID`).
 
 ### Not built
 

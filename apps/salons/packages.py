@@ -205,6 +205,11 @@ def pinned_to_variant(items):
     return any(item["variant_id"] for item in items)
 
 
+def _priced(minor):
+    """A price booking-api will charge: a whole number of minor units above 0."""
+    return isinstance(minor, int) and not isinstance(minor, bool) and minor > 0
+
+
 def can_book(pkg, content, package_lines, complete):
     """
     Can it be booked here now, as one visit at its price
@@ -213,19 +218,29 @@ def can_book(pkg, content, package_lines, complete):
     platform-package-catalogue.ts, over the platform's ListPackages), on the
     content the customer is shown (`live_content`).
 
-    `is_active` as it is, and three things it does not look at: every
+    `is_active` as it is, and four things it does not look at: every
     service offered at this branch by the platform's branch rule
-    (`offered_here`), no item pinned to a variant, and a price above 0. A
-    package dearer than its services is still bookable: booking-api sells
-    it at its price, saving nothing.
+    (`offered_here`), no item pinned to a variant, a price above 0, and
+    every service in it priced above 0 at this branch. A package dearer
+    than its services is still bookable: booking-api sells it at its price,
+    saving nothing.
+
+    A SERVICE PRICED AT NOTHING SPOILS THE WHOLE PACKAGE. booking-api loads
+    a package's services to price and time them, and its catalogue refuses
+    the whole load for one whose price here is not above 0
+    (platform-service-catalogue.ts: 409 BOOKING_STATE_INVALID, "That
+    service has no usable price in the catalogue."), on availability, hold
+    and create alike. `unit_minor` is that price: this branch's when the
+    salon set one, 0 included, else the service's own, as ListServices
+    sends it (menu.service_price_minor). Every line here names no variant,
+    or the package is refused already.
     """
-    price = content["price_minor"]
     return (
         is_active(pkg, package_lines, complete)
         and all(line["offered_here"] for line in package_lines)
         and not pinned_to_variant(content["items"])
-        and isinstance(price, int)
-        and price > 0
+        and _priced(content["price_minor"])
+        and all(_priced(line["unit_minor"]) for line in package_lines)
     )
 
 

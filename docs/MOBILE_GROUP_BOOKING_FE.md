@@ -426,7 +426,7 @@ Sami's member row, for example:
 
 | Code | Status | Field | When | App action |
 | --- | --- | --- | --- | --- |
-| `package_not_bookable` | 422 | `service_ids` / `services` | The package cannot be booked at this salon now: taken off sale, not sold at this branch, a service in it not offered here or pinned to a size or length, or nothing to pay | Reload the Packages tab and take the package off that member. |
+| `package_not_bookable` | 422 | `service_ids` / `services` | The package cannot be booked at this salon now: taken off sale, not sold at this branch, a service in it not offered here, pinned to a size or length, or with no price here (Changed 2026-10-18), or nothing to pay | Reload the Packages tab and take the package off that member. |
 | `foreign_id` | 422 | `service_ids` / `services` | Not a package of this salon at all, or the switch is off | Reload the salon's services and packages. |
 | `stylist_mismatch` | 422 | `stylist_id` | The chosen stylist cannot do every service in the package | Pick another stylist, or "any". |
 | `packages_not_supported` | 422 | `packages` | `members[].packages` was sent | Send the package as a line of `services` instead. |

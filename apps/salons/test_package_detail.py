@@ -465,6 +465,24 @@ class CanBookTests(SimpleTestCase):
     def test_not_at_a_price_of_0(self):
         self.assertFalse(self.can_book(package_row(published_snapshot=snap(priceMinor=0))))
 
+    def test_not_when_a_service_in_it_is_priced_0_here(self):
+        # booking-api's catalogue refuses the whole basket for one service at
+        # nothing (409 BOOKING_STATE_INVALID). This branch's 0 is a 0, and so
+        # is a service's own 0 with no branch price set.
+        for change in ({"branch_price_minor": 0},
+                       {"price_minor": 0, "branch_price_minor": None}):
+            with self.subTest(**change):
+                pkg = package_row()
+                content = packages.live_content(pkg)
+                rows, complete = packages.lines(content["items"], services(beard=change), {})
+                # Still active and still listed: only booking it is refused.
+                self.assertTrue(packages.is_active(pkg, rows, complete))
+                self.assertFalse(packages.can_book(pkg, content, rows, complete))
+
+    def test_a_branch_price_above_0_sells_a_service_whose_own_price_is_0(self):
+        self.assertTrue(self.can_book(svc=services(beard={"price_minor": 0,
+                                                          "branch_price_minor": 15000})))
+
     def test_a_package_dearer_than_its_services_is_still_sold_at_its_price(self):
         pkg = package_row(published_snapshot=snap(priceMinor=90000))
         content = packages.live_content(pkg)
@@ -801,7 +819,8 @@ class LiveTabTests(Reads, SimpleTestCase):
 
     def test_the_tab_and_the_detail_say_the_same(self):
         for svc in (services(), services(cut={"branch_available": False}),
-                    services(beard={"branch_scoped": True})):
+                    services(beard={"branch_scoped": True}),
+                    services(towel={"branch_price_minor": 0})):
             with self.subTest(svc=svc), override_settings(PACKAGE_BOOKING_V1=True):
                 tab = self.tab([package_row()], svc=svc)["bundles"][0]["can_book"]
                 detail = DetailSeams.call(self, svc=svc).json()["can_book"]

@@ -211,6 +211,9 @@ class SlotSearchWithAPackageTests(SlotSearchSeams, SimpleTestCase):
                 packages=[package_row(published_snapshot=snap([snap_item(CUT, LONG_HAIR)]))],
                 variants={LONG_HAIR: variant()}),
             "free": dict(packages=[package_row(published_snapshot=snap(priceMinor=0))]),
+            # booking-api's catalogue would refuse the whole basket (409).
+            "a part priced 0 here": dict(packages=[package_row()],
+                                         svc=services(beard={"branch_price_minor": 0})),
         }
         for name, kwargs in cases.items():
             with self.subTest(name):

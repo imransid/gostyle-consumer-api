@@ -124,6 +124,11 @@ def unbookable_cases():
             packages=[a_package([snap_item(CUT_ID, LONG_HAIR)])],
             variants={LONG_HAIR: variant(service_id=CUT_ID)}),
         "free": dict(packages=[a_package([snap_item(CUT_ID)], price_minor=0)]),
+        # booking-api's catalogue refuses the whole basket for it (409
+        # BOOKING_STATE_INVALID), on availability, hold and create alike.
+        "a part priced 0 here": dict(
+            packages=[groom()],
+            svc={**PACKAGE_SERVICES, NAILS_ID: {**PACKAGE_SERVICES[NAILS_ID], "branch_price_minor": 0}}),
     }
 
 

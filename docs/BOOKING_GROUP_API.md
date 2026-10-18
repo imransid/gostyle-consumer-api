@@ -539,9 +539,17 @@ slot search reads them (`BOOKING_NEAREST_AVAILABLE_API.md`).
 - **`package_not_bookable`** (`422`, on `service_ids` or `services`): a
   package of this salon's business that cannot be booked here now, by the
   `can_book` rule (published, online booking on, sold at this branch, every
-  service in it on the menu and offered at this branch, none pinned to a
-  variant, a price above 0). Another business's package, or one never on
-  sale, is `foreign_id`, as is any id that is not this salon's.
+  service in it on the menu, offered at this branch and priced above 0
+  here, none pinned to a variant, a price above 0). Another business's
+  package, or one never on sale, is `foreign_id`, as is any id that is not
+  this salon's.
+  - *Changed 2026-10-18: a service in it priced at 0 here.* booking-api
+    refuses the whole basket for one service with no price above 0 (`409
+    BOOKING_STATE_INVALID`, "That service has no usable price in the
+    catalogue."), which reached the app raw from availability and as
+    `slot_taken` from the old path's hold, so Pick a time could only loop.
+    `can_book` is false for such a package now, and this is
+    `package_not_bookable` before booking-api is asked.
 - **The stylist** (§5, item 4): a chosen stylist must be able to do every
   service in the package, or `stylist_mismatch`.
   `/salon/<id>/stylists?service_ids=` takes services only: ask it with the
