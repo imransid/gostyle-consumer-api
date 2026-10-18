@@ -38,6 +38,15 @@ MAX_MEMBERS = 8
 SELF, REGISTERED, GUEST = "self", "registered", "guest"
 ADULT, CHILD = "adult", "child"
 
+# `members[].packages` is refused either way (`packages_not_supported`). Off,
+# in the words it always had; with PACKAGE_BOOKING_V1 on, saying where a
+# package goes instead.
+PACKAGES_REFUSED = "Group bookings cannot include packages yet. Choose the services instead."
+PACKAGES_AS_A_LINE = (
+    "Send a package as one of this member's services instead: the package's "
+    "id, with its price as the amount."
+)
+
 
 def _refusal(message, code, field=None):
     detail = ErrorDetail(message, code=code)
@@ -278,7 +287,12 @@ class BookingMemberSerializer(serializers.Serializer):
         child=serializers.JSONField(),
         required=False,
         default=list,
-        help_text="Must be empty, for the same reason as products.",
+        help_text=(
+            "Must be empty, for the same reason as products. With "
+            "PACKAGE_BOOKING_V1 on a member may have a package, but as a line "
+            "of `services` ({id: the package's id, amount: its price}), never "
+            "here: anything here is still `packages_not_supported`."
+        ),
     )
     stylist_id = serializers.UUIDField(
         required=False,
@@ -305,9 +319,15 @@ class BookingMemberSerializer(serializers.Serializer):
         return [_product_line(line) for line in value]
 
     def validate_packages(self, value):
+        """
+        Always refused, never dropped: a package left out would leave a
+        customer believing it was booked. With PACKAGE_BOOKING_V1 on a member
+        may have one, in ONE shape, a line of `services`, so the refusal says
+        where to send it instead.
+        """
         if value:
             raise serializers.ValidationError(
-                "Group bookings cannot include packages yet. Choose the services instead.",
+                PACKAGES_AS_A_LINE if settings.PACKAGE_BOOKING_V1 else PACKAGES_REFUSED,
                 code="packages_not_supported",
             )
         return value

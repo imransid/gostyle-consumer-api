@@ -22,6 +22,11 @@ from unittest import mock
 from django.core.cache import cache
 from django.test import SimpleTestCase, override_settings
 
+from apps.salons.group_serializers import (
+    PACKAGES_AS_A_LINE,
+    PACKAGES_REFUSED,
+    GroupBookingRequestSerializer,
+)
 from apps.salons.group_views import GroupAvailabilityView, GroupBookingCreateView
 from apps.salons.test_group_booking import (
     ANYA,
@@ -32,11 +37,13 @@ from apps.salons.test_group_booking import (
     NAILS,
     RANA,
     STAFF,
+    USER_ID,
     ViewSeams,
     at,
     availability_body,
     booking_body,
     confirmed_answer,
+    party,
 )
 from apps.salons.test_group_booking_v2 import ANSWER
 from apps.salons.test_package_detail import (
@@ -468,3 +475,55 @@ class OldPathWithAPackageTests(PackageSeams, SimpleTestCase):
                                  visit_of({2: [PACKAGE]}, booking_body()))
         self.assert_not_bookable(response, "services")
         s.hold_group.assert_not_called()
+
+
+# ------------------------------------------------------------ members[].packages
+
+
+class MembersPackagesFieldTests(PackageSeams, SimpleTestCase):
+    """
+    `members[].packages` is refused with the switch on or off: a package has
+    one shape, a line of `services`. On, the refusal says so.
+    """
+
+    PATH = "/api/v1/booking/group"
+
+    def body(self):
+        members = party()
+        members[2]["packages"] = [{"id": str(PACKAGE), "amount": 370}]
+        return booking_body(members=members)
+
+    def refusal(self, flag):
+        with override_settings(PACKAGE_BOOKING_V1=flag):
+            s = GroupBookingRequestSerializer(data=self.body(), context={"booker_id": USER_ID})
+            self.assertFalse(s.is_valid())
+        return s.errors["members"][2]["packages"]
+
+    def test_off_the_words_it_always_had(self):
+        self.assertEqual(PACKAGES_REFUSED,
+                         "Group bookings cannot include packages yet. Choose the services instead.")
+        [error] = self.refusal(False)
+        self.assertEqual((error.code, str(error)), ("packages_not_supported", PACKAGES_REFUSED))
+
+    def test_on_still_refused_and_says_to_send_a_services_line(self):
+        [error] = self.refusal(True)
+        self.assertEqual((error.code, str(error)), ("packages_not_supported", PACKAGES_AS_A_LINE))
+        self.assertIn("one of this member's services", PACKAGES_AS_A_LINE)
+
+    def test_empty_is_fine_either_way(self):
+        for flag in (False, True):
+            members = party()
+            members[2]["packages"] = []
+            with self.subTest(flag=flag), override_settings(PACKAGE_BOOKING_V1=flag):
+                s = GroupBookingRequestSerializer(data=booking_body(members=members),
+                                                  context={"booker_id": USER_ID})
+                self.assertTrue(s.is_valid(), s.errors)
+
+    def test_the_view_refuses_it_before_anything_is_read_or_asked(self):
+        for flag, message in ((False, PACKAGES_REFUSED), (True, PACKAGES_AS_A_LINE)):
+            with self.subTest(flag=flag), self.with_packages([groom()], flag=flag) as s:
+                response = self.post(GroupBookingCreateView, self.PATH, self.body())
+                self.assert_refused(response, "packages_not_supported", "packages")
+                self.assertEqual(response.data["errors"][0]["message"], message)
+                self.packages_read.assert_not_called()
+                s.hold_group.assert_not_called()
