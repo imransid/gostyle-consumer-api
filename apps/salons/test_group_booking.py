@@ -919,6 +919,16 @@ class PartyChecks:
         self.assertEqual(service_ids, [uuid.UUID(NAILS)])
 
 
+# The view tests' switch, pinned whatever the environment says: these are
+# the views without packages. With PACKAGE_BOOKING_V1 on, group_views._visits
+# reads the package tables (packages_for_salon), which these seams do not
+# replace, and booking-api's own stylist picks are checked
+# (group_views._checks_picks). test_group_package_booking drives both, with
+# the package reads mocked and the switch set test by test.
+PACKAGES_OFF = {"PACKAGE_BOOKING_V1": False}
+
+
+@override_settings(**PACKAGES_OFF)
 class GroupAvailabilityViewTests(PartyChecks, ViewSeams, SimpleTestCase):
     PATH = "/api/v1/booking/group-availability"
     SERVICES_FIELD = "service_ids"
@@ -1047,7 +1057,7 @@ class GroupAvailabilityViewTests(PartyChecks, ViewSeams, SimpleTestCase):
         s.plan_group.assert_not_called()
 
 
-@override_settings(CACHES={"default": {
+@override_settings(**PACKAGES_OFF, CACHES={"default": {
     "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
     "LOCATION": "group-booking-tests",
 }})
