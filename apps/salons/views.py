@@ -1433,6 +1433,52 @@ def _appointment_minutes(service_ids, timing):
 PACKAGE_NOT_BOOKABLE = "This package cannot be booked at this salon right now."
 
 
+def _bookable_packages(salon, ids, field="service_ids"):
+    """
+    The packages among `ids` (PACKAGE_BOOKING_V1), as `{id: (content,
+    parts)}`, keyed by the package's id as text. One read for all of them
+    (packages_for_salon, then package_lines' three), whatever their number.
+
+    `content` is the live content the Package Details screen shows (the
+    published snapshot's name, price and items). `parts` is the services one
+    booking of the package performs, each as many times as the package holds
+    it (packages.parts), as booking-api expands it. An id that is no package
+    of this salon's business is not in the answer.
+
+    A package of this salon's business that packages.can_book refuses is a
+    422 on `field`, package_not_bookable, rather than an answer about
+    something nobody can book.
+
+    THE ONE EXPANSION. Whatever needs a package's parts reads them here (the
+    slot search, `_with_packages_as_parts`), so a package is the same visit
+    wherever it is booked.
+    """
+    rows = packages_for_salon(salon, ids)
+    if not rows:
+        return {}
+
+    reads = package_lines(salon, rows)
+    found = {}
+    for row in rows:
+        content, lines, complete = reads[row.id]
+        if not package_rules.can_book(row, content, lines, complete):
+            raise _invalid(ParamError(field, PACKAGE_NOT_BOOKABLE, code="package_not_bookable"))
+        found[str(row.id)] = (content, package_rules.parts(lines))
+    return found
+
+
+def _as_parts(ids, packages):
+    """
+    `ids` with each of `packages` (`_bookable_packages`) among them replaced
+    by its parts, in the order asked. Any other id is left as it was sent.
+    """
+    out = []
+    for id_ in ids:
+        found = packages.get(str(id_))
+        out.extend([id_] if found is None else found[1])
+    return out
+
+
 def _with_packages_as_parts(salon, service_ids):
     """
     `service_ids` with every package among them replaced by its parts
@@ -1449,24 +1495,7 @@ def _with_packages_as_parts(salon, service_ids):
     422, package_not_bookable, rather than a search for something nobody can
     book. Any other id is left as it was sent, and is answered as before.
     """
-    rows = {row.id: row for row in packages_for_salon(salon, service_ids)}
-    if not rows:
-        return list(service_ids)
-
-    reads = package_lines(salon, list(rows.values()))
-    visit = []
-    for service_id in service_ids:
-        row = rows.get(service_id)
-        if row is None:
-            visit.append(service_id)
-            continue
-        content, lines, complete = reads[row.id]
-        if not package_rules.can_book(row, content, lines, complete):
-            raise _invalid(ParamError(
-                "service_ids", PACKAGE_NOT_BOOKABLE, code="package_not_bookable",
-            ))
-        visit.extend(package_rules.parts(lines))
-    return visit
+    return _as_parts(service_ids, _bookable_packages(salon, service_ids))
 
 
 def _qualified_stylists(salon, service_ids, stylist_id):
