@@ -774,8 +774,10 @@ class SalonPackagesView(APIView):
     PACKAGES_LIVE_RULES_V1 on: the bundles follow the platform's own rules,
     the Package Details screen's (packages.py). Off: as before.
 
-    PACKAGE_BOOKING_V1 on: each bundle carries `can_book` (packages.can_book),
-    under either rules. Off: no key.
+    PACKAGE_BOOKING_V1 on: each bundle carries `can_book`, under either
+    rules: packages.can_book on the platform's, and false on the old ones,
+    whose bundles show the draft row's price, not the published one
+    booking-api charges. Off: no key.
     """
 
     permission_classes = [AllowAny]
@@ -811,12 +813,17 @@ class SalonPackagesView(APIView):
             })
 
         if settings.PACKAGE_BOOKING_V1:
-            # These rows are the drafts, but what can be booked is the live
-            # package's question, the one Package Details answers; so it is
-            # asked of the live rows with the same ids, and never of a draft.
-            bookable = self.bookable_ids(salon)
+            # NEVER BOOKABLE FROM THESE ROWS. They are the drafts: the name,
+            # price and services the owner last saved, published or not,
+            # while booking-api charges the published snapshot (and sells no
+            # package the platform does not serve from it). Asking the live
+            # rule about the same id said yes beside a price booking-api will
+            # not charge. So false, and the key stays: absent means the
+            # switch is off, on this tab and on Package Details alike. Package
+            # Details reads the snapshot under either rules and answers for
+            # itself; PACKAGES_LIVE_RULES_V1 puts this tab on it too.
             for bundle in bundles:
-                bundle["can_book"] = bundle["id"] in bookable
+                bundle["can_book"] = False
 
         return Response({"my_packages": [], "bundles": bundles})
 
@@ -843,13 +850,6 @@ class SalonPackagesView(APIView):
         # the order never changes between two calls.
         bundles.sort(key=lambda bundle: (bundle["name"].casefold(), bundle["id"]))
         return bundles
-
-    @staticmethod
-    def bookable_ids(salon):
-        """The ids (text) of this salon's packages that packages.can_book says yes to."""
-        rows = list(live_salon_packages(salon))
-        reads = package_lines(salon, rows)
-        return {str(row.id) for row in rows if package_rules.can_book(row, *reads[row.id])}
 
 
 class ProductDetailView(APIView):

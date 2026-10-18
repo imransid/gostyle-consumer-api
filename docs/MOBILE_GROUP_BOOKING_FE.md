@@ -346,7 +346,7 @@ In the member's `products`:
 
 > **Changed 2026-10-18.** A member may book a package: a bundle from the Packages tab, booked as one visit at the package's price, every service in it done by that member's own stylist, one after another. Until now `members[].packages` was refused and this guide said to hide the Packages tab for groups.
 
-**Only while the server's switch is on.** The sign is the Packages tab itself: each bundle then carries `can_book`. Offer a bundle to a member only when its `can_book` is `true`. No `can_book` key at all means the switch is off: hide the Packages tab for groups, as before (a package id is then refused as `foreign_id`).
+**Only while the server's switch is on.** The sign is the Packages tab itself: each bundle then carries `can_book`. Offer a bundle to a member only when its `can_book` is `true`. No `can_book` key at all means the switch is off: hide the Packages tab for groups, as before (a package id is then refused as `foreign_id`). Changed 2026-10-18: `can_book` can be `false` on every bundle with the switch on, until the server shows the tab's published prices (the tab then shows the price the salon last saved, which is not the one charged); offer none of them then.
 
 **One shape: a line of `services`.** There is no package field. `members[].packages` must stay empty; anything in it is `422 packages_not_supported`.
 

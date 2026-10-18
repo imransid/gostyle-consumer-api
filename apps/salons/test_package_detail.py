@@ -923,11 +923,15 @@ class LiveTabTests(Reads, SimpleTestCase):
         self.assertEqual(response.json()["bundles"][0]["name"], "Groom and Go")
 
 
+@override_settings(PACKAGES_LIVE_RULES_V1=False)
 class OldTabCanBookTests(OldTabSeams, Reads, SimpleTestCase):
     """
     PACKAGE_BOOKING_V1 with the tab still on its old rules
-    (PACKAGES_LIVE_RULES_V1 off): the rows are as before, and `can_book` is
-    the live rule's answer for each row's id, never a draft's.
+    (PACKAGES_LIVE_RULES_V1 off): the rows are the drafts, as before, so
+    `can_book` is false on every one. Their price is the draft row's, and
+    booking-api charges the published snapshot's: a Book button beside it
+    would offer a price booking-api will not charge. The key is still sent,
+    because absent means the switch is off.
     """
 
     def tab_with_live(self, rows, live, **reads):
@@ -943,19 +947,34 @@ class OldTabCanBookTests(OldTabSeams, Reads, SimpleTestCase):
         self.assertNotIn("can_book", body["bundles"][0])
         self.live_read.assert_not_called()
 
-    def test_on_each_row_is_the_live_rule_for_its_id(self):
+    def test_on_every_row_is_false_even_one_the_live_rule_sells(self):
         live = [package_row(PACKAGE),
                 package_row(PACKAGE_2, published_snapshot=snap([snap_item(CUT, LONG_HAIR)]))]
         old = [old_tab_row(PACKAGE), old_tab_row(PACKAGE_2, name="B"),
                old_tab_row(uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3"), name="C")]
+        # The first is one the live rule sells, at its snapshot's 460: the
+        # tab shows its draft row's 370.
+        with ExitStack() as stack:
+            self.reads(stack, variants={LONG_HAIR: variant()})
+            content, rows, complete = selectors.package_lines(
+                types.SimpleNamespace(id=SALON, tenant_id=TENANT, branch_id=BRANCH), live[:1])[PACKAGE]
+        self.assertTrue(packages.can_book(live[0], content, rows, complete))
         with override_settings(PACKAGE_BOOKING_V1=True):
             body = self.tab_with_live(old, live, variants={LONG_HAIR: variant()})
-        # Bookable live; pinned to a variant live; not live at all.
-        self.assertEqual([b["can_book"] for b in body["bundles"]], [True, False, False])
-        # The rows themselves are the old tab's, untouched.
-        self.assertEqual(body["bundles"][0]["name"], "Groom and Go")
-        self.assertNotIn("services", body["bundles"][0])
-        self.services_read.assert_called_once()
+        self.assertEqual([b["can_book"] for b in body["bundles"]], [False, False, False])
+        self.assertEqual((body["bundles"][0]["name"], body["bundles"][0]["price"]),
+                         ("Groom and Go", 370.0))
+
+    def test_on_nothing_live_is_read_and_the_rows_are_untouched_but_the_key(self):
+        with override_settings(PACKAGE_BOOKING_V1=False):
+            off = self.tab_with_live([old_tab_row()], [package_row()])["bundles"][0]
+        with override_settings(PACKAGE_BOOKING_V1=True):
+            on = self.tab_with_live([old_tab_row()], [package_row()])["bundles"][0]
+        self.live_read.assert_not_called()
+        self.services_read.assert_not_called()
+        self.drafts_read.assert_not_called()
+        self.assertEqual(list(on), list(off) + ["can_book"])
+        self.assertEqual({k: v for k, v in on.items() if k != "can_book"}, off)
 
 
 class MenuForPackagesTests(SimpleTestCase):
@@ -1263,6 +1282,83 @@ class TabAndDetailAgreeTests(Reads, SimpleTestCase):
                 detail = packages.detail(self.salon, pkg, content, rows, complete)
                 self.assertEqual({k: tab[k] for k in keys}, {k: detail[k] for k in keys})
                 self.assertTrue(detail["is_active"])
+
+
+# The four combinations of the two switches, (PACKAGE_BOOKING_V1,
+# PACKAGES_LIVE_RULES_V1), and what a screen answers when a key is not sent.
+SWITCHES = [(booking, live) for booking in (False, True) for live in (False, True)]
+ABSENT = "(no key)"
+
+
+class CanBookUnderEverySwitchTests(DetailSeams, SimpleTestCase):
+    """
+    `can_book` on the tab and on Package Details, under each combination of
+    PACKAGE_BOOKING_V1 and PACKAGES_LIVE_RULES_V1, for two published
+    packages: one booking-api sells (its snapshot: The Full Groom at 460),
+    and one it does not (pinned to a variant).
+
+    The key follows PACKAGE_BOOKING_V1 alone, on both screens. Its value is
+    packages.can_book wherever the price shown is the snapshot's: Package
+    Details under either tab rules, and the tab on the platform's rules. On
+    its old rules the tab shows the draft row's price (370), not the one
+    booking-api charges, so it is false there.
+    """
+
+    def tab_under(self, booking, live):
+        found = types.SimpleNamespace(id=SALON, tenant_id=TENANT, branch_id=BRANCH)
+        with ExitStack() as stack, override_settings(
+                PACKAGE_BOOKING_V1=booking, PACKAGES_LIVE_RULES_V1=live):
+            stack.enter_context(mock.patch("apps.salons.views.salon_profile", return_value=found))
+            self.old_read = stack.enter_context(mock.patch(
+                "apps.salons.views.salon_packages",
+                return_value=[old_tab_row(PACKAGE), old_tab_row(PACKAGE_2, name="Pinned")]))
+            self.live_read = stack.enter_context(mock.patch(
+                "apps.salons.views.live_salon_packages",
+                return_value=[package_row(PACKAGE), self.pinned()]))
+            self.reads(stack, variants={LONG_HAIR: variant()})
+            return self.client.get(tab_url()).json()
+
+    def detail_under(self, booking, live, package=None):
+        with override_settings(PACKAGE_BOOKING_V1=booking, PACKAGES_LIVE_RULES_V1=live):
+            return self.call(package=package or package_row(),
+                             variants={LONG_HAIR: variant()}).json()
+
+    @staticmethod
+    def pinned():
+        return package_row(PACKAGE_2, published_snapshot=snap([snap_item(CUT, LONG_HAIR)],
+                                                               name="Pinned"))
+
+    def test_the_tab(self):
+        expected = {
+            (False, False): [("Groom and Go", 370.0, ABSENT), ("Pinned", 370.0, ABSENT)],
+            (False, True): [("Pinned", 460.0, ABSENT), ("The Full Groom", 460.0, ABSENT)],
+            (True, False): [("Groom and Go", 370.0, False), ("Pinned", 370.0, False)],
+            (True, True): [("Pinned", 460.0, False), ("The Full Groom", 460.0, True)],
+        }
+        self.assertEqual(sorted(expected), SWITCHES)
+        for (booking, live), bundles in expected.items():
+            with self.subTest(PACKAGE_BOOKING_V1=booking, PACKAGES_LIVE_RULES_V1=live):
+                body = self.tab_under(booking, live)
+                self.assertEqual(
+                    [(b["name"], b["price"], b.get("can_book", ABSENT)) for b in body["bundles"]],
+                    bundles,
+                )
+                # The old rules read the draft rows and nothing live, the
+                # platform's rules the live rows and no draft.
+                (self.live_read if live else self.old_read).assert_called_once()
+                (self.old_read if live else self.live_read).assert_not_called()
+                if not live:
+                    self.services_read.assert_not_called()
+
+    def test_package_details_reads_the_snapshot_under_either_tab_rules(self):
+        for booking, live in SWITCHES:
+            with self.subTest(PACKAGE_BOOKING_V1=booking, PACKAGES_LIVE_RULES_V1=live):
+                body = self.detail_under(booking, live)
+                # Never the draft row's name or price (The Full Groom (draft), 500).
+                self.assertEqual((body["name"], body["price"]), ("The Full Groom", 460.0))
+                self.assertEqual(body.get("can_book", ABSENT), True if booking else ABSENT)
+                pinned = self.detail_under(booking, live, package=self.pinned())
+                self.assertEqual(pinned.get("can_book", ABSENT), False if booking else ABSENT)
 
 
 def example_rows():

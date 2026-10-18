@@ -569,7 +569,11 @@ the `--logger-class` that `docker-compose.yml` now passes.
   `packages_not_supported`. While the switch is on, its message says to
   send the package as a line of `services` instead.
 - Offer a bundle only when its `can_book` is `true` (the Packages tab,
-  Package Details). No `can_book` key means the switch is off.
+  Package Details). No `can_book` key means the switch is off. While the
+  tab is on its old rules (`PACKAGES_LIVE_RULES_V1` off) every bundle's
+  `can_book` is `false` (changed 2026-10-18): those bundles show the
+  package row's draft price, and booking-api charges the published
+  snapshot's. Package Details reads the snapshot either way.
 
 ### What this service checks, and what it sends
 

@@ -16,7 +16,10 @@ EVERY 404 IS OURS. The ids come in as text and are checked here
 a bad id would get Django's HTML page, not our JSON envelope.
 
 PACKAGE_BOOKING_V1 on: the answer also carries `can_book`, last
-(packages.can_book, the Packages tab's rule). Off: no key.
+(packages.can_book, the Packages tab's rule). Off: no key. Whatever
+PACKAGES_LIVE_RULES_V1 says: this screen always shows the published content,
+the price booking-api charges, so its `can_book` is always the rule's. (The
+tab on its old rules shows the draft's price, and answers false.)
 """
 
 from django.conf import settings

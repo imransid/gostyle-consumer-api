@@ -379,6 +379,22 @@ live menu, exactly as the Package Details screen does:
 > a service, it costs nothing, or a service in it costs nothing here or is
 > priced in another currency than the package).
 
+> **Changed 2026-10-18: until the server rule change above is on,
+> `can_book` is `false` on every bundle.**
+>
+> - **It was** Package Details' answer for the same id, whichever rules the
+>   tab is on.
+> - **It is** that answer only once the rule change is on. Until then a
+>   bundle shows the name, price and services the salon last saved,
+>   published or not, and a booking is charged the published package's
+>   price, the one Package Details shows. So every bundle says
+>   `can_book: false`: offer no Book button on the tab. Package Details
+>   still answers `can_book` for itself, beside the published price.
+> - **Why `false` and not absent.** No key means the server's switch is
+>   off, and the app reads it that way everywhere (no Book button, and no
+>   package for a group member). The switch is on; it is the price on this
+>   tab that cannot be booked.
+
 ---
 
 ## 5. Shop tab — `GET /salon/:id/products`

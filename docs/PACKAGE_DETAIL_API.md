@@ -211,7 +211,11 @@ else. Minutes are whole numbers.
   the whole booking for one service with no price, and for a package and a
   service in two currencies). A package dearer than its services can be
   booked: it is sold at its price. The Packages tab's `can_book` is the same
-  rule.
+  rule once the tab shows the published content too; until then it is
+  `false` on every bundle (changed 2026-10-18: the tab shows the price the
+  salon last saved, not the published one a booking is charged). This
+  screen reads the published content either way, so its `can_book` stands
+  on its own.
 - **Plain text only.** `description` and `terms` are sent as the salon typed
   them, trimmed. Blank is `null`.
 - **Nothing is booked or held.** It is a read.

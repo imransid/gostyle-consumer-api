@@ -470,9 +470,20 @@ Before turning `PACKAGE_BOOKING_V1` on: booking-api's branch deployed with
 deployed. That change is committed (`6ee08bce` on the platform's
 `feat/list-packages-snapshot`) but not yet pushed or merged; platform
 `origin/main` (`7875172e`) does not have it (section 3, corrected
-2026-10-18). Until then booking-api reads a package's row and draft items, so
+2026-10-18). ~~Until then booking-api reads a package's row and draft items, so
 an owner's unpublished edit can be what it charges, and it does not see a
-variant pin (this service's `can_book` refuses such a package anyway).
+variant pin (this service's `can_book` refuses such a package anyway).~~
+**Changed 2026-10-18:** booking-api `7f46562` sells only a package the
+platform says is served from its published snapshot (`from_published_snapshot`,
+added by `b60764a7` on the same platform branch, also unpushed), so until
+that release it sells none of them, never a draft: a package line answers
+`422 unknown_service`, as with `PACKAGES_FROM_PLATFORM` off.
+
+And `PACKAGES_LIVE_RULES_V1` on here with it, for the Packages tab to offer
+Book (changed 2026-10-18): on the tab's old rules every bundle's `can_book`
+is `false`, because those bundles show the package row's draft name, price
+and items while booking-api charges the published snapshot. Package Details
+reads the snapshot under either rules and answers `can_book` for itself.
 
 Not built, and open:
 

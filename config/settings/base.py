@@ -331,14 +331,18 @@ GROUP_CANCEL_LANES_V1 = env.bool("GROUP_CANCEL_LANES_V1", default=False)
 # variant sets its price and minutes, and a package is shown only when every
 # service in it can be booked. GET /salon/{id}/package/{id} always uses these
 # rules, so ON the tab and the detail agree. OFF here, the tab answers
-# exactly what it did.
+# exactly what it did, and with PACKAGE_BOOKING_V1 on every bundle's
+# can_book is false (it shows the draft's price, not the one charged).
 PACKAGES_LIVE_RULES_V1 = env.bool("PACKAGES_LIVE_RULES_V1", default=False)
 
 # Booking a package as one visit at its price (docs/BOOKING_CREATE_API.md,
 # "Booking a package"; option A in docs/PACKAGE_DETAIL_AUDIT.md). ON, each
 # Packages tab bundle and the Package Details answer carry `can_book`:
-# booking-api's rule for selling it (packages.can_book), whichever tab rules
-# are on. And GET /booking/nearest-available takes a package id among
+# booking-api's rule for selling it (packages.can_book), on the published
+# content. Except on the tab's old rules (PACKAGES_LIVE_RULES_V1 off), where
+# it is false on every bundle: those show the draft row's price, not the
+# published one booking-api charges, so the tab offers Book only with both
+# on. And GET /booking/nearest-available takes a package id among
 # service_ids, searching for its parts (each as many times as the package
 # holds it), or answers 422 package_not_bookable. And a party member may hold
 # a package as a line of `services` (POST /booking/group) or among

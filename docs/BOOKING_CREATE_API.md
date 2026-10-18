@@ -405,7 +405,11 @@ package line is `422 unknown_service`).
 
 1. **Show Book with this Package only when `can_book` is true** (Package
    Details, and each Packages tab bundle). The key is absent while the switch
-   is off: hide the button then, as before.
+   is off: hide the button then, as before. On the Packages tab it is
+   `false` on every bundle while `PACKAGES_LIVE_RULES_V1` is off (changed
+   2026-10-18): those bundles show the package row's draft price, and
+   booking-api charges the published snapshot's. Package Details reads the
+   snapshot either way.
 2. **Find a time with the package's own id.**
    `GET /api/v1/booking/nearest-available/{salon_id}?from=…&to=…&service_ids={package_id}`,
    with `bundles[].id`, not its `includes[].service_id`s. The server searches
