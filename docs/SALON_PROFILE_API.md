@@ -339,13 +339,15 @@ strikethrough row in that case.
 `GET /salon/:id/package/:package_id`, with `bundles[].id`, draws the Package
 Details screen. See `PACKAGE_DETAIL_API.md`.
 
-### A server rule change, not on yet
+### A server rule change, on in production
 
-When it goes on, the shape stays the same, but the list follows the salon's
-live menu, exactly as the Package Details screen does:
+It is on in production (seen live on 2026-10-19: every bundle carries
+`services`, which only these rules send; until then this said "not on
+yet"). The shape stays the same, but the list follows the salon's live
+menu, exactly as the Package Details screen does:
 
 - a bundle the salon published for every branch is listed here even when
-  this branch was never ticked (today it is missing);
+  this branch was never ticked (before the change it was missing);
 - the published name, description, price and services are shown, never an
   edit the salon has not published yet;
 - a bundle holding a service the salon hid, archived or took off online

@@ -47,7 +47,9 @@ class SalonPackageDetailResponseSerializer(serializers.Serializer):
         allow_null=True,
         help_text=(
             "The included services booked separately at this branch, each "
-            "times its quantity. Null when that is not more than `price`."
+            "times its quantity. Null when that is not more than `price`, or "
+            "when the package and a service in it (or a pinned variant) are "
+            "priced in different currencies."
         ),
     )
     save_amount = serializers.FloatField(

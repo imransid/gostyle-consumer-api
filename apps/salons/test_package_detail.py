@@ -278,6 +278,28 @@ def two_currencies():
     }
 
 
+def one_currency_outside_aed():
+    """
+    The control for `two_currencies`: its two packages with the package and
+    every line in BDT, so the screens show their saving as before. A screen
+    that hid every saving outside AED would pass the two-currency tests and
+    fail these.
+    """
+    return {
+        "a BDT package of a BDT service": dict(
+            package=package_row(published_snapshot=snap([snap_item(TOWEL)], priceMinor=29750,
+                                                        currency="BDT")),
+            svc=services(towel={"price_minor": 35000, "currency": "BDT"}),
+        ),
+        "a BDT package of a BDT variant": dict(
+            package=package_row(published_snapshot=snap([snap_item(CUT, LONG_HAIR)],
+                                                        priceMinor=25000, currency="BDT")),
+            svc=services(cut={"currency": "BDT"}),
+            variants={LONG_HAIR: variant(currency="BDT")},
+        ),
+    }
+
+
 class SoldHereTests(SimpleTestCase):
     """packages.sold_here: the platform's branch rule (listForBranch)."""
 
@@ -577,6 +599,13 @@ class CanBookTests(SimpleTestCase):
         for change in ({"currency": None}, {"currency": ""}):
             with self.subTest(**change):
                 self.assertFalse(self.can_book(svc=services(cut=change)))
+        # Not even another that cannot be read: a package with no currency,
+        # in its snapshot or its row, over services with none.
+        for code in (None, "", " "):
+            with self.subTest(package_and_services=code):
+                unread = {"currency": code}
+                pkg = package_row(currency=code, published_snapshot=snap(currency=code))
+                self.assertFalse(self.can_book(pkg, services(cut=unread, beard=unread, towel=unread)))
 
     def test_a_package_dearer_than_its_services_is_still_sold_at_its_price(self):
         pkg = package_row(published_snapshot=snap(priceMinor=90000))
@@ -658,10 +687,12 @@ class SavingTests(SimpleTestCase):
 
     def test_one_currency_is_can_book_s_rule(self):
         # packages.one_currency: codes compare upper case and trimmed, and
-        # one that cannot be read matches nothing.
+        # one that cannot be read matches nothing, not even another that
+        # cannot be read.
         answer = self.saving(29750, 35000, currency="bdt", line_currency=" BDT")
         self.assertEqual(answer["save_amount"], Decimal("52.50"))
-        for currency, line_currency in ((None, "BDT"), ("", "BDT"), ("BDT", None), ("BDT", "")):
+        for currency, line_currency in ((None, "BDT"), ("", "BDT"), ("BDT", None), ("BDT", ""),
+                                        (None, None), ("", ""), (" ", "")):
             with self.subTest(currency=currency, line_currency=line_currency):
                 self.assertEqual(self.saving(29750, 35000, currency=currency,
                                              line_currency=line_currency), self.nothing)
@@ -1004,6 +1035,20 @@ class LiveTabTests(Reads, SimpleTestCase):
                 bundles = self.tab([case["package"]], **reads)["bundles"]
                 self.assertEqual([(b["price"], b["price_before"], b["save_amount"]) for b in bundles],
                                  [(prices[name], None, None)])
+
+    def test_one_currency_outside_aed_still_saves(self):
+        # The control for the test above: the same packages, all in BDT,
+        # with their saving as before (350 - 297.50; 300 - 250).
+        expected = {"a BDT package of a BDT service": (297.5, 350.0, 52.5),
+                    "a BDT package of a BDT variant": (250.0, 300.0, 50.0)}
+        cases = one_currency_outside_aed()
+        self.assertEqual(sorted(cases), sorted(expected))
+        for name, case in cases.items():
+            with self.subTest(name):
+                reads = {k: v for k, v in case.items() if k != "package"}
+                bundles = self.tab([case["package"]], **reads)["bundles"]
+                self.assertEqual([(b["price"], b["price_before"], b["save_amount"]) for b in bundles],
+                                 [expected[name]])
 
     def test_f1_sold_everywhere_without_a_branch_row(self):
         self.assertEqual(len(self.tab([package_row(branch_row=None)])["bundles"]), 1)
@@ -1359,6 +1404,20 @@ class DetailFieldsTests(DetailSeams, SimpleTestCase):
                 self.assertEqual((body["price"], includes), expected[name])
                 self.assertIs(body["is_active"], True)
 
+    def test_one_currency_outside_aed_still_saves(self):
+        # The control for the test above: Green Wave's figures with the
+        # package and its service both in BDT save 52.50, 15%, as before;
+        # a BDT variant at 300 under a BDT package at 250 saves 50, 17%.
+        expected = {"a BDT package of a BDT service": (350.0, 52.5, 15),
+                    "a BDT package of a BDT variant": (300.0, 50.0, 17)}
+        cases = one_currency_outside_aed()
+        self.assertEqual(sorted(cases), sorted(expected))
+        for name, case in cases.items():
+            with self.subTest(name):
+                body = self.call(**case).json()
+                self.assertEqual((body["price_before"], body["save_amount"], body["save_percent"]),
+                                 expected[name])
+
     def test_blank_text_is_null(self):
         body = self.call(package=package_row(cancellation_policy="  ",
                                              published_snapshot=snap(description=""))).json()
@@ -1566,6 +1625,17 @@ class DetailOpenApiTests(DetailSeams, SimpleTestCase):
                              ("SalonPackageDetailStep", EXAMPLE["timeline"][0])):
             with self.subTest(name=name):
                 self.assertEqual(list(self.component(name)["properties"]), list(sample))
+
+    def test_the_saving_says_both_times_it_is_null(self):
+        # packages.saving answers null when there is no saving and when the
+        # package and a line are in two currencies (DetailFieldsTests), so
+        # the page the app team reads says both; the other two follow it.
+        fields = self.component("SalonPackageDetailResponse")["properties"]
+        self.assertIn("not more than `price`", fields["price_before"]["description"])
+        self.assertIn("different currencies", fields["price_before"]["description"])
+        for name in ("save_amount", "save_percent"):
+            with self.subTest(name):
+                self.assertIn("Null with price_before", fields[name]["description"])
 
     def test_the_404_example_is_the_real_body(self):
         example = self.operation()["responses"]["404"]["content"]["application/json"]
