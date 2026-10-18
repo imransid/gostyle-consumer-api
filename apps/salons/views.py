@@ -71,6 +71,7 @@ from .selectors import (
     salon_cards_for_refs,
     live_salon_packages,
     package_lines,
+    packages_for_salon,
     salon_packages,
     salon_products,
     manual_state_on,
@@ -1341,7 +1342,11 @@ class FavouriteListView(ListAPIView):
             "service_ids", str, required=False,
             description="Comma-separated service UUIDs. Required unless "
                         "`stylist_id` is sent; both together narrow to that "
-                        "stylist for those services.",
+                        "stylist for those services. With PACKAGE_BOOKING_V1 "
+                        "on, a package id (bundles[].id) may be among them: "
+                        "it is searched as its services, each as many times "
+                        "as the package holds it, and one that cannot be "
+                        "booked here is 422 package_not_bookable.",
         ),
         OpenApiParameter(
             "stylist_id", str, required=False,
@@ -1365,8 +1370,15 @@ class NearestAvailableView(APIView):
         except ParamError as exc:
             raise _invalid(exc) from exc
 
+        # The visit: one entry per service performed. Off, the ids as sent.
+        visit = params["service_ids"]
+        if settings.PACKAGE_BOOKING_V1:
+            visit = _with_packages_as_parts(salon, visit)
+            # Who can do it, and the notice it needs: each service once.
+            params = {**params, "service_ids": list(dict.fromkeys(visit))}
+
         timing = service_timing_rows(salon, params["service_ids"])
-        duration = _appointment_minutes(params["service_ids"], timing)
+        duration = _appointment_minutes(visit, timing)
 
         # WHO IS BUSY COMES FROM booking-api, and when that service cannot
         # be reached this endpoint has no honest answer. Saying "everything
@@ -1402,13 +1414,58 @@ def _appointment_minutes(service_ids, timing):
     With no services named there is nothing to measure, and the answer is the
     browsing default — reported back as `duration_min` so the app never has to
     guess which number drew the grid.
+
+    Counted per entry of `service_ids`, so a service the visit performs twice
+    (a package's "2 x Cut") takes twice its minutes. An id with no timing row
+    (not offered here) adds nothing, as before.
     """
     if not service_ids:
         return slots.DEFAULT_APPOINTMENT_MINUTES
 
-    return sum(
-        row["stage_minutes"] or row["duration_minutes"] or 0 for row in timing
-    )
+    minutes = {
+        row["id"]: row["stage_minutes"] or row["duration_minutes"] or 0 for row in timing
+    }
+    return sum(minutes.get(service_id, 0) for service_id in service_ids)
+
+
+# The one refusal a package adds to the slot search (PACKAGE_BOOKING_V1).
+PACKAGE_NOT_BOOKABLE = "This package cannot be booked at this salon right now."
+
+
+def _with_packages_as_parts(salon, service_ids):
+    """
+    `service_ids` with every package among them replaced by its parts
+    (PACKAGE_BOOKING_V1), in the order asked.
+
+    A PACKAGE'S QUANTITY IS NOT COLLAPSED. parse_service_ids keeps each id
+    once, which is right for hand-picked services; a package's parts are the
+    live content the Package Details screen shows (the published snapshot's
+    items), each as many times as the package holds it (packages.parts), as
+    booking-api expands it. A hand-picked id that is also a part is two
+    services, as booking-api books it.
+
+    A package of this salon's business that packages.can_book refuses is a
+    422, package_not_bookable, rather than a search for something nobody can
+    book. Any other id is left as it was sent, and is answered as before.
+    """
+    rows = {row.id: row for row in packages_for_salon(salon, service_ids)}
+    if not rows:
+        return list(service_ids)
+
+    reads = package_lines(salon, list(rows.values()))
+    visit = []
+    for service_id in service_ids:
+        row = rows.get(service_id)
+        if row is None:
+            visit.append(service_id)
+            continue
+        content, lines, complete = reads[row.id]
+        if not package_rules.can_book(row, content, lines, complete):
+            raise _invalid(ParamError(
+                "service_ids", PACKAGE_NOT_BOOKABLE, code="package_not_bookable",
+            ))
+        visit.extend(package_rules.parts(lines))
+    return visit
 
 
 def _qualified_stylists(salon, service_ids, stylist_id):

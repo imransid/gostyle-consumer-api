@@ -328,12 +328,36 @@ def package_for_salon(salon, package_id):
     """
     return (
         ServicePackage.objects.filter(id=package_id, tenant_id=salon.tenant_id)
-        .filter(
-            Q(published_version__isnull=False)
-            | Q(status__in=DETAIL_STATUSES_WITHOUT_VERSION)
-        )
+        .filter(_ever_on_sale())
         .annotate(branch_row=_package_branch_row(salon.branch_id))
         .first()
+    )
+
+
+def packages_for_salon(salon, package_ids):
+    """
+    `package_for_salon` for several ids at once: the ones that are packages
+    of this salon's business ever on sale, in whatever state they are in
+    now, each with `branch_row`. Any other id (a service's, another
+    business's package, a draft never on sale) is simply not in the answer.
+
+    For the slot search with a package in it (PACKAGE_BOOKING_V1): one read
+    on the primary key for the whole basket.
+    """
+    if not package_ids:
+        return []
+    return list(
+        ServicePackage.objects.filter(id__in=list(package_ids), tenant_id=salon.tenant_id)
+        .filter(_ever_on_sale())
+        .annotate(branch_row=_package_branch_row(salon.branch_id))
+    )
+
+
+def _ever_on_sale():
+    """A package that was ever on sale, as a filter: package_for_salon's rule."""
+    return (
+        Q(published_version__isnull=False)
+        | Q(status__in=DETAIL_STATUSES_WITHOUT_VERSION)
     )
 
 

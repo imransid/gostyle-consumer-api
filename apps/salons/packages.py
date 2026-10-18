@@ -264,6 +264,16 @@ def duration_minutes(package_lines):
     return sum((line["minutes"] or 0) * line["quantity"] for line in package_lines)
 
 
+def parts(package_lines):
+    """
+    The services one booking of the package performs, in its order: each
+    line `quantity` times, so "2 x Cut" is two cuts. booking-api expands a
+    package exactly so (platform-package-catalogue.ts), and books a visit
+    that long.
+    """
+    return [line["service_id"] for line in package_lines for _ in range(line["quantity"])]
+
+
 def includes(package_lines):
     """What's Included: one row per service, `price` for ONE of it, here."""
     return [
