@@ -392,9 +392,9 @@ Their `services` lines on create: Rafa `[{ "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaa
 
 **What comes back.** The `201` and `GET /booking/:id`:
 
-- A member who holds a package has **`packages`**: `[{ id, name, amount, service_ids }]`. `amount` is what that member is charged for it before VAT (a child's half), `service_ids` its services (a "2 × Cut" lists the cut twice). **The key is there only on a member who holds a package**: every other member reads exactly as before, so treat a missing key as no package.
+- A member who holds a package has **`packages`**: `[{ id, name, amount, service_ids }]`. `amount` is what that member is charged for it before VAT (a child's half), `service_ids` its services (a "2 × Cut" lists the cut twice). **The key is there only on a member who holds a package**, never as `[]`: every other member reads exactly as before, so treat a missing key as `[]`, no package.
 - That member's **`services`** lists the package's services, each at its share of the package's charge. The shares add up to the package's `amount`. Show the package from `packages`, and its services from `services`.
-- **My Bookings** (`GET /bookings`): the GROUP row gains `packages: [{ id, name }]`, only when any member holds one, so the card can say "Groom and Go".
+- **My Bookings** (`GET /bookings`): the GROUP row gains `packages: [{ id, name }]`, only when any member holds one, so the card can say "Groom and Go". Otherwise the key is absent, never `[]`: treat a missing key as `[]`. Changed 2026-10-18: it has **one entry per member per sale**, not one per package: in the example above, Rafa's and Sami's Groom and Go make two entries with the same `id`. To name each package once on the card, de-duplicate by `id`.
 
 Sami's member row, for example:
 
@@ -507,6 +507,7 @@ Each party is ONE row with `booking_type: "GROUP"` and `member_count`, on the bo
 
 - **`id`** is the party's id: tap opens `GET /booking/:id`.
 - **`services`** and **`stylists`** list every member's, for the card. **`total`** is the whole party's.
+- **`packages`** (Changed 2026-10-18) is there only when a member holds a package, one entry per member per sale; no key means none (see [Packages](#packages)).
 - **Times in list rows carry a `+06:00` offset** (single rows do too, today). They are correct instants: convert to the salon's time for display. The detail call already returns salon time.
 - **Filters** are unchanged: `?filter=upcoming|recurring|archive`, `page`, `pageSize` (20 by default, 50 max). A cancelled party moves to `archive`.
 - **`can_reschedule`:** ignore it for a GROUP row. Moving a party is not supported.

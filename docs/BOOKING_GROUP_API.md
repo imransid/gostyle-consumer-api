@@ -710,13 +710,19 @@ booking-api's fields, forwarded untouched, on the `201` and on `GET
 
 - **`members[].packages`**: `[{ id, name, amount, service_ids }]` on a
   member whose lane holds a package, **and only there**. A member of
-  hand-picked services has no `packages` key at all, exactly as before.
+  hand-picked services has no `packages` key at all, exactly as before:
+  never `[]`, so treat a missing key as `[]` (made explicit 2026-10-18).
   `amount` is the package as charged to that member, before VAT (a child's
-  is the half); `service_ids` its services, a quantity repeated.
+  is the half); `service_ids` its services, a quantity repeated. One entry
+  per sale: a package the member holds twice is listed twice.
 - That member's **`services`** lists the package's services, each at its
   share of the package's charge, adding up to its `amount`.
 - **My Bookings:** the party's GROUP row has `packages: [{ id, name }]`
-  only when any member holds one.
+  only when any member holds one; otherwise the key is absent, never `[]`
+  (treat a missing key as `[]`). *Changed 2026-10-18:* it lists **one entry
+  per member per sale**, every member's packages in member order, not one
+  per package: a package two members each hold appears twice, with the
+  same `id`. To name each package once on the card, de-duplicate by `id`.
 
 ### Not built
 

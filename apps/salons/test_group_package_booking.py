@@ -992,7 +992,10 @@ class MyBookingsPackagesTests(SimpleTestCase):
         return response.data["results"]
 
     def test_a_group_row_s_packages_come_back_untouched(self):
-        names = [{"id": str(PACKAGE), "name": "The Full Groom"}]
+        # One entry per member per sale, as booking-api lists them: two
+        # members who each hold The Full Groom are two entries, both kept.
+        names = [{"id": str(PACKAGE), "name": "The Full Groom"},
+                 {"id": str(PACKAGE), "name": "The Full Groom"}]
         rows = self.results([
             self.row(id=GROUP_ID, booking_type="GROUP", member_count=3, packages=names),
             self.row(id="b2c6b0a9-0000-4000-8000-000000000002", booking_type="GROUP",

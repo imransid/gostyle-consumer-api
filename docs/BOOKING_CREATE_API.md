@@ -464,14 +464,20 @@ that is how an `amount_mismatch` is avoided.
 
 booking-api's fields, forwarded untouched:
 
-- **Create's `201` and `GET /api/v1/booking/{id}`** carry
-  `packages: [{id, name, amount, service_ids}]`: `amount` is the package
-  price before VAT, `service_ids` its parts. `services` lists the parts as
-  before, each at its share of the package price; the shares add up to it.
+- **Create's `201`, `GET /api/v1/booking/{id}` and `PATCH`'s `200`** carry
+  `packages: [{id, name, amount, service_ids}]` when the booking holds a
+  package: `amount` is the package price before VAT, `service_ids` its
+  parts. `services` lists the parts as before, each at its share of the
+  package price; the shares add up to it.
 - **Each My Bookings row** (`GET /api/v1/bookings`) carries
-  `packages: [{id, name}]`, so the row can say "Groom and Go".
-- A booking of hand-picked services has `packages: []`. Treat a missing key
-  the same way.
+  `packages: [{id, name}]` when its booking holds a package, so the row can
+  say "Groom and Go".
+- ~~A booking of hand-picked services has `packages: []`. Treat a missing key
+  the same way.~~ **Changed 2026-10-18:** the key is **absent** unless the
+  booking holds a package, never `[]`: a booking of hand-picked services
+  reads key for key as it always did. Treat a missing key as `[]`.
+- One entry per sale: the same package booked twice in one basket is
+  listed twice, each at its own price, never once at double.
 
 ### When it cannot be booked
 
