@@ -141,11 +141,22 @@ other service, so a 503 can only mean our own server is down.
   > only those whose every service is sellable there by
   > `isServiceAvailableAtBranch`. booking-api sells from it, behind its
   > `PACKAGES_FROM_PLATFORM`. It serves the published snapshot, the content
-  > this service shows, once the platform's `feat/list-packages-snapshot`
-  > is in: that change also sends each item's `variant_id`, which
+  > this service shows, once the platform's snapshot change is merged and
+  > deployed: that change also sends each item's `variant_id`, which
   > booking-api's client already reads. As read here on 2026-10-18 (platform
   > `origin/main` = `7875172e`), the merged code still read the package row
   > and its draft items, and that change was not merged yet.
+  >
+  > **Corrected 2026-10-18, read with git in the platform repo.** The
+  > snapshot change is **committed**, not work in progress: commit `6ee08bce`
+  > ("ListPackages serves the published snapshot, and each item's variant")
+  > on branch `feat/list-packages-snapshot`, in the worktree
+  > `gostyle-platform-packages-snapshot`, which has nothing uncommitted. It
+  > is **not pushed** (no upstream, and no remote-tracking branch in that
+  > clone holds it; the remote itself was not asked) and **not merged**:
+  > platform `origin/main` is still `7875172e`, whose `ListPackages` reads
+  > the `service_package` row's name and price and its draft
+  > `service_package_item` rows.
 - **booking-api: no package on create.** `POST /mobile-booking` takes
   services, products, stylists, times and money totals. No `package_id`,
   voucher, prepaid or session field. The booking tables have no package
@@ -451,7 +462,10 @@ path; its mobile party route was not in that run.)
 
 Before turning `PACKAGE_BOOKING_V1` on: booking-api's branch deployed with
 `PACKAGES_FROM_PLATFORM` on, and the platform's snapshot change merged and
-deployed. Until then booking-api reads a package's row and draft items, so
+deployed. That change is committed (`6ee08bce` on the platform's
+`feat/list-packages-snapshot`) but not yet pushed or merged; platform
+`origin/main` (`7875172e`) does not have it (section 3, corrected
+2026-10-18). Until then booking-api reads a package's row and draft items, so
 an owner's unpublished edit can be what it charges, and it does not see a
 variant pin (this service's `can_book` refuses such a package anyway).
 
