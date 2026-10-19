@@ -122,9 +122,10 @@ Three rules hold it to that:
    what crosses the network is still the caller's body, byte for byte, so
    booking-api's retry hash still matches. Two exceptions: a storefront
    `salon_id` is rewritten to its branch (§0), and with
-   `PACKAGE_SAVING_AS_DISCOUNT_V1` on, a package's saving sent as
-   `discount` is moved back into the price (§7, "Mistakes seen on a real
-   create").
+   `PACKAGE_SAVING_AS_DISCOUNT_V1` or `PACKAGE_END_TIME_FROM_QUOTE_V1` on, a
+   package's saving sent as `discount` is moved back into the price and a
+   package's wrong `end_time` is replaced by the quote's (§7, "Mistakes seen
+   on a real create").
 
 **The body is forwarded as raw bytes.** It is never parsed and re-serialised,
 because booking-api hashes the body to recognise a retry — so `216.25` must
@@ -453,11 +454,21 @@ basket, same start). When the app's `tax_amount`, `total` and
 `due_amount` are the quote's, and what it added to `amount_without_tax`
 it also added to `discount`, exactly the packages' `savings`, then
 `amount_without_tax` and `discount` are set to the quote's before
-booking-api sees the body. Nothing else is changed: a wrong `end_time` or
-a start that does not fit is still refused, and any other wrong figure
-still answers `amount_mismatch`. A tier discount stays where it is: only
-the saving moves. Still send the quote's figures: this is a safety net,
-not the contract.
+booking-api sees the body. Any other wrong figure still answers
+`amount_mismatch`. A tier discount stays where it is: only the saving
+moves. Still send the quote's figures: this is a safety net, not the
+contract.
+
+**The second one is mended here too (added 2026-10-19,
+`PACKAGE_END_TIME_FROM_QUOTE_V1`, off by default).** On, a create with a
+package of this salon is priced by the quote at the app's own
+`start_time`, and when the quote starts there and ends elsewhere, its
+`end_time` replaces the app's (the same instant in another offset is left
+alone). The start is never moved. booking-api still holds the stylist for
+the whole visit, so a start the visit does not fit (the third row: past
+closing, or before the stylist's next booking) is still refused. The
+booking's own `end_time` in the `201` is the real one: show that, not the
+one the app worked out.
 
 ### The line
 
