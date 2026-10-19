@@ -383,8 +383,19 @@ SLOT_MINUTES_AS_BOOKED_V1 = env.bool("SLOT_MINUTES_AS_BOOKED_V1", default=False)
 # discount is exactly the packages' savings are amount_without_tax and
 # discount set to the quote's; every other body is forwarded as it came.
 # OFF here, create forwards exactly what it did. Nothing in booking-api
-# changes (views._fold_package_saving).
+# changes (views._mend_package_create).
 PACKAGE_SAVING_AS_DISCOUNT_V1 = env.bool("PACKAGE_SAVING_AS_DISCOUNT_V1", default=False)
+
+# A package's create with an end_time of the app's own (30 minutes for a
+# 60-minute package): booking-api refuses any end_time that is not
+# start_time plus every part's minutes ("These services run 60 minutes, so
+# the visit ends at ..."). ON, POST /booking with a package of this salon
+# and an end_time asks booking-api's quote, and when the quote starts at the
+# app's start_time and ends elsewhere, its end_time replaces the app's. The
+# start is never moved, and booking-api still checks the stylist is free for
+# the whole visit. OFF here, create forwards exactly what it did. Nothing in
+# booking-api changes (views._mend_package_create).
+PACKAGE_END_TIME_FROM_QUOTE_V1 = env.bool("PACKAGE_END_TIME_FROM_QUOTE_V1", default=False)
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",

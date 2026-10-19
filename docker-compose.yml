@@ -96,6 +96,7 @@ services:
       PACKAGE_BOOKING_V1: ${PACKAGE_BOOKING_V1:-False}
       SLOT_MINUTES_AS_BOOKED_V1: ${SLOT_MINUTES_AS_BOOKED_V1:-False}
       PACKAGE_SAVING_AS_DISCOUNT_V1: ${PACKAGE_SAVING_AS_DISCOUNT_V1:-False}
+      PACKAGE_END_TIME_FROM_QUOTE_V1: ${PACKAGE_END_TIME_FROM_QUOTE_V1:-False}
 
       # File uploads to S3. The keys live in stack.env, never in git.
       AWS_BUCKET_NAME: ${AWS_BUCKET_NAME:-}
