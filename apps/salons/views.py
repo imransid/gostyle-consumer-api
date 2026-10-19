@@ -1,9 +1,11 @@
 import hashlib
 import json
 import logging
+import types
 import urllib.parse
 import uuid
 from datetime import datetime, time, timedelta, timezone as dt_timezone
+from decimal import Decimal
 from django.conf import settings
 from django.db.models import F
 from django.http import Http404
@@ -1767,6 +1769,117 @@ def _reencode(payload):
     return json.dumps(payload, separators=(",", ":")).encode()
 
 
+# What a folded create must already agree with the quote on, to the cent.
+_FOLD_MUST_MATCH = ("tax_amount", "total", "due_amount")
+
+
+def _fold_package_saving(body, request, tenant_id):
+    """
+    A package's saving sent as `discount`, moved back into the price
+    (PACKAGE_SAVING_AS_DISCOUNT_V1). Returns the body to forward.
+
+    THE MISTAKE. An app that shows "200, save 20, 180" for a package and
+    sends it that way (`amount_without_tax: 200`, `discount: 20`) adds up to
+    the right money, but booking-api checks each figure on its own: the
+    package price is the price and `discount` is the tier discount alone, so
+    it answers 422 amount_mismatch, `expected: 180`. Seen live at Look
+    Change, 2026-10-19.
+
+    ONLY THAT MISTAKE IS MENDED, and only when booking-api's own quote for
+    the same basket and start says so: the basket holds a package of this
+    salon, the app's `tax_amount`, `total` and `due_amount` are the quote's
+    to the cent, and what the app added to the price it also added to the
+    discount, exactly the packages' `savings`. Then `amount_without_tax` and
+    `discount` become the quote's and nothing else changes. Any other body,
+    a quote that does not answer, or one that disagrees, is forwarded as it
+    came, and booking-api refuses it as before.
+
+    A body with no discount is never looked at, so a create the app gets
+    right costs nothing extra; the quote is asked only for a discounted
+    basket holding a package.
+
+    The idempotency key stays the app's body's (_idempotency_key), so a retry
+    folds the same way and is replayed. A retry after a price change is not
+    folded, and booking-api answers 409 IDEMPOTENCY_KEY_REUSED rather than
+    the replay; without the fold that body was a 422 every time.
+    """
+    try:
+        payload = json.loads(body or b"")
+    except ValueError:
+        return body
+    if not isinstance(payload, dict):
+        return body
+
+    sent = _cents(payload, "amount_without_tax", "discount", *_FOLD_MUST_MATCH)
+    if sent is None or sent["discount"] <= 0:
+        return body
+
+    lines = payload.get("services")
+    ids = [line.get("id") for line in lines if isinstance(line, dict)] if isinstance(lines, list) else []
+    package_ids = [pid for pid in (body_uuid(i) for i in ids) if pid is not None]
+    route = booking_route(payload.get("salon_id"))
+    if route is None or not package_ids:
+        return body
+    salon = types.SimpleNamespace(tenant_id=route["tenant_id"], branch_id=route["branch_id"])
+    if not packages_for_salon(salon, package_ids):
+        return body
+
+    # Create's basket and start, in the quote's own keys and nothing else.
+    asked = {"salon_id": payload.get("salon_id"), "services": [{"id": i} for i in ids]}
+    if payload.get("products"):
+        asked["products"] = payload["products"]
+    asked["date"] = payload.get("date")
+    asked["start_time"] = payload.get("start_time")
+    try:
+        status_code, quote = quote_booking(
+            _reencode(asked),
+            authorization=request.META.get("HTTP_AUTHORIZATION", ""),
+            tenant_id=tenant_id,
+        )
+    except BookingApiUnavailable:
+        return body
+    if status_code != 200 or not isinstance(quote, dict) or not quote.get("packages"):
+        return body
+
+    priced = _cents(quote, "amount_without_tax", "discount", *_FOLD_MUST_MATCH)
+    savings = [_cents(pkg, "savings") if isinstance(pkg, dict) else None for pkg in quote["packages"]]
+    if priced is None or None in savings:
+        return body
+
+    moved = sent["amount_without_tax"] - priced["amount_without_tax"]
+    if (
+        moved <= 0
+        or moved != sent["discount"] - priced["discount"]
+        or moved != sum(s["savings"] for s in savings)
+        or any(sent[key] != priced[key] for key in _FOLD_MUST_MATCH)
+    ):
+        return body
+
+    payload["amount_without_tax"] = quote["amount_without_tax"]
+    payload["discount"] = quote["discount"]
+    logger.info(
+        "Create sent a package saving of %s as discount; folded into the price "
+        "as booking-api's quote prices it (PACKAGE_SAVING_AS_DISCOUNT_V1).",
+        moved,
+    )
+    return _reencode(payload)
+
+
+def _cents(figures, *keys):
+    """
+    Each `figures[key]` as a Decimal to the cent, or None when any is not a
+    plain JSON number (missing, text, a bool). Compared as text-exact
+    decimals, so 189 and 189.0 agree and float noise never decides.
+    """
+    found = {}
+    for key in keys:
+        value = figures.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        found[key] = Decimal(str(value)).quantize(Decimal("0.01"))
+    return found
+
+
 def _idempotency_key(request):
     """
     The caller's `Idempotency-Key`, or one derived from the request itself.
@@ -2173,6 +2286,10 @@ class BookingCreateView(APIView):
         # by it, and to the tenant it belongs to, so the app sends the id it
         # already has and no headers at all. See _route_booking.
         body, tenant_id = _route_booking(request)
+        if settings.PACKAGE_SAVING_AS_DISCOUNT_V1:
+            # A package's saving sent as a discount: mended here, and only
+            # that, when booking-api's quote agrees. See _fold_package_saving.
+            body = _fold_package_saving(body, request, tenant_id)
 
         try:
             upstream_status, body = create_booking(

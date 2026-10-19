@@ -613,6 +613,141 @@ class CreateWithAPackageLineTests(SimpleTestCase):
                 self.assertIn(self.LINES, sent)
 
 
+# Create as the app sent it at Look Change, 2026-10-19, on the seeded
+# "Groom and Go" (520, its parts 609 apart, saving 89): the saving sent as a
+# discount. The money adds up (609 - 89 = 520, + 26 VAT = 546), and
+# booking-api refuses it with amount_mismatch on amount_without_tax.
+SAVING_AS_DISCOUNT = {
+    "salon_id": BRANCH_ID,
+    "services": [{"id": str(PACKAGE), "amount": 520}],
+    "products": [],
+    "stylists": [str(MAYA)],
+    "date": "2026-10-20",
+    "start_time": "2026-10-20T14:00:00+04:00",
+    "end_time": "2026-10-20T15:25:00+04:00",
+    "amount_without_tax": 609,
+    "tax_amount": 26,
+    "discount": 89,
+    "total": 546,
+    "advance_paid_amount": 0,
+    "due_amount": 546,
+    "payment_status": "PAY_AFTER_CHECK_IN",
+    "status": "BOOKED",
+    "booking_type": "SINGLE",
+}
+
+# booking-api's quote for that basket and start, for a customer with no tier.
+PRICED = {
+    "services": [{"id": str(PACKAGE), "amount": 520}],
+    "packages": [{"id": str(PACKAGE), "name": "Groom and Go", "amount": 520,
+                  "parts_total": 609, "savings": 89, "service_ids": []}],
+    "amount_without_tax": 520, "discount": 0, "tax_amount": 26, "total": 546,
+    "advance_paid_amount": 0, "due_amount": 546, "end_time": "2026-10-20T15:25:00+04:00",
+}
+
+
+def app_body(**changes):
+    return json.dumps({**SAVING_AS_DISCOUNT, **changes}, separators=(",", ":")).encode()
+
+
+class PackageSavingFoldTests(SimpleTestCase):
+    """
+    POST /booking with a package's saving sent as `discount`
+    (PACKAGE_SAVING_AS_DISCOUNT_V1): moved back into the price only when
+    booking-api's quote says that is all that is wrong; every other body
+    crosses as it came.
+    """
+
+    def create(self, body, *, flag=True, quote=(200, PRICED), packages=("row",), **headers):
+        request = APIRequestFactory().post("/api/v1/booking", data=body,
+                                           content_type="application/json", **headers)
+        force_authenticate(request, user=Customer())
+        quote_mock = (mock.Mock(side_effect=quote) if isinstance(quote, Exception)
+                      else mock.Mock(return_value=quote))
+        with override_settings(PACKAGE_SAVING_AS_DISCOUNT_V1=flag), mock.patch(
+            "apps.salons.views.booking_route",
+            return_value={"tenant_id": TENANT_ID, "branch_id": BRANCH_ID},
+        ), mock.patch("apps.salons.views.packages_for_salon", return_value=list(packages)) as found, \
+                mock.patch("apps.salons.views.quote_booking", quote_mock), \
+                mock.patch("apps.salons.views.create_booking", return_value=(201, {"id": "bkg_1"})) as create:
+            response = BookingCreateView.as_view()(request)
+        self.assertEqual(response.status_code, 201)
+        self.packages_read, self.quote_call = found, quote_mock
+        return create.call_args
+
+    def test_the_saving_is_moved_back_into_the_price(self):
+        sent = self.create(app_body()).args[0]
+        self.assertEqual(json.loads(sent), {**SAVING_AS_DISCOUNT, "amount_without_tax": 520, "discount": 0})
+        # Every other key where it was, in the order sent.
+        self.assertEqual(list(json.loads(sent)), list(SAVING_AS_DISCOUNT))
+
+    def test_the_quote_is_asked_for_create_s_basket_and_start_alone(self):
+        self.create(app_body(products=[{"id": "v1", "amount": 30}]), HTTP_AUTHORIZATION="Bearer customer")
+        asked = self.quote_call.call_args
+        self.assertEqual(json.loads(asked.args[0]), {
+            "salon_id": BRANCH_ID, "services": [{"id": str(PACKAGE)}],
+            "products": [{"id": "v1", "amount": 30}],
+            "date": "2026-10-20", "start_time": "2026-10-20T14:00:00+04:00",
+        })
+        # The customer's own token (the tier discount is theirs), no key.
+        self.assertEqual(asked.kwargs, {"authorization": "Bearer customer", "tenant_id": TENANT_ID})
+        self.packages_read.assert_called_once_with(mock.ANY, [PACKAGE])
+
+    def test_a_tier_discount_stays_and_only_the_saving_moves(self):
+        priced = {**PRICED, "discount": 52, "tax_amount": 23.4, "total": 491.4, "due_amount": 491.4}
+        body = app_body(discount=141, tax_amount=23.4, total=491.4, due_amount=491.4)
+        sent = json.loads(self.create(body, quote=(200, priced)).args[0])
+        self.assertEqual((sent["amount_without_tax"], sent["discount"]), (520, 52))
+
+    def test_the_idempotency_key_is_still_the_app_s_body_s(self):
+        folded = self.create(app_body(), flag=True).kwargs["idempotency_key"]
+        unfolded = self.create(app_body(), flag=False).kwargs["idempotency_key"]
+        self.assertEqual(folded, unfolded)
+        self.assertEqual(self.create(app_body(), HTTP_IDEMPOTENCY_KEY="k-1").kwargs["idempotency_key"], "k-1")
+
+    def test_off_the_bytes_cross_as_they_came(self):
+        self.assertEqual(self.create(app_body(), flag=False).args[0], app_body())
+        self.quote_call.assert_not_called()
+        self.packages_read.assert_not_called()
+
+    def test_a_create_built_from_the_quote_costs_nothing_extra(self):
+        body = app_body(amount_without_tax=520, discount=0)
+        self.assertEqual(self.create(body).args[0], body)
+        self.packages_read.assert_not_called()
+        self.quote_call.assert_not_called()
+
+    def test_a_discount_with_no_package_is_not_quoted(self):
+        body = app_body(discount=20)
+        self.assertEqual(self.create(body, packages=()).args[0], body)
+        self.quote_call.assert_not_called()
+
+    def test_anything_else_wrong_crosses_as_it_came(self):
+        cases = {
+            "another total": dict(body=app_body(total=547)),
+            "another VAT": dict(body=app_body(tax_amount=30.45, total=550.45, due_amount=550.45)),
+            "another due": dict(body=app_body(due_amount=0)),
+            "a discount bigger than the saving": dict(body=app_body(amount_without_tax=619, discount=99)),
+            "a price and a discount that do not move together": dict(body=app_body(discount=79)),
+            "a discount as text": dict(body=app_body(discount="89")),
+            "a quote refused": dict(body=app_body(), quote=(422, {"code": "validation_error"})),
+            "a quote with no package": dict(body=app_body(), quote=(200, {**PRICED, "packages": []})),
+            "a quote with no savings": dict(body=app_body(), quote=(
+                200, {**PRICED, "packages": [{"id": str(PACKAGE), "amount": 520}]})),
+            "booking-api unreachable for the quote": dict(
+                body=app_body(), quote=BookingApiUnavailable("connection refused")),
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(name):
+                body = kwargs.pop("body")
+                self.assertEqual(self.create(body, **kwargs).args[0], body)
+
+    def test_a_body_that_is_not_an_object_crosses_as_it_came(self):
+        for body in (b"[1,2]", b"not json"):
+            with self.subTest(body=body):
+                self.assertEqual(self.create(body).args[0], body)
+                self.quote_call.assert_not_called()
+
+
 CREATE_DOC = settings.BASE_DIR / "docs" / "BOOKING_CREATE_API.md"
 
 
