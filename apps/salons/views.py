@@ -1419,14 +1419,33 @@ def _appointment_minutes(service_ids, timing):
     Counted per entry of `service_ids`, so a service the visit performs twice
     (a package's "2 x Cut") takes twice its minutes. An id with no timing row
     (not offered here) adds nothing, as before.
+
+    SLOT_MINUTES_AS_BOOKED_V1 on, a service's minutes are the ones booking-api
+    books (service_minutes), so the stages no longer win.
     """
     if not service_ids:
         return slots.DEFAULT_APPOINTMENT_MINUTES
 
-    minutes = {
-        row["id"]: row["stage_minutes"] or row["duration_minutes"] or 0 for row in timing
-    }
+    minutes = {row["id"]: service_minutes(row) for row in timing}
     return sum(minutes.get(service_id, 0) for service_id in service_ids)
+
+
+def service_minutes(row):
+    """
+    One service's minutes in the diary, from its service_timing_rows row.
+
+    booking-api books a service for the catalogue's `duration_minutes`
+    (ListServices), never its stages, and refuses a create whose end_time is
+    not start_time plus those minutes. So with SLOT_MINUTES_AS_BOOKED_V1 on
+    the catalogue figure wins: an offer then ends where the booking will, and
+    a start is never offered that the booking does not fit. Stages count only
+    for a service with no catalogue minutes, the longer of the two wrongs.
+
+    Off, as before: the stages' sum where the service has stages.
+    """
+    if settings.SLOT_MINUTES_AS_BOOKED_V1:
+        return row["duration_minutes"] or row["stage_minutes"] or 0
+    return row["stage_minutes"] or row["duration_minutes"] or 0
 
 
 # The one refusal a package adds to the slot search (PACKAGE_BOOKING_V1).

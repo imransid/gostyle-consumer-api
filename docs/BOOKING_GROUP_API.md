@@ -172,7 +172,10 @@ the whole URL.
 
 - **Every start the salon offers that day**, in time order, every half hour.
   A start is offered when the salon is open, booking-api books at that hour,
-  and the longest visit in the party finishes before closing.
+  and the longest visit in the party finishes before closing. (Changing
+  2026-10-19, behind `SLOT_MINUTES_AS_BOOKED_V1`, off: a visit's length is
+  then the catalogue minutes booking-api books, not the stages' sum, as on
+  the single slot search, `BOOKING_NEAREST_AVAILABLE_API.md` §3.)
 - **`available: true` only if every member fits.** The `plan` then says who
   is with whom, and when. `stylist` is the one actually reserved, even when
   the request sent `null`.

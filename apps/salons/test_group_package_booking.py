@@ -158,7 +158,8 @@ class PackageSeams(Reads, ViewSeams):
     def with_packages(self, packages=(), *, flag=True, svc=None, variants=None, **over):
         over.setdefault("stylist_service_coverage", mock.Mock(return_value=PACKAGE_COVERAGE))
         with ExitStack() as stack:
-            stack.enter_context(override_settings(PACKAGE_BOOKING_V1=flag))
+            # The minutes as they were (stages first), whatever the environment says.
+            stack.enter_context(override_settings(PACKAGE_BOOKING_V1=flag, SLOT_MINUTES_AS_BOOKED_V1=False))
             self.packages_read = stack.enter_context(mock.patch(
                 "apps.salons.views.packages_for_salon", return_value=list(packages)))
             self.reads(stack, svc=PACKAGE_SERVICES if svc is None else svc, variants=variants)

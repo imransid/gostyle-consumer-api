@@ -361,6 +361,18 @@ PACKAGES_LIVE_RULES_V1 = env.bool("PACKAGES_LIVE_RULES_V1", default=False)
 # PACKAGES_FROM_PLATFORM=true: without it booking-api sells no package, and
 # every one answers 422 unknown_service.
 PACKAGE_BOOKING_V1 = env.bool("PACKAGE_BOOKING_V1", default=False)
+
+# The slot search's minutes are the ones booking-api books. booking-api books
+# a service for its catalogue duration_minutes and refuses a create whose
+# end_time is anything else; the slot search (GET /booking/nearest-available)
+# and a party's time checks (POST /booking/group-availability and
+# /booking/group) used the stages' sum instead where a service has stages, so
+# an offer could end 7 minutes before the booking would (53 against 60), and
+# a start near closing or before another visit was offered that booking-api
+# refuses. ON, the catalogue's minutes win, stages only for a service with
+# none. OFF here, the minutes are exactly what they were. Nothing in
+# booking-api changes.
+SLOT_MINUTES_AS_BOOKED_V1 = env.bool("SLOT_MINUTES_AS_BOOKED_V1", default=False)
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
