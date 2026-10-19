@@ -120,7 +120,11 @@ Three rules hold it to that:
    random would file a real booking against another salon's rows.
 3. **The forwarded bytes do not change.** The parsed copy is only read from;
    what crosses the network is still the caller's body, byte for byte, so
-   booking-api's retry hash still matches.
+   booking-api's retry hash still matches. Two exceptions: a storefront
+   `salon_id` is rewritten to its branch (§0), and with
+   `PACKAGE_SAVING_AS_DISCOUNT_V1` on, a package's saving sent as
+   `discount` is moved back into the price (§7, "Mistakes seen on a real
+   create").
 
 **The body is forwarded as raw bytes.** It is never parsed and re-serialised,
 because booking-api hashes the body to recognise a retry — so `216.25` must
@@ -441,6 +445,19 @@ This create had three:
 | a 20:30 start for a 60-minute visit at a salon that closes at 21:00 | refused: the visit runs past closing | a start from the slot search with the package id; it offers only starts the whole visit fits |
 
 None of these come up when the create is built from the quote (step 4).
+
+**The first one is mended here (added 2026-10-19, `PACKAGE_SAVING_AS_DISCOUNT_V1`,
+off by default).** On, a create with a `discount` and a package of this
+salon in its `services` is priced by booking-api's quote first (same
+basket, same start). When the app's `tax_amount`, `total` and
+`due_amount` are the quote's, and what it added to `amount_without_tax`
+it also added to `discount`, exactly the packages' `savings`, then
+`amount_without_tax` and `discount` are set to the quote's before
+booking-api sees the body. Nothing else is changed: a wrong `end_time` or
+a start that does not fit is still refused, and any other wrong figure
+still answers `amount_mismatch`. A tier discount stays where it is: only
+the saving moves. Still send the quote's figures: this is a safety net,
+not the contract.
 
 ### The line
 
