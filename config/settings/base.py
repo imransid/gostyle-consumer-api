@@ -373,6 +373,18 @@ PACKAGE_BOOKING_V1 = env.bool("PACKAGE_BOOKING_V1", default=False)
 # none. OFF here, the minutes are exactly what they were. Nothing in
 # booking-api changes.
 SLOT_MINUTES_AS_BOOKED_V1 = env.bool("SLOT_MINUTES_AS_BOOKED_V1", default=False)
+
+# A package's saving sent on create as a discount (amount_without_tax: 200,
+# discount: 20 for a 180 package), moved back into the price here before
+# booking-api sees it. booking-api checks each figure and refuses that body
+# with 422 amount_mismatch, though the money adds up. ON, POST /booking with
+# a discount and a package of this salon in it asks booking-api's quote, and
+# only when the app's tax, total and due are the quote's and the extra
+# discount is exactly the packages' savings are amount_without_tax and
+# discount set to the quote's; every other body is forwarded as it came.
+# OFF here, create forwards exactly what it did. Nothing in booking-api
+# changes (views._fold_package_saving).
+PACKAGE_SAVING_AS_DISCOUNT_V1 = env.bool("PACKAGE_SAVING_AS_DISCOUNT_V1", default=False)
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
