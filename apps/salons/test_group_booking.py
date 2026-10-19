@@ -30,7 +30,7 @@ from apps.salons.group_serializers import (
     GroupBookingRequestSerializer,
 )
 from apps.salons.group_translate import EngineClock
-from apps.salons.group_views import GroupAvailabilityView, GroupBookingCreateView
+from apps.salons.group_views import GroupAvailabilityView, GroupBookingCreateView, _party_timing
 
 # ------------------------------------------------------------ the fixture
 
@@ -926,9 +926,12 @@ class PartyChecks:
 # (group_views._checks_picks). test_group_package_booking drives both, with
 # the package reads mocked and the switch set test by test.
 PACKAGES_OFF = {"PACKAGE_BOOKING_V1": False}
+# And the minutes as they were, the stages' sum first (the nails' 60):
+# GroupMinutesAsBookedTests has SLOT_MINUTES_AS_BOOKED_V1 on.
+MINUTES_AS_BEFORE = {"SLOT_MINUTES_AS_BOOKED_V1": False}
 
 
-@override_settings(**PACKAGES_OFF)
+@override_settings(**PACKAGES_OFF, **MINUTES_AS_BEFORE)
 class GroupAvailabilityViewTests(PartyChecks, ViewSeams, SimpleTestCase):
     PATH = "/api/v1/booking/group-availability"
     SERVICES_FIELD = "service_ids"
@@ -1057,7 +1060,7 @@ class GroupAvailabilityViewTests(PartyChecks, ViewSeams, SimpleTestCase):
         s.plan_group.assert_not_called()
 
 
-@override_settings(**PACKAGES_OFF, CACHES={"default": {
+@override_settings(**PACKAGES_OFF, **MINUTES_AS_BEFORE, CACHES={"default": {
     "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
     "LOCATION": "group-booking-tests",
 }})
@@ -1320,3 +1323,31 @@ class GroupBookingViewTests(PartyChecks, ViewSeams, SimpleTestCase):
             self.assert_refused(self.book(body), "products_not_supported")
             self.assert_refused(self.book(booking_body(user_id=uuid.uuid4())), "invalid_member_kind")
         s.hold_group.assert_not_called()
+
+
+@override_settings(**PACKAGES_OFF, SLOT_MINUTES_AS_BOOKED_V1=True)
+class GroupMinutesAsBookedTests(ViewSeams, SimpleTestCase):
+    """
+    SLOT_MINUTES_AS_BOOKED_V1 on: a party's visits last what booking-api
+    books, the catalogue's minutes (the nails' 50), not the stages' (60).
+    """
+
+    def test_a_party_timing_is_the_catalogue_minutes(self):
+        rows = {str(row["id"]): row for row in TIMING}
+        members = [{"service_ids": [NAILS]}, {"service_ids": [CUT]}]
+        self.assertEqual(_party_timing(rows, members), (50, 30))
+        with override_settings(SLOT_MINUTES_AS_BOOKED_V1=False):
+            self.assertEqual(_party_timing(rows, members), (60, 30))
+
+    def test_the_last_start_is_the_one_the_booking_fits(self):
+        # Closing at 19:50: 50 minutes of nails fit from 19:00, the stages'
+        # 60 only from 18:30. (Each start's `end` is booking-api's own plan.)
+        closes = mock.Mock(side_effect=lambda salon, tz, day, day_start: (
+            day_start + timedelta(hours=9), day_start + timedelta(hours=19, minutes=50)))
+        for flag, last in ((True, "2026-10-11T19:00:00+04:00"), (False, "2026-10-11T18:30:00+04:00")):
+            with self.subTest(flag=flag), override_settings(SLOT_MINUTES_AS_BOOKED_V1=flag), \
+                    self.seams(_open_span=closes):
+                data = self.post(GroupAvailabilityView, GroupAvailabilityViewTests.PATH,
+                                 availability_body()).data
+                starts = [slot["start"] for band in data["bands"] for slot in band["slots"]]
+                self.assertEqual(starts[-1], last)

@@ -76,6 +76,7 @@ from .views import (
     _member_check_in_fields,
     _open_span,
     _salon_card,
+    service_minutes,
 )
 
 logger = logging.getLogger(__name__)
@@ -339,14 +340,13 @@ def _party_timing(rows, members):
     """
     The longest visit in the party, and the notice the party needs.
 
-    The same figures the single-booking picker uses: the platform's staged
-    minutes where a service has stages, its catalogue duration otherwise,
-    and the longest lead time any chosen service asks for.
+    The same figures the single-booking picker uses (service_minutes): the
+    platform's staged minutes where a service has stages, its catalogue
+    duration otherwise, or with SLOT_MINUTES_AS_BOOKED_V1 on the catalogue's
+    minutes booking-api books; and the longest lead time any chosen service
+    asks for.
     """
-    minutes = {
-        sid: row["stage_minutes"] or row["duration_minutes"] or 0
-        for sid, row in rows.items()
-    }
+    minutes = {sid: service_minutes(row) for sid, row in rows.items()}
     longest = max(gt.member_minutes(members, minutes))
     lead = max([row["lead_time_minutes"] or 0 for row in rows.values()] or [0])
     return longest, lead

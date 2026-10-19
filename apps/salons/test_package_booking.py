@@ -58,6 +58,7 @@ from apps.salons.views import (
     BookingCreateView,
     BookingQuoteView,
     NearestAvailableView,
+    service_minutes,
 )
 
 MAYA = uuid.UUID("99999999-9999-9999-9999-999999999990")
@@ -98,13 +99,15 @@ class SlotSearchSeams(Reads):
     _offers asks (hours, roster, skills, busy time). _offers itself runs.
     """
 
-    def search(self, ids, *, packages=(), flag=True, **reads):
+    def search(self, ids, *, packages=(), flag=True, minutes_as_booked=False, **reads):
         salon = types.SimpleNamespace(id=SALON, tenant_id=TENANT, branch_id=BRANCH,
                                       branch_timezone="Asia/Dubai")
         query = f"{WINDOW}&service_ids={','.join(str(i) for i in ids)}"
         request = APIRequestFactory().get(f"/api/v1/booking/nearest-available/{SALON}?{query}")
         force_authenticate(request, user=Customer())
-        with ExitStack() as stack, override_settings(PACKAGE_BOOKING_V1=flag):
+        with ExitStack() as stack, override_settings(
+            PACKAGE_BOOKING_V1=flag, SLOT_MINUTES_AS_BOOKED_V1=minutes_as_booked,
+        ):
             stack.enter_context(mock.patch("apps.salons.views.salon_profile", return_value=salon))
             self.packages_read = stack.enter_context(mock.patch(
                 "apps.salons.views.packages_for_salon", return_value=list(packages)))
@@ -259,6 +262,53 @@ class SlotSearchSwitchedOffTests(SlotSearchSeams, SimpleTestCase):
         response = self.search([CUT, BEARD], flag=False)
         self.assertEqual(response.data["duration_min"], 35 + 20)
         self.assertEqual(self.lengths(response), {55})
+
+
+class SlotMinutesAsBookedTests(SlotSearchSeams, SimpleTestCase):
+    """
+    SLOT_MINUTES_AS_BOOKED_V1 on: the slot search counts the minutes
+    booking-api books (the catalogue's), not the stages' sum, so an offer
+    ends where the booking will and create's end_time check agrees with it.
+    """
+
+    def test_hand_picked_services_take_their_catalogue_minutes(self):
+        response = self.search([CUT, BEARD], flag=False, minutes_as_booked=True)
+        # The cut's 30, not its stages' 35.
+        self.assertEqual(response.data["duration_min"], 30 + 20)
+        self.assertEqual(self.lengths(response), {50})
+
+    def test_a_package_is_its_parts_catalogue_minutes(self):
+        response = self.search([PACKAGE], packages=[a_two_cut_package()], minutes_as_booked=True)
+        self.assertEqual(response.data["duration_min"], 30 + 30 + 25)
+        self.assertEqual(self.lengths(response), {85})
+
+    def test_stages_count_only_for_a_service_with_no_catalogue_minutes(self):
+        no_minutes = {**TIMING[BEARD], "duration_minutes": 0, "stage_minutes": 15}
+        with mock.patch.dict(TIMING, {BEARD: no_minutes}):
+            response = self.search([BEARD], flag=False, minutes_as_booked=True)
+        self.assertEqual(response.data["duration_min"], 15)
+
+
+class ServiceMinutesTests(SimpleTestCase):
+    """views.service_minutes: one service's minutes in the diary."""
+
+    # Look Change's "Hair Solution", 2026-10-19: two 30-minute services
+    # whose stages came to 53 between them. booking-api booked 60, and
+    # refused the end_time the slot search's 53 would give.
+    STAGED = {"duration_minutes": 30, "stage_minutes": 23}
+
+    def test_off_the_stages_win(self):
+        with override_settings(SLOT_MINUTES_AS_BOOKED_V1=False):
+            self.assertEqual(service_minutes(self.STAGED), 23)
+
+    def test_on_the_catalogue_wins(self):
+        with override_settings(SLOT_MINUTES_AS_BOOKED_V1=True):
+            self.assertEqual(service_minutes(self.STAGED), 30)
+
+    def test_a_service_with_neither_is_no_minutes_both_ways(self):
+        for flag in (False, True):
+            with self.subTest(flag=flag), override_settings(SLOT_MINUTES_AS_BOOKED_V1=flag):
+                self.assertEqual(service_minutes({"duration_minutes": None, "stage_minutes": None}), 0)
 
 
 class PartsTests(SimpleTestCase):
