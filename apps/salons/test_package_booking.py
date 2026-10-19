@@ -642,7 +642,8 @@ PRICED = {
     "packages": [{"id": str(PACKAGE), "name": "Groom and Go", "amount": 520,
                   "parts_total": 609, "savings": 89, "service_ids": []}],
     "amount_without_tax": 520, "discount": 0, "tax_amount": 26, "total": 546,
-    "advance_paid_amount": 0, "due_amount": 546, "end_time": "2026-10-20T15:25:00+04:00",
+    "advance_paid_amount": 0, "due_amount": 546,
+    "start_time": "2026-10-20T14:00:00+04:00", "end_time": "2026-10-20T15:25:00+04:00",
 }
 
 
@@ -650,21 +651,16 @@ def app_body(**changes):
     return json.dumps({**SAVING_AS_DISCOUNT, **changes}, separators=(",", ":")).encode()
 
 
-class PackageSavingFoldTests(SimpleTestCase):
-    """
-    POST /booking with a package's saving sent as `discount`
-    (PACKAGE_SAVING_AS_DISCOUNT_V1): moved back into the price only when
-    booking-api's quote says that is all that is wrong; every other body
-    crosses as it came.
-    """
+class PackageCreateSeams:
+    """POST /booking with booking_route, the package read, the quote and create mocked."""
 
-    def create(self, body, *, flag=True, quote=(200, PRICED), packages=("row",), **headers):
+    def create(self, body, *, flag=True, end=False, quote=(200, PRICED), packages=("row",), **headers):
         request = APIRequestFactory().post("/api/v1/booking", data=body,
                                            content_type="application/json", **headers)
         force_authenticate(request, user=Customer())
         quote_mock = (mock.Mock(side_effect=quote) if isinstance(quote, Exception)
                       else mock.Mock(return_value=quote))
-        with override_settings(PACKAGE_SAVING_AS_DISCOUNT_V1=flag), mock.patch(
+        with override_settings(PACKAGE_SAVING_AS_DISCOUNT_V1=flag, PACKAGE_END_TIME_FROM_QUOTE_V1=end), mock.patch(
             "apps.salons.views.booking_route",
             return_value={"tenant_id": TENANT_ID, "branch_id": BRANCH_ID},
         ), mock.patch("apps.salons.views.packages_for_salon", return_value=list(packages)) as found, \
@@ -674,6 +670,15 @@ class PackageSavingFoldTests(SimpleTestCase):
         self.assertEqual(response.status_code, 201)
         self.packages_read, self.quote_call = found, quote_mock
         return create.call_args
+
+
+class PackageSavingFoldTests(PackageCreateSeams, SimpleTestCase):
+    """
+    POST /booking with a package's saving sent as `discount`
+    (PACKAGE_SAVING_AS_DISCOUNT_V1): moved back into the price only when
+    booking-api's quote says that is all that is wrong; every other body
+    crosses as it came.
+    """
 
     def test_the_saving_is_moved_back_into_the_price(self):
         sent = self.create(app_body()).args[0]
@@ -746,6 +751,73 @@ class PackageSavingFoldTests(SimpleTestCase):
             with self.subTest(body=body):
                 self.assertEqual(self.create(body).args[0], body)
                 self.quote_call.assert_not_called()
+
+
+class PackageEndTimeMendTests(PackageCreateSeams, SimpleTestCase):
+    """
+    POST /booking with a package and an end_time of the app's own
+    (PACKAGE_END_TIME_FROM_QUOTE_V1): the quote's end_time replaces it when
+    the quote starts at the app's start; the start never moves.
+    """
+
+    def right(self, **changes):
+        """The body built from the quote: right money, right end."""
+        return app_body(amount_without_tax=520, discount=0, **changes)
+
+    def test_the_app_s_end_is_replaced_by_the_quote_s(self):
+        # 30 minutes, the way an app measuring the package by one part sends it.
+        sent = self.create(self.right(end_time="2026-10-20T14:30:00+04:00"), flag=False, end=True).args[0]
+        self.assertEqual(json.loads(sent), {**json.loads(self.right()), "end_time": "2026-10-20T15:25:00+04:00"})
+        self.assertEqual(list(json.loads(sent)), list(SAVING_AS_DISCOUNT))
+
+    def test_the_live_payload_is_mended_whole(self):
+        # Look Change, 2026-10-19: the saving as a discount AND a 30-minute end.
+        body = app_body(end_time="2026-10-20T14:30:00+04:00")
+        sent = json.loads(self.create(body, flag=True, end=True).args[0])
+        self.assertEqual((sent["amount_without_tax"], sent["discount"], sent["end_time"]),
+                         (520, 0, "2026-10-20T15:25:00+04:00"))
+        self.assertEqual(sent["start_time"], "2026-10-20T14:00:00+04:00")
+        self.quote_call.assert_called_once()
+
+    def test_the_same_instant_in_another_offset_is_left_alone(self):
+        # booking-api answers on its own clock: the same end, written +06:00.
+        quote = (200, {**PRICED, "start_time": "2026-10-20T16:00:00+06:00",
+                       "end_time": "2026-10-20T17:25:00+06:00"})
+        body = self.right()
+        self.assertEqual(self.create(body, flag=False, end=True, quote=quote).args[0], body)
+
+    def test_an_end_is_mended_even_when_the_money_is_wrong_otherwise(self):
+        # booking-api still refuses the money: only the end is the quote's business here.
+        body = app_body(total=547, end_time="2026-10-20T14:30:00+04:00")
+        sent = json.loads(self.create(body, flag=True, end=True).args[0])
+        self.assertEqual(sent, {**json.loads(body), "end_time": "2026-10-20T15:25:00+04:00"})
+
+    def test_left_as_it_came(self):
+        cases = {
+            "a quote at another start": dict(quote=(200, {**PRICED, "start_time": "2026-10-20T14:15:00+04:00"})),
+            "a quote with no end": dict(quote=(200, {k: v for k, v in PRICED.items() if k != "end_time"})),
+            "a quote with no start": dict(quote=(200, {k: v for k, v in PRICED.items() if k != "start_time"})),
+            "a quote refused": dict(quote=(422, {"code": "validation_error"})),
+            "booking-api unreachable for the quote": dict(quote=BookingApiUnavailable("connection refused")),
+            "no package in the basket": dict(packages=()),
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(name):
+                body = self.right(end_time="2026-10-20T14:30:00+04:00")
+                self.assertEqual(self.create(body, flag=False, end=True, **kwargs).args[0], body)
+
+    def test_an_end_that_is_not_a_time_is_not_quoted(self):
+        for end_time in (None, "half past two", "2026-10-20T14:30:00"):
+            with self.subTest(end_time=end_time):
+                body = self.right(end_time=end_time)
+                self.assertEqual(self.create(body, flag=False, end=True).args[0], body)
+                self.quote_call.assert_not_called()
+
+    def test_off_the_bytes_cross_as_they_came(self):
+        body = self.right(end_time="2026-10-20T14:30:00+04:00")
+        self.assertEqual(self.create(body, flag=False, end=False).args[0], body)
+        self.quote_call.assert_not_called()
+        self.packages_read.assert_not_called()
 
 
 CREATE_DOC = settings.BASE_DIR / "docs" / "BOOKING_CREATE_API.md"

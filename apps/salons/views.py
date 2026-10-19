@@ -1773,35 +1773,44 @@ def _reencode(payload):
 _FOLD_MUST_MATCH = ("tax_amount", "total", "due_amount")
 
 
-def _fold_package_saving(body, request, tenant_id):
+def _mend_package_create(body, request, tenant_id):
     """
-    A package's saving sent as `discount`, moved back into the price
-    (PACKAGE_SAVING_AS_DISCOUNT_V1). Returns the body to forward.
+    Two mistakes an app makes on a package's create, mended from booking-api's
+    own quote before booking-api sees the body. Returns the body to forward.
 
-    THE MISTAKE. An app that shows "200, save 20, 180" for a package and
-    sends it that way (`amount_without_tax: 200`, `discount: 20`) adds up to
-    the right money, but booking-api checks each figure on its own: the
-    package price is the price and `discount` is the tier discount alone, so
-    it answers 422 amount_mismatch, `expected: 180`. Seen live at Look
-    Change, 2026-10-19.
+    1. THE SAVING SENT AS A DISCOUNT (PACKAGE_SAVING_AS_DISCOUNT_V1). An app
+       that shows "200, save 20, 180" for a package and sends it that way
+       (`amount_without_tax: 200`, `discount: 20`) adds up to the right
+       money, but booking-api checks each figure on its own: the package
+       price is the price and `discount` is the tier discount alone, so it
+       answers 422 amount_mismatch, `expected: 180`. Mended only when the
+       app's `tax_amount`, `total` and `due_amount` are the quote's to the
+       cent, and what it added to the price it also added to the discount,
+       exactly the packages' `savings` (_saving_folds). A tier discount stays.
 
-    ONLY THAT MISTAKE IS MENDED, and only when booking-api's own quote for
-    the same basket and start says so: the basket holds a package of this
-    salon, the app's `tax_amount`, `total` and `due_amount` are the quote's
-    to the cent, and what the app added to the price it also added to the
-    discount, exactly the packages' `savings`. Then `amount_without_tax` and
-    `discount` become the quote's and nothing else changes. Any other body,
-    a quote that does not answer, or one that disagrees, is forwarded as it
-    came, and booking-api refuses it as before.
+    2. AN END TIME OF THE APP'S OWN (PACKAGE_END_TIME_FROM_QUOTE_V1). booking-
+       api refuses a create whose `end_time` is not `start_time` plus every
+       part's minutes ("These services run 60 minutes, so the visit ends at
+       ..."), and an app that measures a package by one part sends 30. The
+       quote's `end_time` is that instant, so it replaces the app's when the
+       quote starts at the app's own `start_time`. The start is never moved,
+       and booking-api still holds the stylist for the whole visit, so a
+       start the visit does not fit (past closing, before the next booking)
+       is refused as before.
 
-    A body with no discount is never looked at, so a create the app gets
-    right costs nothing extra; the quote is asked only for a discounted
-    basket holding a package.
+    Both seen live at Look Change, 2026-10-19, on "Hair Solution".
+
+    The quote is asked once, and only for a basket holding a package of this
+    salon, and for the first mistake only when there is a discount. Any other
+    body, a quote that does not answer, or one that disagrees, is forwarded as
+    it came, and booking-api refuses it as before.
 
     The idempotency key stays the app's body's (_idempotency_key), so a retry
-    folds the same way and is replayed. A retry after a price change is not
-    folded, and booking-api answers 409 IDEMPOTENCY_KEY_REUSED rather than
-    the replay; without the fold that body was a 422 every time.
+    is mended the same way and replayed. booking-api stores a key only on
+    success, so a refused body leaves nothing behind for the mended one to
+    collide with. A retry after a price change is not folded, and booking-api
+    answers 409 IDEMPOTENCY_KEY_REUSED rather than the replay; without the
+    mend that body was a 422 every time.
     """
     try:
         payload = json.loads(body or b"")
@@ -1811,7 +1820,9 @@ def _fold_package_saving(body, request, tenant_id):
         return body
 
     sent = _cents(payload, "amount_without_tax", "discount", *_FOLD_MUST_MATCH)
-    if sent is None or sent["discount"] <= 0:
+    fold = settings.PACKAGE_SAVING_AS_DISCOUNT_V1 and sent is not None and sent["discount"] > 0
+    mend_end = settings.PACKAGE_END_TIME_FROM_QUOTE_V1 and _instant(payload.get("end_time")) is not None
+    if not (fold or mend_end):
         return body
 
     lines = payload.get("services")
@@ -1841,28 +1852,59 @@ def _fold_package_saving(body, request, tenant_id):
     if status_code != 200 or not isinstance(quote, dict) or not quote.get("packages"):
         return body
 
+    mended = []
+    if fold and _saving_folds(sent, quote):
+        payload["amount_without_tax"] = quote["amount_without_tax"]
+        payload["discount"] = quote["discount"]
+        mended.append("the package saving sent as discount")
+
+    if mend_end:
+        start = _instant(payload.get("start_time"))
+        quoted_start, quoted_end = _instant(quote.get("start_time")), _instant(quote.get("end_time"))
+        if (
+            start is not None and quoted_end is not None
+            and quoted_start == start
+            and _instant(payload["end_time"]) != quoted_end
+        ):
+            payload["end_time"] = quote["end_time"]
+            mended.append("an end_time that was not the visit's")
+
+    if not mended:
+        return body
+    logger.info("Create mended from booking-api's quote: %s.", ", ".join(mended))
+    return _reencode(payload)
+
+
+def _saving_folds(sent, quote):
+    """
+    True when the app's figures are the quote's but for a package's saving
+    sent as discount: tax, total and due to the cent, and what was added to
+    `amount_without_tax` added to `discount` too, exactly the packages'
+    `savings`. `sent` is _cents of the app's body.
+    """
     priced = _cents(quote, "amount_without_tax", "discount", *_FOLD_MUST_MATCH)
     savings = [_cents(pkg, "savings") if isinstance(pkg, dict) else None for pkg in quote["packages"]]
     if priced is None or None in savings:
-        return body
+        return False
 
     moved = sent["amount_without_tax"] - priced["amount_without_tax"]
-    if (
-        moved <= 0
-        or moved != sent["discount"] - priced["discount"]
-        or moved != sum(s["savings"] for s in savings)
-        or any(sent[key] != priced[key] for key in _FOLD_MUST_MATCH)
-    ):
-        return body
-
-    payload["amount_without_tax"] = quote["amount_without_tax"]
-    payload["discount"] = quote["discount"]
-    logger.info(
-        "Create sent a package saving of %s as discount; folded into the price "
-        "as booking-api's quote prices it (PACKAGE_SAVING_AS_DISCOUNT_V1).",
-        moved,
+    return (
+        moved > 0
+        and moved == sent["discount"] - priced["discount"]
+        and moved == sum(s["savings"] for s in savings)
+        and all(sent[key] == priced[key] for key in _FOLD_MUST_MATCH)
     )
-    return _reencode(payload)
+
+
+def _instant(value):
+    """An ISO 8601 time with an offset as an aware datetime, or None."""
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo is not None else None
 
 
 def _cents(figures, *keys):
@@ -2286,10 +2328,11 @@ class BookingCreateView(APIView):
         # by it, and to the tenant it belongs to, so the app sends the id it
         # already has and no headers at all. See _route_booking.
         body, tenant_id = _route_booking(request)
-        if settings.PACKAGE_SAVING_AS_DISCOUNT_V1:
-            # A package's saving sent as a discount: mended here, and only
-            # that, when booking-api's quote agrees. See _fold_package_saving.
-            body = _fold_package_saving(body, request, tenant_id)
+        if settings.PACKAGE_SAVING_AS_DISCOUNT_V1 or settings.PACKAGE_END_TIME_FROM_QUOTE_V1:
+            # A package's saving sent as a discount, or an end_time that is
+            # not the visit's: mended here, and only those, when booking-api's
+            # quote agrees. See _mend_package_create.
+            body = _mend_package_create(body, request, tenant_id)
 
         try:
             upstream_status, body = create_booking(
