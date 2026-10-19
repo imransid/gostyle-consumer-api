@@ -423,6 +423,24 @@ package line is `422 unknown_service`).
    `end_time`, `amount_without_tax`, `discount`, `tax_amount`, `total`,
    `advance_paid_amount` and `due_amount` exactly as it answered them,
    `stylists: ["<the offer's stylist.id>"]`, and the rest as for any booking.
+   `payment_status` is `DRAFT` (pay by link) or `PAY_AFTER_CHECK_IN` (pay at
+   the salon).
+
+### Mistakes seen on a real create
+
+> **Added 2026-10-19**, from a live create at Look Change ("Hair Solution":
+> 180, before 200, two 30-minute services).
+
+booking-api answers **one refusal at a time**, so fixing one shows the next.
+This create had three:
+
+| Sent | Refused with | Right |
+| ---- | ------------ | ----- |
+| `amount_without_tax: 200`, `discount: 20` (the saving as a discount) | `amount_mismatch` on `amount_without_tax`, `expected: 180` | `amount_without_tax: 180`, `discount: 0`. The package price is the price; `savings` is display only, and `discount` is the tier discount alone |
+| `end_time` 30 minutes after `start_time` | `invalid_window` on `end_time` ("These services run 60 minutes, so the visit ends at ...") | the quote's `end_time`: start plus every part's minutes |
+| a 20:30 start for a 60-minute visit at a salon that closes at 21:00 | refused: the visit runs past closing | a start from the slot search with the package id; it offers only starts the whole visit fits |
+
+None of these come up when the create is built from the quote (step 4).
 
 ### The line
 

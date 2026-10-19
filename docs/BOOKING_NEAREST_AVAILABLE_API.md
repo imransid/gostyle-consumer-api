@@ -121,6 +121,18 @@ Then: every grid point where the whole appointment fits, in the window.
   includes that padding and is never recomputed downstream. A service the
   visit performs twice (a package's quantity, or a picked service that is
   also in a picked package) counts twice.
+
+  > **Changing (2026-10-19), behind `SLOT_MINUTES_AS_BOOKED_V1`, off by
+  > default.** booking-api books a service for its catalogue duration, never
+  > its stages, and refuses a create whose `end_time` is anything else. So
+  > where the stages add up to less, an offer ended before the booking would
+  > (Look Change's "Hair Solution": `duration_min` 53, the quote and the
+  > booking 60), and a start near closing or just before another visit was
+  > offered that booking-api then refuses. **On**, a service counts its
+  > catalogue minutes, the stages only for a service with none, so
+  > `duration_min` and every `end` match the quote. The party routes'
+  > checks (`BOOKING_GROUP_API.md`) count the same way. Either way, send
+  > create the quote's `end_time`, not the offer's `end`.
 - **Qualified** is stricter than on the Expert step: one stylist for the whole
   visit, so covering part of the basket is covering none of it. The skill
   match itself is identical — see `BOOKING_EXPERT_API.md` §3.
