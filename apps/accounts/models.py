@@ -35,6 +35,11 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
     email = models.EmailField(unique=True, null=True, blank=True)
     full_name = models.CharField(max_length=120, blank=True)
 
+    # The person's row in the platform directory (public.customer).
+    # A plain UUID, not a ForeignKey, for the reason Favourite.storefront_id
+    # is one: that table belongs to the platform, not to this service.
+    platform_customer_id = models.UUIDField(null=True, blank=True, db_index=True)
+
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     phone_verified_at = models.DateTimeField(null=True, blank=True)
