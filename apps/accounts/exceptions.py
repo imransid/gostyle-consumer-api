@@ -35,6 +35,8 @@ _TOP_LEVEL_CODES = {
     415: "unsupported_media_type",
     422: "validation_error",
     429: "rate_limited",
+    409: "conflict",
+    410: "gone",
     # Set by a view that depends on another service. The specific code lives
     # in `errors` (booking_api_unavailable); this one says "not your fault,
     # try again", which is the only thing the app can act on.
@@ -53,6 +55,8 @@ _TOP_LEVEL_DETAIL = {
     429: "Too many requests. Please try again later.",
     502: "A service this request depends on failed.",
     503: "Temporarily unavailable. Please try again.",
+    409: "That value is already in use.",
+    410: "That code or token has expired.",
 }
 
 # DRF's own names for "this error has no field". Both become null for the

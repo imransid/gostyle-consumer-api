@@ -3,20 +3,41 @@ import secrets
 from django.db import transaction
 from django.db.models import F
 from django.utils import timezone
-from rest_framework.exceptions import ValidationError
+from rest_framework import status
+from rest_framework.exceptions import APIException, ErrorDetail, ValidationError
+
+
+class Conflict(APIException):
+    """409. The new contact belongs to another account."""
+    status_code = status.HTTP_409_CONFLICT
+
+
+class Gone(APIException):
+    """410. A code or a change token that is past its expiry."""
+    status_code = status.HTTP_410_GONE
+
+
 from datetime import timedelta
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.db import IntegrityError
-
+from rest_framework.exceptions import ErrorDetail
 
 from . import ratelimit
 from .identifiers import EMAIL
 from .models import ConsumerAccount, OtpCode, Purpose, Verification
 from .notifications import get_sender, send_contact_change_notice
 
-OTP_TTL_SECONDS = 300
+OTP_TTL_SECONDS = 600
 VERIFICATION_TTL_SECONDS = Verification.TTL_SECONDS
+CHANGE_TOKEN_TTL_SECONDS = 900
 
+def _field_error(field, code, message, exc_class=ValidationError):
+    """Raise in the shape exceptions.py flattens for the app.
+
+    The envelope reads `code` off the ErrorDetail, so a plain string would
+    arrive as the generic "invalid" and the app's branch on it would miss.
+    """
+    raise exc_class({field: [ErrorDetail(message, code=code)]})
 
 def _account_field(destination_type):
     return "email" if destination_type == EMAIL else "phone"
@@ -419,9 +440,19 @@ def verify_contact_change_proof(user, destination_type, code, ip):
             .first()
         )
         if otp is None:
-            raise ValidationError({"detail": "No active code. Request a new one."})
+            _field_error(
+                "code",
+                "code_expired",
+                "No active code. Request a new one.",
+                exc_class=Gone,
+            )
         if not otp.is_usable:
-            raise ValidationError({"detail": "Code expired or too many attempts."})
+            _field_error(
+                "code",
+                "code_expired",
+                "Code expired or too many attempts.",
+                exc_class=Gone,
+            )
 
         matched = otp.check_code(code)
         if matched:
@@ -431,20 +462,22 @@ def verify_contact_change_proof(user, destination_type, code, ip):
             OtpCode.objects.filter(pk=otp.pk).update(attempts=F("attempts") + 1)
 
     if not matched:
-        raise ValidationError({"detail": "Invalid code."})
+        _field_error("code", "invalid_code", "Invalid code.")
 
     verification = Verification.objects.create(
         account=user,
         destination=destination,
         destination_type=destination_type,
         purpose=Purpose.CHANGE_CONTACT,
-        expires_at=now + timedelta(seconds=VERIFICATION_TTL_SECONDS),
+        expires_at=now + timedelta(seconds=CHANGE_TOKEN_TTL_SECONDS),
     )
 
     return {
         "change_token": str(verification.id),
-        "expires_in": VERIFICATION_TTL_SECONDS,
+        "expires_in": CHANGE_TOKEN_TTL_SECONDS,
     }
+
+
 
 def request_contact_change_code(user, change_token, destination, destination_type, ip):
     """Step 3 of a contact change: send a code to the NEW contact.
@@ -456,12 +489,19 @@ def request_contact_change_code(user, change_token, destination, destination_typ
 
     current = getattr(user, _account_field(destination_type))
     if current and current == destination:
-        raise ValidationError(
-            {"detail": "That is already the contact on this account."}
+        _field_error(
+            "destination",
+            "same_as_current",
+            "That is already the contact on this account.",
         )
 
     if account_exists(destination, destination_type):
-        raise ValidationError({"detail": "This contact is already in use."})
+        _field_error(
+            "destination",
+            "already_registered",
+            f"This {destination_type} is already on another account.",
+            exc_class=Conflict,
+        )
 
     request_otp(
         destination=destination,
@@ -471,6 +511,7 @@ def request_contact_change_code(user, change_token, destination, destination_typ
     )
 
     return {"verification": verification}
+
 
 def _live_change_token(user, change_token):
     """The caller's unexpired, unspent change token, or a 400."""
@@ -485,7 +526,12 @@ def _live_change_token(user, change_token):
         .first()
     )
     if verification is None:
-        raise ValidationError({"detail": "Invalid or expired change token."})
+        _field_error(
+            "change_token",
+            "change_token_expired",
+            "Invalid or expired change token.",
+            exc_class=Gone,
+        )
     return verification
 
 def confirm_contact_change(user, change_token, destination, destination_type, code, ip):
@@ -518,9 +564,19 @@ def confirm_contact_change(user, change_token, destination, destination_type, co
             .first()
         )
         if otp is None:
-            raise ValidationError({"detail": "No active code. Request a new one."})
+            _field_error(
+                "code",
+                "code_expired",
+                "No active code. Request a new one.",
+                exc_class=Gone,
+            )
         if not otp.is_usable:
-            raise ValidationError({"detail": "Code expired or too many attempts."})
+            _field_error(
+                "code",
+                "code_expired",
+                "Code expired or too many attempts.",
+                exc_class=Gone,
+            )
 
         matched = otp.check_code(code)
         if matched:
@@ -530,7 +586,7 @@ def confirm_contact_change(user, change_token, destination, destination_type, co
             OtpCode.objects.filter(pk=otp.pk).update(attempts=F("attempts") + 1)
 
     if not matched:
-        raise ValidationError({"detail": "Invalid code."})
+        _field_error("code", "invalid_code", "Invalid code.")
 
     try:
         with transaction.atomic():
@@ -541,7 +597,12 @@ def confirm_contact_change(user, change_token, destination, destination_type, co
         # Somebody else took the address between step 3 and here. The unique
         # column is the only check that cannot be raced; account_exists at
         # step 3 is a courtesy, not a guarantee.
-        raise ValidationError({"detail": "This contact is already in use."})
+        _field_error(
+            "destination",
+            "already_registered",
+            f"This {destination_type} is already on another account.",
+            exc_class=Conflict,
+        )
 
     if old_destination:
         transaction.on_commit(
@@ -554,5 +615,3 @@ def confirm_contact_change(user, change_token, destination, destination_type, co
 
     user.refresh_from_db()
     return user
-
-
