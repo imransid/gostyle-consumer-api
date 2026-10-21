@@ -16,6 +16,9 @@ class Gone(APIException):
     """410. A code or a change token that is past its expiry."""
     status_code = status.HTTP_410_GONE
 
+class TooManyRequests(APIException):
+    """429. The attempt cap on a code is spent."""
+    status_code = status.HTTP_429_TOO_MANY_REQUESTS
 
 from datetime import timedelta
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -446,11 +449,18 @@ def verify_contact_change_proof(user, destination_type, code, ip):
                 "No active code. Request a new one.",
                 exc_class=Gone,
             )
+        if otp.attempts >= otp.MAX_ATTEMPTS:
+            _field_error(
+                "code",
+                "too_many_requests",
+                "Too many attempts. Request a new code.",
+                exc_class=TooManyRequests,
+            )
         if not otp.is_usable:
             _field_error(
                 "code",
                 "code_expired",
-                "Code expired or too many attempts.",
+                "Code expired. Request a new one.",
                 exc_class=Gone,
             )
 
@@ -570,11 +580,18 @@ def confirm_contact_change(user, change_token, destination, destination_type, co
                 "No active code. Request a new one.",
                 exc_class=Gone,
             )
+        if otp.attempts >= otp.MAX_ATTEMPTS:
+            _field_error(
+                "code",
+                "too_many_requests",
+                "Too many attempts. Request a new code.",
+                exc_class=TooManyRequests,
+            )
         if not otp.is_usable:
             _field_error(
                 "code",
                 "code_expired",
-                "Code expired or too many attempts.",
+                "Code expired. Request a new one.",
                 exc_class=Gone,
             )
 

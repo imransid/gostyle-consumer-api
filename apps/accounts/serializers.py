@@ -17,7 +17,12 @@ class DestinationMixin:
                 attrs["destination"], attrs["destination_type"]
             )
         except InvalidDestination as exc:
-            raise serializers.ValidationError({"destination": str(exc)})
+            raise serializers.ValidationError({
+                "destination": [serializers.ErrorDetail(
+                    str(exc),
+                    code="invalid_destination",
+                )]
+            })
         return attrs
 
 
