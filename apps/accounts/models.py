@@ -23,6 +23,7 @@ class Purpose(models.TextChoices):
     REGISTER = "register", "register"
     LOGIN = "login", "login"
     PASSWORD_RESET = "password_reset", "password_reset"
+    CHANGE_CONTACT = "change_contact", "change_contact"
 
 
 class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
@@ -134,6 +135,13 @@ class Verification(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     destination = models.CharField(max_length=254, db_index=True)
+    account = models.ForeignKey(
+        "ConsumerAccount",
+        on_delete=models.CASCADE,
+        related_name="verifications",
+        null=True,
+        blank=True,
+    )
     destination_type = models.CharField(max_length=10, choices=DestinationType.choices)
     purpose = models.CharField(max_length=20, choices=Purpose.choices)
 

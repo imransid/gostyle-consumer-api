@@ -121,3 +121,31 @@ def get_sender(destination_type):
     if destination_type == PHONE:
         return WhatsAppSender()
     raise ValueError(f"No sender for destination type {destination_type!r}")
+
+
+def send_contact_change_notice(destination, destination_type, changed_type):
+    """Tell a contact that is being replaced that the change happened.
+
+    Not a sender: every sender above delivers a six digit code and nothing
+    else. This is a plain message to an address that is on its way out.
+
+    Email only for now. WhatsApp refuses free text outside a 24 hour window,
+    so a phone notice needs its own approved template first.
+    """
+    if getattr(settings, "OTP_SENDER", "console") == "console":
+        print(f"\n>>> NOTICE to {destination}: your {changed_type} was changed\n")
+        return
+
+    if destination_type != EMAIL:
+        return
+
+    send_mail(
+        subject="Your Go Style account details changed",
+        message=(
+            f"The {changed_type} on your Go Style account was just changed. "
+            "If this was not you, contact support straight away."
+        ),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[destination],
+        fail_silently=True,
+    )
