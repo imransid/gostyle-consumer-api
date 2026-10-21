@@ -55,6 +55,8 @@ from .booking_api import (
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from apps.accounts.models import Favourite, FavouriteStylist
 
+from .customer_sync import NoUsablePhone, resolve_customer
+
 from . import packages as package_rules
 from . import roster, slots, timezones
 from .hours import resolve as resolve_hours
@@ -2333,6 +2335,18 @@ class BookingCreateView(APIView):
             # not the visit's: mended here, and only those, when booking-api's
             # quote agrees. See _mend_package_create.
             body = _mend_package_create(body, request, tenant_id)
+
+        # The directory row must exist before booking-api writes a booking
+        # pointing at it. booking-api stores `actor.id` from the token, which
+        # is this account's id, so resolve_customer creates the row under that
+        # same id. A failure here never stops the booking.
+        if tenant_id:
+            try:
+                resolve_customer(request.user, tenant_id)
+            except NoUsablePhone:
+                logger.warning("account %s booked with no usable phone", request.user.pk)
+            except Exception:
+                logger.exception("customer sync failed for account %s", request.user.pk)
 
         try:
             upstream_status, body = create_booking(
