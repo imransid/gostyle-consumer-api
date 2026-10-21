@@ -15,6 +15,15 @@ from drf_spectacular.utils import (
     extend_schema_view,
 )
 
+from rest_framework.exceptions import PermissionDenied
+from .models import Purpose
+from .serializers import (
+    ContactChangeConfirmSerializer,
+    ContactChangeProofSerializer,
+    ContactChangeRequestSerializer,
+)
+
+
 from .models import Favourite
 
 from . import ratelimit, services
@@ -47,6 +56,12 @@ _OTP_REQUESTED = {
     "retry_after": ratelimit.COOLDOWN_SECONDS,
 }
 
+_CHANGE_CONTACT_SENT = {
+    "success": True,
+    "expires_in": services.OTP_TTL_SECONDS,
+    "resend_after": ratelimit.COOLDOWN_SECONDS,
+}
+
 
 def _client_ip(request):
     forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
@@ -58,6 +73,10 @@ def _client_ip(request):
 class OtpRequestView(APIView):
     """Send a verification code for the authenticated user's own contact.
     Also serves the /auth/otp/resend alias.
+
+    purpose=change_contact forks twice: with no change_token it is step 1 of a
+    contact change and may only reach a contact the account holds; with one it
+    is step 3 and may reach the new contact.
     """
 
     permission_classes = [IsAuthenticated]
@@ -65,6 +84,9 @@ class OtpRequestView(APIView):
 
     @extend_schema(request=OtpRequestSerializer, responses={200: OtpRequestedSerializer})
     def post(self, request):
+        if request.data.get("purpose") == Purpose.CHANGE_CONTACT:
+            return self._change_contact(request)
+
         s = OtpRequestSerializer(data=request.data)
         s.is_valid(raise_exception=True)
         data = s.validated_data
@@ -77,6 +99,39 @@ class OtpRequestView(APIView):
         )
         return Response(_OTP_REQUESTED, status=status.HTTP_200_OK)
 
+    def _change_contact(self, request):
+        if request.data.get("change_token"):
+            s = ContactChangeRequestSerializer(data=request.data)
+            s.is_valid(raise_exception=True)
+            data = s.validated_data
+
+            services.request_contact_change_code(
+                user=request.user,
+                change_token=data["change_token"],
+                destination=data["destination"],
+                destination_type=data["destination_type"],
+                ip=_client_ip(request),
+            )
+            return Response(_CHANGE_CONTACT_SENT, status=status.HTTP_200_OK)
+
+        s = OtpRequestSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        data = s.validated_data
+
+        # Step 1 may only reach a contact already on the account. The service
+        # reads the destination off the user anyway, so this check exists to
+        # answer 403 rather than silently sending somewhere else.
+        own = getattr(request.user, services._account_field(data["destination_type"]))
+        if not own or own != data["destination"]:
+            raise PermissionDenied("That contact is not on this account.")
+
+        services.request_otp_for_user(
+            user=request.user,
+            destination_type=data["destination_type"],
+            purpose=Purpose.CHANGE_CONTACT,
+            ip=_client_ip(request),
+        )
+        return Response(_CHANGE_CONTACT_SENT, status=status.HTTP_200_OK)
 
 class OtpReSendView(APIView):
 
@@ -97,13 +152,22 @@ class OtpReSendView(APIView):
         )
         return Response(_OTP_REQUESTED, status=status.HTTP_200_OK)
 
-
 class OtpVerifyView(APIView):
+    """Check a code against the caller's own contact.
+
+    purpose=change_contact forks the same way the request view does: with no
+    change_token it is step 2 and answers a token; with one it is step 4 and
+    commits the new contact.
+    """
+
     permission_classes = [IsAuthenticated]
     throttle_classes = []  # rate-limited in the service via Redis
 
     @extend_schema(request=OtpVerifySerializer, responses={200: OtpVerifiedSerializer})
     def post(self, request):
+        if request.data.get("purpose") == Purpose.CHANGE_CONTACT:
+            return self._change_contact(request)
+
         s = OtpVerifySerializer(data=request.data)
         s.is_valid(raise_exception=True)
         data = s.validated_data
@@ -119,6 +183,38 @@ class OtpVerifyView(APIView):
             {"detail": "Account verified successfully.", "account_exists": True},
             status=status.HTTP_200_OK,
         )
+
+    def _change_contact(self, request):
+        if request.data.get("change_token"):
+            s = ContactChangeConfirmSerializer(data=request.data)
+            s.is_valid(raise_exception=True)
+            data = s.validated_data
+
+            user = services.confirm_contact_change(
+                user=request.user,
+                change_token=data["change_token"],
+                destination=data["destination"],
+                destination_type=data["destination_type"],
+                code=data["code"],
+                ip=_client_ip(request),
+            )
+            return Response(
+                {"success": True, "user": ProfileSerializer(user).data},
+                status=status.HTTP_200_OK,
+            )
+
+        s = ContactChangeProofSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        data = s.validated_data
+
+        result = services.verify_contact_change_proof(
+            user=request.user,
+            destination_type=data["destination_type"],
+            code=data["code"],
+            ip=_client_ip(request),
+        )
+        return Response({"success": True, **result}, status=status.HTTP_200_OK)
+
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]

@@ -271,3 +271,37 @@ class PasswordResetSerializer(serializers.Serializer):
 class PasswordResetTokenSerializer(serializers.Serializer):
     reset_token = serializers.UUIDField()
     expires_in = serializers.IntegerField()
+
+
+class ContactChangeProofSerializer(serializers.Serializer):
+    """Step 2: the code the customer read on a contact they already hold.
+
+    No `destination`. The service reads it off the account, so accepting one
+    here would invite the client to pick where the proof came from.
+    """
+
+    destination_type = serializers.ChoiceField(choices=DestinationType.choices)
+    code = serializers.RegexField(r"^[0-9]{6}\Z")
+
+
+class ContactChangeRequestSerializer(DestinationMixin, serializers.Serializer):
+    """Step 3: send a code to the new contact."""
+
+    destination_type = serializers.ChoiceField(choices=DestinationType.choices)
+    destination = serializers.CharField(max_length=254)
+    change_token = serializers.UUIDField()
+
+    def validate(self, attrs):
+        return self._normalize(attrs)
+
+
+class ContactChangeConfirmSerializer(DestinationMixin, serializers.Serializer):
+    """Step 4: the code that landed on the new contact."""
+
+    destination_type = serializers.ChoiceField(choices=DestinationType.choices)
+    destination = serializers.CharField(max_length=254)
+    change_token = serializers.UUIDField()
+    code = serializers.RegexField(r"^[0-9]{6}\Z")
+
+    def validate(self, attrs):
+        return self._normalize(attrs)

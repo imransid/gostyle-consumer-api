@@ -6,11 +6,13 @@ from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from datetime import timedelta
 from rest_framework_simplejwt.tokens import RefreshToken
+from django.db import IntegrityError
+
 
 from . import ratelimit
 from .identifiers import EMAIL
 from .models import ConsumerAccount, OtpCode, Purpose, Verification
-from .notifications import get_sender
+from .notifications import get_sender, send_contact_change_notice
 
 OTP_TTL_SECONDS = 300
 VERIFICATION_TTL_SECONDS = Verification.TTL_SECONDS
@@ -381,3 +383,176 @@ def _blacklist_all_refresh_tokens(account):
     tokens = OutstandingToken.objects.filter(user=account)
     for token in tokens:
         BlacklistedToken.objects.get_or_create(token=token)
+
+
+def verify_contact_change_proof(user, destination_type, code, ip):
+    """Step 2 of a contact change: prove the person, issue a change token.
+
+    Deliberately not verify_otp_for_user. That one stamps *_verified_at,
+    account_verified and is_active on its way out, which is right when a
+    customer proves a contact for the first time and wrong here: nothing on
+    the account has changed yet, and the contact being proved is the one
+    about to be thrown away.
+    """
+    field = _account_field(destination_type)
+    destination = getattr(user, field)
+    if not destination:
+        raise ValidationError(
+            {"detail": f"No {destination_type} on file for this account."}
+        )
+
+    ratelimit.enforce_verify_otp(ip)
+
+    now = timezone.now()
+    matched = False
+
+    with transaction.atomic():
+        otp = (
+            OtpCode.objects.select_for_update()
+            .filter(
+                destination=destination,
+                destination_type=destination_type,
+                purpose=Purpose.CHANGE_CONTACT,
+                consumed_at__isnull=True,
+            )
+            .order_by("-created_at")
+            .first()
+        )
+        if otp is None:
+            raise ValidationError({"detail": "No active code. Request a new one."})
+        if not otp.is_usable:
+            raise ValidationError({"detail": "Code expired or too many attempts."})
+
+        matched = otp.check_code(code)
+        if matched:
+            otp.consumed_at = now
+            otp.save(update_fields=["consumed_at"])
+        else:
+            OtpCode.objects.filter(pk=otp.pk).update(attempts=F("attempts") + 1)
+
+    if not matched:
+        raise ValidationError({"detail": "Invalid code."})
+
+    verification = Verification.objects.create(
+        account=user,
+        destination=destination,
+        destination_type=destination_type,
+        purpose=Purpose.CHANGE_CONTACT,
+        expires_at=now + timedelta(seconds=VERIFICATION_TTL_SECONDS),
+    )
+
+    return {
+        "change_token": str(verification.id),
+        "expires_in": VERIFICATION_TTL_SECONDS,
+    }
+
+def request_contact_change_code(user, change_token, destination, destination_type, ip):
+    """Step 3 of a contact change: send a code to the NEW contact.
+
+    The only call in this service that sends to a client-supplied address, so
+    the token is checked first and every rejection happens before delivery.
+    """
+    verification = _live_change_token(user, change_token)
+
+    current = getattr(user, _account_field(destination_type))
+    if current and current == destination:
+        raise ValidationError(
+            {"detail": "That is already the contact on this account."}
+        )
+
+    if account_exists(destination, destination_type):
+        raise ValidationError({"detail": "This contact is already in use."})
+
+    request_otp(
+        destination=destination,
+        destination_type=destination_type,
+        purpose=Purpose.CHANGE_CONTACT,
+        ip=ip,
+    )
+
+    return {"verification": verification}
+
+def _live_change_token(user, change_token):
+    """The caller's unexpired, unspent change token, or a 400."""
+    verification = (
+        Verification.objects.filter(
+            id=change_token,
+            account=user,
+            purpose=Purpose.CHANGE_CONTACT,
+            consumed_at__isnull=True,
+            expires_at__gt=timezone.now(),
+        )
+        .first()
+    )
+    if verification is None:
+        raise ValidationError({"detail": "Invalid or expired change token."})
+    return verification
+
+def confirm_contact_change(user, change_token, destination, destination_type, code, ip):
+    """Step 4: check the code against the NEW contact and write it on.
+
+    One call does both, so the app never has to patch the account afterwards.
+    The token is NOT spent here: while it lives the customer can come back and
+    change the other contact without proving themselves a second time.
+    """
+    _live_change_token(user, change_token)
+
+    ratelimit.enforce_verify_otp(ip)
+
+    field = _account_field(destination_type)
+    old_destination = getattr(user, field)
+    verified_field = _verified_field(destination_type)
+    now = timezone.now()
+    matched = False
+
+    with transaction.atomic():
+        otp = (
+            OtpCode.objects.select_for_update()
+            .filter(
+                destination=destination,
+                destination_type=destination_type,
+                purpose=Purpose.CHANGE_CONTACT,
+                consumed_at__isnull=True,
+            )
+            .order_by("-created_at")
+            .first()
+        )
+        if otp is None:
+            raise ValidationError({"detail": "No active code. Request a new one."})
+        if not otp.is_usable:
+            raise ValidationError({"detail": "Code expired or too many attempts."})
+
+        matched = otp.check_code(code)
+        if matched:
+            otp.consumed_at = now
+            otp.save(update_fields=["consumed_at"])
+        else:
+            OtpCode.objects.filter(pk=otp.pk).update(attempts=F("attempts") + 1)
+
+    if not matched:
+        raise ValidationError({"detail": "Invalid code."})
+
+    try:
+        with transaction.atomic():
+            ConsumerAccount.objects.filter(pk=user.pk).update(
+                **{field: destination, verified_field: now}
+            )
+    except IntegrityError:
+        # Somebody else took the address between step 3 and here. The unique
+        # column is the only check that cannot be raced; account_exists at
+        # step 3 is a courtesy, not a guarantee.
+        raise ValidationError({"detail": "This contact is already in use."})
+
+    if old_destination:
+        transaction.on_commit(
+            lambda: send_contact_change_notice(
+                destination=old_destination,
+                destination_type=destination_type,
+                changed_type=destination_type,
+            )
+        )
+
+    user.refresh_from_db()
+    return user
+
+
