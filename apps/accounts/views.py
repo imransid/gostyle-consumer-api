@@ -14,7 +14,7 @@ from drf_spectacular.utils import (
     extend_schema,
     extend_schema_view,
 )
-
+from rest_framework.exceptions import ErrorDetail, NotFound, PermissionDenied, ValidationError
 from rest_framework.exceptions import PermissionDenied
 from .models import Purpose
 from .serializers import (
@@ -123,7 +123,16 @@ class OtpRequestView(APIView):
         # answer 403 rather than silently sending somewhere else.
         own = getattr(request.user, services._account_field(data["destination_type"]))
         if not own or own != data["destination"]:
-            raise PermissionDenied("That contact is not on this account.")
+            raise PermissionDenied(
+                {
+                    "destination": [
+                        ErrorDetail(
+                            "That contact is not on this account.",
+                            code="destination_not_own",
+                        )
+                    ]
+                }
+            )
 
         services.request_otp_for_user(
             user=request.user,
