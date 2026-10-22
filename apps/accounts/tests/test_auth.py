@@ -527,8 +527,9 @@ class AccountFieldsTests(AuthTestCase):
         self.assertEqual(resp.status_code, 200)
         # Always present on read, null or false when unset.
         self.assertIsNone(resp.json()["date_of_birth"])
-        self.assertIsNone(resp.json()["gender"])
         self.assertIs(resp.json()["whatsapp_booking_updates"], False)
+        # The one register() sent, which register now stores.
+        self.assertEqual(resp.json()["gender"], "male")
         self.assertEqual(NotificationPreference.objects.count(), 0)
 
     def test_patch_without_the_switch_does_not_create_a_preference_row(self):
@@ -638,9 +639,15 @@ class AccountFieldsTests(AuthTestCase):
         self.assertEqual(resp.json()["gender"], "other")
         self.assertEqual(self.account().gender, "other")
 
-    def test_register_accepts_gender_other(self):
-        """Came with the choices edit: register shares Gender.choices."""
-        self.assertEqual(self.register(gender="other").status_code, 201)
+    def test_register_stores_the_gender(self):
+        """Register used to check gender and drop it. "other" came with the
+        choices edit: register shares Gender.choices."""
+        for phone, gender in ((self.phone, "other"), (self.other_phone, "male")):
+            with self.subTest(gender=gender):
+                self.assertEqual(
+                    self.register(destination=phone, gender=gender).status_code, 201
+                )
+                self.assertEqual(ConsumerAccount.objects.get(phone=phone).gender, gender)
 
     # --- date of birth ----------------------------------------------------
     def test_date_of_birth_is_a_date_with_no_time(self):
