@@ -198,6 +198,9 @@ class ProfileSerializer(serializers.ModelSerializer):
             "tier_level",
             "push_token",
         ]
+        # The column allows blank, the screen does not: a PATCH may not
+        # empty the name. CharField trims first, so "   " is refused too.
+        extra_kwargs = {"full_name": {"allow_blank": False}}
 
     def validate(self, attrs):
         # allow_null makes DRF skip the field's own checks for a null, so the

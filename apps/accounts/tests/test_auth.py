@@ -698,6 +698,16 @@ class AccountFieldsTests(AuthTestCase):
         self.assertIsNone(resp.json()["date_of_birth"])
         self.assertIsNone(self.account().date_of_birth)
 
+    # --- full name --------------------------------------------------------
+    def test_full_name_cannot_be_emptied(self):
+        self.register_and_authenticate()
+
+        for blank in ("", "   "):
+            with self.subTest(full_name=blank):
+                resp = self.patch_me(full_name=blank)
+                self.assert_field_error(resp, "full_name", "blank")
+                self.assertEqual(self.account().full_name, "Kevin Rogers")
+
     # --- still read-only --------------------------------------------------
     def test_server_owned_fields_are_ignored(self):
         """Ignored, not refused: an app that sends them back gets a 200."""
