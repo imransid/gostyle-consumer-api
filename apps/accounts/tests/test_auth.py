@@ -19,8 +19,12 @@ tokens without being verified — see `apps/accounts/permissions.py` for what
 that window means for endpoints added later.
 """
 
-from datetime import date, timedelta
+import json
+import re
+from datetime import date, datetime, timedelta
+from datetime import timezone as dt_timezone
 
+from django.conf import settings
 from django.core.cache import cache
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
@@ -729,6 +733,71 @@ class AccountFieldsTests(AuthTestCase):
         self.assertEqual(me["points"], 0)
         self.assertEqual(me["tier_level"], "BRONZE")
         self.assertIsNone(me["push_token"])
+
+
+FE_DOC = settings.BASE_DIR / "docs" / "ACCOUNT_ME_API.md"
+
+
+class AccountMeDocTests(AuthTestCase):
+    """docs/ACCOUNT_ME_API.md promises every JSON block is a real request or
+    a real answer. This sends the same requests and must get the same bodies.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        text = FE_DOC.read_text(encoding="utf-8")
+        cls.blocks = [json.loads(b) for b in re.findall(r"```json\n(.*?)\n```", text, re.S)]
+        (cls.account_body, cls.patch_body, cls.not_verified_body,
+         cls.no_phone_body, cls.preferences_body) = cls.blocks
+
+    def as_account(self, **fields):
+        def at(*hms):
+            return datetime(2026, 9, 15, *hms, tzinfo=dt_timezone.utc)
+
+        values = {
+            "full_name": "Jack",
+            "phone": self.phone,
+            "email": "jack@example.com",
+            "email_verified_at": at(11, 26, 41),
+            "phone_verified_at": at(11, 27, 2),
+            "image": "https://cdn.example.com/customers/uploads/2026/10/jack.jpg",
+            "location": "Dhaka",
+            **fields,
+        }
+        account = ConsumerAccount.objects.create(**values)
+        ConsumerAccount.objects.filter(pk=account.pk).update(created_at=at(11, 26, 19))
+        account.refresh_from_db()
+        self.client.force_authenticate(account)
+        return account
+
+    def test_the_patch_example_answers_the_account_example(self):
+        self.as_account(id="1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed")
+
+        resp = self.client.patch("/api/v1/auth/me", self.patch_body, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), self.account_body)
+        self.assertEqual(self.client.get("/api/v1/auth/me").json(), self.account_body)
+
+    def test_the_error_bodies_are_the_real_ones(self):
+        switch_on = {"whatsapp_booking_updates": True}
+
+        self.as_account(phone_verified_at=None)
+        resp = self.client.patch("/api/v1/auth/me", switch_on, format="json")
+        self.assertEqual((resp.status_code, resp.json()), (422, self.not_verified_body))
+
+        ConsumerAccount.objects.all().delete()
+        self.as_account(phone=None, phone_verified_at=None)
+        resp = self.client.patch("/api/v1/auth/me", switch_on, format="json")
+        self.assertEqual((resp.status_code, resp.json()), (422, self.no_phone_body))
+
+        resp = self.client.patch(
+            "/api/v1/notifications/preferences", switch_on, format="json"
+        )
+        self.assertEqual((resp.status_code, resp.json()), (400, self.preferences_body))
+
+    def test_no_other_json_blocks(self):
+        self.assertEqual(len(self.blocks), 5)
 
 
 class DestinationNormalizationTests(SimpleTestCase):
