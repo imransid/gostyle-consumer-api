@@ -19,15 +19,19 @@ tokens without being verified — see `apps/accounts/permissions.py` for what
 that window means for endpoints added later.
 """
 
-from datetime import timedelta
+import json
+import re
+from datetime import date, datetime, timedelta
+from datetime import timezone as dt_timezone
 
+from django.conf import settings
 from django.core.cache import cache
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.identifiers import InvalidDestination, normalize_destination
-from apps.accounts.models import ConsumerAccount, OtpCode
+from apps.accounts.models import ConsumerAccount, NotificationPreference, OtpCode
 
 PASSWORD = "Str0ng!Pass"
 CODE = "654321"
@@ -489,6 +493,311 @@ class ProfileAndLogoutTests(AuthTestCase):
             format="json",
         )
         self.assertEqual(refreshed.status_code, 401)
+
+
+class AccountFieldsTests(AuthTestCase):
+    """date_of_birth, gender and whatsapp_booking_updates on /auth/me.
+
+    The switch is stored on NotificationPreference but written only here,
+    where the verified-phone check lives. The first four tests pin writes
+    that must NOT happen; they are the ones a later change breaks quietly.
+    """
+
+    ME = "/api/v1/auth/me"
+    PREFS = "/api/v1/notifications/preferences"
+
+    def patch_me(self, **body):
+        return self.client.patch(self.ME, body, format="json")
+
+    def account(self):
+        # Every test here makes exactly one account.
+        return ConsumerAccount.objects.get()
+
+    def register_with_verified_phone(self):
+        self.register_and_authenticate()
+        ConsumerAccount.objects.update(phone_verified_at=timezone.now())
+
+    def assert_field_error(self, resp, field, code):
+        self.assertEqual(resp.status_code, 422, resp.data)
+        self.assertIn(
+            (field, code), [(e["field"], e["code"]) for e in resp.data["errors"]]
+        )
+
+    # --- writes that must not happen --------------------------------------
+    def test_get_does_not_create_a_preference_row(self):
+        self.register_and_authenticate()
+
+        resp = self.client.get(self.ME)
+        self.assertEqual(resp.status_code, 200)
+        # Always present on read, null or false when unset.
+        self.assertIsNone(resp.json()["date_of_birth"])
+        self.assertIs(resp.json()["whatsapp_booking_updates"], False)
+        # The one register() sent, which register now stores.
+        self.assertEqual(resp.json()["gender"], "male")
+        self.assertEqual(NotificationPreference.objects.count(), 0)
+
+    def test_patch_without_the_switch_does_not_create_a_preference_row(self):
+        self.register_and_authenticate()
+
+        resp = self.patch_me(full_name="Jack Roger")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(NotificationPreference.objects.count(), 0)
+
+    def test_a_failed_phone_check_saves_nothing(self):
+        """Holds today because the check is in validate(). The test is here
+        so it still holds if someone moves the check."""
+        self.register_and_authenticate()
+
+        resp = self.patch_me(date_of_birth="1991-03-14", whatsapp_booking_updates=True)
+        self.assert_field_error(resp, "whatsapp_booking_updates", "phone_not_verified")
+        self.assertIsNone(self.account().date_of_birth)
+        self.assertEqual(NotificationPreference.objects.count(), 0)
+
+    def test_the_preferences_endpoint_refuses_the_switch(self):
+        """One write path only: /auth/me, where the phone check is. PATCH,
+        not POST: that view has no post, so a POST is 405 and proves nothing.
+
+        That endpoint answers an unknown field with its own 400, not 422,
+        and the app may branch on it, so this pins the 400.
+        """
+        self.register_with_verified_phone()
+
+        resp = self.client.patch(
+            self.PREFS, {"whatsapp_booking_updates": True}, format="json"
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["detail"], "Unknown notification preference.")
+        self.assertEqual(resp.json()["errors"][0]["field"], "whatsapp_booking_updates")
+        # The view makes the row before it validates; the value stays off.
+        self.assertFalse(
+            NotificationPreference.objects.filter(whatsapp_booking_updates=True).exists()
+        )
+        self.assertIs(self.client.get(self.ME).json()["whatsapp_booking_updates"], False)
+
+    # --- the switch -------------------------------------------------------
+    def test_switch_on_with_no_phone(self):
+        self.register_and_authenticate("email", self.email)
+
+        resp = self.patch_me(whatsapp_booking_updates=True)
+        self.assert_field_error(resp, "whatsapp_booking_updates", "no_phone_on_account")
+
+    def test_switch_on_with_an_unverified_phone(self):
+        self.register_and_authenticate()
+
+        resp = self.patch_me(whatsapp_booking_updates=True)
+        self.assert_field_error(resp, "whatsapp_booking_updates", "phone_not_verified")
+
+    def test_switch_on_with_a_verified_phone(self):
+        self.register_with_verified_phone()
+
+        resp = self.patch_me(whatsapp_booking_updates=True)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertIs(resp.json()["whatsapp_booking_updates"], True)
+        self.assertTrue(NotificationPreference.objects.get().whatsapp_booking_updates)
+        self.assertIs(self.client.get(self.ME).json()["whatsapp_booking_updates"], True)
+
+    def test_switch_off_needs_no_phone(self):
+        self.register_and_authenticate("email", self.email)
+
+        resp = self.patch_me(whatsapp_booking_updates=False)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertIs(resp.json()["whatsapp_booking_updates"], False)
+
+    def test_switch_on_then_off_keeps_one_row(self):
+        self.register_with_verified_phone()
+
+        self.assertEqual(self.patch_me(whatsapp_booking_updates=True).status_code, 200)
+        self.assertEqual(self.patch_me(whatsapp_booking_updates=False).status_code, 200)
+        self.assertEqual(NotificationPreference.objects.count(), 1)
+        self.assertFalse(NotificationPreference.objects.get().whatsapp_booking_updates)
+
+    def test_switch_refuses_null(self):
+        self.register_with_verified_phone()
+
+        resp = self.patch_me(whatsapp_booking_updates=None)
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.data["errors"][0]["field"], "whatsapp_booking_updates")
+
+    # --- gender -----------------------------------------------------------
+    def test_gender_null_is_stored_blank_and_read_as_null(self):
+        self.register_and_authenticate()
+        self.assertEqual(self.patch_me(gender="male").status_code, 200)
+
+        resp = self.patch_me(gender=None)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(self.account().gender, "")
+        self.assertIsNone(resp.json()["gender"])
+        self.assertIsNone(self.client.get(self.ME).json()["gender"])
+
+    def test_gender_blank_is_refused(self):
+        self.register_and_authenticate()
+
+        resp = self.patch_me(gender="")
+        self.assert_field_error(resp, "gender", "invalid_choice")
+
+    def test_gender_other_is_accepted(self):
+        self.register_and_authenticate()
+
+        resp = self.patch_me(gender="other")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.json()["gender"], "other")
+        self.assertEqual(self.account().gender, "other")
+
+    def test_register_stores_the_gender(self):
+        """Register used to check gender and drop it. "other" came with the
+        choices edit: register shares Gender.choices."""
+        for phone, gender in ((self.phone, "other"), (self.other_phone, "male")):
+            with self.subTest(gender=gender):
+                self.assertEqual(
+                    self.register(destination=phone, gender=gender).status_code, 201
+                )
+                self.assertEqual(ConsumerAccount.objects.get(phone=phone).gender, gender)
+
+    # --- date of birth ----------------------------------------------------
+    def test_date_of_birth_is_a_date_with_no_time(self):
+        self.register_and_authenticate()
+
+        resp = self.patch_me(date_of_birth="1991-03-14")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.json()["date_of_birth"], "1991-03-14")
+        self.assertEqual(self.client.get(self.ME).json()["date_of_birth"], "1991-03-14")
+        self.assertEqual(self.account().date_of_birth, date(1991, 3, 14))
+
+    def test_date_of_birth_refuses_anything_but_yyyy_mm_dd(self):
+        self.register_and_authenticate()
+
+        for bad in ("19910314", "1991-W11-4", "1991-3-14",
+                    "1991-03-14T00:00:00Z", "1991-02-30", ""):
+            with self.subTest(bad=bad):
+                resp = self.patch_me(date_of_birth=bad)
+                self.assert_field_error(resp, "date_of_birth", "invalid_date")
+
+    def test_date_of_birth_in_the_future(self):
+        self.register_and_authenticate()
+
+        tomorrow = timezone.localdate() + timedelta(days=1)
+        resp = self.patch_me(date_of_birth=tomorrow.isoformat())
+        self.assert_field_error(resp, "date_of_birth", "date_in_future")
+
+    def test_date_of_birth_floor_is_120_years(self):
+        self.register_and_authenticate()
+        today = timezone.localdate()
+
+        def years_ago(years):
+            # day 28 at most, so 29 February never lands in a short year.
+            return today.replace(year=today.year - years, day=min(today.day, 28))
+
+        resp = self.patch_me(date_of_birth=years_ago(121).isoformat())
+        self.assert_field_error(resp, "date_of_birth", "invalid_date")
+
+        resp = self.patch_me(date_of_birth=years_ago(119).isoformat())
+        self.assertEqual(resp.status_code, 200, resp.data)
+
+    def test_date_of_birth_null_clears_it(self):
+        self.register_and_authenticate()
+        self.assertEqual(self.patch_me(date_of_birth="1991-03-14").status_code, 200)
+
+        resp = self.patch_me(date_of_birth=None)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertIsNone(resp.json()["date_of_birth"])
+        self.assertIsNone(self.account().date_of_birth)
+
+    # --- full name --------------------------------------------------------
+    def test_full_name_cannot_be_emptied(self):
+        self.register_and_authenticate()
+
+        for blank in ("", "   "):
+            with self.subTest(full_name=blank):
+                resp = self.patch_me(full_name=blank)
+                self.assert_field_error(resp, "full_name", "blank")
+                self.assertEqual(self.account().full_name, "Kevin Rogers")
+
+    # --- still read-only --------------------------------------------------
+    def test_server_owned_fields_are_ignored(self):
+        """Ignored, not refused: an app that sends them back gets a 200."""
+        self.register_and_authenticate()
+
+        resp = self.patch_me(
+            points=999,
+            tier_level="GOLD",
+            push_token="ExponentPushToken[x]",
+            email="someone@example.com",
+            phone="+8801799999999",
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+
+        account = self.account()
+        self.assertEqual(account.phone, self.phone)
+        self.assertIsNone(account.email)
+        me = self.client.get(self.ME).json()
+        self.assertEqual(me["points"], 0)
+        self.assertEqual(me["tier_level"], "BRONZE")
+        self.assertIsNone(me["push_token"])
+
+
+FE_DOC = settings.BASE_DIR / "docs" / "ACCOUNT_ME_API.md"
+
+
+class AccountMeDocTests(AuthTestCase):
+    """docs/ACCOUNT_ME_API.md promises every JSON block is a real request or
+    a real answer. This sends the same requests and must get the same bodies.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        text = FE_DOC.read_text(encoding="utf-8")
+        cls.blocks = [json.loads(b) for b in re.findall(r"```json\n(.*?)\n```", text, re.S)]
+        (cls.account_body, cls.patch_body, cls.not_verified_body,
+         cls.no_phone_body, cls.preferences_body) = cls.blocks
+
+    def as_account(self, **fields):
+        def at(*hms):
+            return datetime(2026, 9, 15, *hms, tzinfo=dt_timezone.utc)
+
+        values = {
+            "full_name": "Jack",
+            "phone": self.phone,
+            "email": "jack@example.com",
+            "email_verified_at": at(11, 26, 41),
+            "phone_verified_at": at(11, 27, 2),
+            "image": "https://cdn.example.com/customers/uploads/2026/10/jack.jpg",
+            "location": "Dhaka",
+            **fields,
+        }
+        account = ConsumerAccount.objects.create(**values)
+        ConsumerAccount.objects.filter(pk=account.pk).update(created_at=at(11, 26, 19))
+        account.refresh_from_db()
+        self.client.force_authenticate(account)
+        return account
+
+    def test_the_patch_example_answers_the_account_example(self):
+        self.as_account(id="1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed")
+
+        resp = self.client.patch("/api/v1/auth/me", self.patch_body, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), self.account_body)
+        self.assertEqual(self.client.get("/api/v1/auth/me").json(), self.account_body)
+
+    def test_the_error_bodies_are_the_real_ones(self):
+        switch_on = {"whatsapp_booking_updates": True}
+
+        self.as_account(phone_verified_at=None)
+        resp = self.client.patch("/api/v1/auth/me", switch_on, format="json")
+        self.assertEqual((resp.status_code, resp.json()), (422, self.not_verified_body))
+
+        ConsumerAccount.objects.all().delete()
+        self.as_account(phone=None, phone_verified_at=None)
+        resp = self.client.patch("/api/v1/auth/me", switch_on, format="json")
+        self.assertEqual((resp.status_code, resp.json()), (422, self.no_phone_body))
+
+        resp = self.client.patch(
+            "/api/v1/notifications/preferences", switch_on, format="json"
+        )
+        self.assertEqual((resp.status_code, resp.json()), (400, self.preferences_body))
+
+    def test_no_other_json_blocks(self):
+        self.assertEqual(len(self.blocks), 5)
 
 
 class DestinationNormalizationTests(SimpleTestCase):

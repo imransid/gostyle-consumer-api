@@ -18,6 +18,7 @@ class DestinationType(models.TextChoices):
 class Gender(models.TextChoices):
     MALE = 'male', 'male'
     FEMALE = 'female', 'female'
+    OTHER = 'other', 'other'
 
 class Purpose(models.TextChoices):
     REGISTER = "register", "register"
@@ -58,6 +59,8 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
 
     image = models.URLField(blank=True)
     gender = models.CharField(max_length=30, choices=Gender.choices, blank=True, default="")
+    # A date, not a timestamp: a birthday has no time and no zone.
+    date_of_birth = models.DateField(null=True, blank=True)
     location = models.CharField(max_length=255, blank=True)
     language = models.CharField(max_length=10, default="en")
     currency = models.CharField(max_length=3, default="AED")
@@ -320,6 +323,11 @@ class NotificationPreference(models.Model):
     new_salons = models.BooleanField(default=False)
     loyalty = models.BooleanField(default=True)
     push = models.BooleanField(default=True)
+    # Booking updates on WhatsApp to the account's phone. Read and written
+    # through /auth/me, not the preferences endpoint. Nothing sends them yet.
+    # db_default keeps the column's DEFAULT, so an older image (a rollback)
+    # can still insert a row that does not name it.
+    whatsapp_booking_updates = models.BooleanField(default=False, db_default=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

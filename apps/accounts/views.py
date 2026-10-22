@@ -240,6 +240,7 @@ class RegisterView(APIView):
             destination_type=data["destination_type"],
             full_name=data["full_name"],
             password=data["password"],
+            gender=data["gender"],
         )
         return Response(result, status=status.HTTP_201_CREATED)
 

@@ -1,9 +1,21 @@
+import re
+from datetime import date
+
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
+from django.utils import timezone
 from rest_framework import serializers
 
 from .identifiers import InvalidDestination, normalize_destination
-from .models import ConsumerAccount, DestinationType, Purpose, Gender
+from .models import (
+    ConsumerAccount,
+    DestinationType,
+    Gender,
+    NotificationPreference,
+    Purpose,
+)
+from .notification_serializers import StrictBooleanField
 
 
 class DestinationMixin:
@@ -81,7 +93,71 @@ class LoginSerializer(DestinationMixin, serializers.Serializer):
         return self._normalize(attrs)
 
 
+def _years_before(day, years):
+    try:
+        return day.replace(year=day.year - years)
+    except ValueError:
+        # 29 February, in a year that has none.
+        return day.replace(year=day.year - years, day=28)
+
+
+class DateOfBirthField(serializers.DateField):
+    """YYYY-MM-DD and nothing else: no time, no zone.
+
+    DRF's own DateField goes through date.fromisoformat, which also takes
+    "19910314" and week dates like "1991-W11-4". [0-9], not \\d, so other
+    scripts' digits are refused too.
+    """
+
+    OLDEST_YEARS = 120
+    _SHAPE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+    default_error_messages = {
+        "invalid_date": "Enter the date as YYYY-MM-DD.",
+        "date_in_future": "Your date of birth cannot be in the future.",
+    }
+
+    def to_internal_value(self, value):
+        if not isinstance(value, str) or not self._SHAPE.fullmatch(value):
+            self.fail("invalid_date")
+        try:
+            day = date.fromisoformat(value)
+        except ValueError:
+            self.fail("invalid_date")
+
+        today = timezone.localdate()
+        if day > today:
+            self.fail("date_in_future")
+        if day < _years_before(today, self.OLDEST_YEARS):
+            # The app's table has no code for this one, so it shares
+            # invalid_date with its own message.
+            raise serializers.ValidationError(
+                "Enter a real date of birth.", code="invalid_date"
+            )
+        return day
+
+
+class WhatsAppBookingUpdatesField(StrictBooleanField):
+    """Stored on NotificationPreference, read and written only here.
+
+    The preferences endpoint does not take it: this is where the
+    verified-phone check lives.
+    """
+
+    def get_attribute(self, account):
+        # filter().first(), never for_account(): a read must not write a row.
+        prefs = NotificationPreference.objects.filter(account=account).first()
+        return prefs.whatsapp_booking_updates if prefs else False
+
+
 class ProfileSerializer(serializers.ModelSerializer):
+    date_of_birth = DateOfBirthField(required=False, allow_null=True)
+    # null is "prefer not to say", stored as "" (see validate).
+    gender = serializers.ChoiceField(
+        choices=Gender.choices, required=False, allow_null=True
+    )
+    whatsapp_booking_updates = WhatsAppBookingUpdatesField(required=False)
+
     # Live/derived values — NOT stored on the profile, exposed read-only.
     points = serializers.SerializerMethodField()
     tier_level = serializers.SerializerMethodField()
@@ -103,6 +179,9 @@ class ProfileSerializer(serializers.ModelSerializer):
             "language",
             "currency",
             "is_hijab_mode",
+            "date_of_birth",
+            "gender",
+            "whatsapp_booking_updates",
             # live / derived (read-only)
             "points",
             "tier_level",
@@ -119,6 +198,52 @@ class ProfileSerializer(serializers.ModelSerializer):
             "tier_level",
             "push_token",
         ]
+        # The column allows blank, the screen does not: a PATCH may not
+        # empty the name. CharField trims first, so "   " is refused too.
+        extra_kwargs = {"full_name": {"allow_blank": False}}
+
+    def validate(self, attrs):
+        # allow_null makes DRF skip the field's own checks for a null, so the
+        # swap to the column's "not set" value has to happen here.
+        if "gender" in attrs and attrs["gender"] is None:
+            attrs["gender"] = ""
+
+        # Only turning it ON needs a phone. OFF always works.
+        if attrs.get("whatsapp_booking_updates"):
+            self._require_verified_phone()
+        return attrs
+
+    def _require_verified_phone(self):
+        account = self.instance
+        if not account.phone:
+            code, message = "no_phone_on_account", "Add a phone number first."
+        elif account.phone_verified_at is None:
+            code, message = "phone_not_verified", "Verify your phone number first."
+        else:
+            return
+        raise serializers.ValidationError({
+            "whatsapp_booking_updates": [
+                serializers.ErrorDetail(message, code=code)
+            ]
+        })
+
+    def update(self, instance, validated_data):
+        whatsapp = validated_data.pop("whatsapp_booking_updates", None)
+        # Two tables now: the account and its preferences row. Both or neither.
+        with transaction.atomic():
+            instance = super().update(instance, validated_data)
+            if whatsapp is not None:
+                # The row is made here, and only when the field was sent.
+                prefs = NotificationPreference.for_account(instance)
+                prefs.whatsapp_booking_updates = whatsapp
+                prefs.save(update_fields=["whatsapp_booking_updates", "updated_at"])
+        return instance
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # "" is how the column says "not set"; the app reads that as null.
+        data["gender"] = data["gender"] or None
+        return data
 
     def get_points(self, obj):
         # TODO: wire to the loyalty app when it exists. No loyalty system yet.

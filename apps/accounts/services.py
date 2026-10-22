@@ -222,7 +222,7 @@ def verify_otp_for_user(user, destination_type, purpose, code, ip):
     )
 
 
-def register(destination, destination_type, full_name, password):
+def register(destination, destination_type, full_name, password, gender=""):
     """Create the account directly. No OTP/Verification required here —
     verification happens later via request_otp_for_user/verify_otp_for_user
     against this account.
@@ -238,6 +238,7 @@ def register(destination, destination_type, full_name, password):
         now = timezone.now()
         account = ConsumerAccount(
             full_name=full_name,
+            gender=gender,
             accepted_terms_at=now,
             is_active=True,
         )
