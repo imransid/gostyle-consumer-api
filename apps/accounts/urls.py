@@ -4,6 +4,8 @@ from .device_token_views import DeviceTokensView
 from .notification_views import NotificationPreferencesView
 
 from .views import (
+    CancelDeletionView,
+    DeleteAccountView,
     LoginView,
     LogoutView,
     MeView,
@@ -29,6 +31,8 @@ urlpatterns = [
     path("auth/logout", LogoutView.as_view()),
     path("auth/token/refresh", TokenRefreshView.as_view()),
     path("auth/me", MeView.as_view()),
+    path("auth/me/delete", DeleteAccountView.as_view()),
+    path("auth/me/delete/cancel", CancelDeletionView.as_view()),
     path("auth/password/change", PasswordChangeView.as_view()),
     path("auth/password/forgot", PasswordForgotView.as_view()),
     path("auth/password/verify", PasswordVerifyView.as_view()),

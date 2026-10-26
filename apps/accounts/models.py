@@ -3,11 +3,11 @@ from datetime import timedelta
 
 from django.contrib.auth.hashers import check_password, make_password
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from .managers import ConsumerAccountManager
+from .managers import ActiveConsumerAccountManager, ConsumerAccountManager
 
 
 class DestinationType(models.TextChoices):
@@ -27,7 +27,16 @@ class Purpose(models.TextChoices):
     CHANGE_CONTACT = "change_contact", "change_contact"
 
 
+class DeletionReason(models.TextChoices):
+    NOT_USING = "not_using", "Not using the app"
+    PRIVACY = "privacy", "Privacy concerns"
+    TOO_MANY_NOTIFICATIONS = "too_many_notifications", "Too many notifications"
+    FOUND_ALTERNATIVE = "found_alternative", "Found an alternative"
+    BAD_EXPERIENCE = "bad_experience", "Bad experience"
+    OTHER = "other", "Other"
+
 class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
+    PURGE_AFTER_DAYS = 30
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     # Phone is optional: a member can register with email only. It stays unique
@@ -54,7 +63,10 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    objects = ConsumerAccountManager()
+    objects = ActiveConsumerAccountManager()   # only living accounts (the default)
+    all_objects = ConsumerAccountManager()     # everyone, including deleted
+
+
 
 
     image = models.URLField(blank=True)
@@ -66,8 +78,87 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
     currency = models.CharField(max_length=3, default="AED")
     is_hijab_mode = models.BooleanField(default=False)
 
+    deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    deletion_reason = models.CharField(
+        max_length=30, choices=DeletionReason.choices, blank=True, default=""
+    )
+    deletion_note = models.TextField(blank=True, default="")
+
+    @property
+    def is_deleted(self):
+        return self.deleted_at is not None
+
+    purge_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    @property
+    def is_pending_deletion(self):
+        return self.purge_at is not None and self.deleted_at is None
+
     USERNAME_FIELD = "phone"
     REQUIRED_FIELDS = []
+
+
+    def request_deletion(self, reason=DeletionReason.OTHER, note=""):
+        if self.is_deleted:
+            return
+        self.purge_at = timezone.now() + timedelta(days=self.PURGE_AFTER_DAYS)
+        self.deletion_reason = reason
+        self.deletion_note = note[:1000]
+        self.save(update_fields=["purge_at", "deletion_reason", "deletion_note", "updated_at"])
+
+    def cancel_deletion(self):
+        if self.is_deleted:
+            return
+        self.purge_at = None
+        self.deletion_reason = ""
+        self.deletion_note = ""
+        self.save(update_fields=["purge_at", "deletion_reason", "deletion_note", "updated_at"])
+
+
+    @transaction.atomic
+    def purge(self):
+        if self.is_deleted:
+            return
+
+        # 1. Remember the old contacts before we clear them
+        old_contacts = [c for c in (self.phone, self.email) if c]
+
+        # 2. Mark as deleted and block login
+        self.deleted_at = timezone.now()
+        self.is_active = False
+        self.set_unusable_password()
+
+        # 3. Free the unique fields and clear personal data
+        self.phone = None
+        self.email = None
+        self.phone_verified_at = None
+        self.email_verified_at = None
+        self.account_verified = False
+        self.full_name = ""
+        self.image = ""
+        self.date_of_birth = None
+        self.location = ""
+        self.save()
+
+        # 4. End every session. Without this a refresh token (30 days) reaches
+        # simplejwt's refresh, whose objects.get() no longer finds the row and
+        # answers 500. Blacklisted, it is a 401 before the lookup.
+        # Imported here: services imports this module.
+        from .services import _blacklist_all_refresh_tokens
+
+        _blacklist_all_refresh_tokens(self)
+
+        # 5. Clean related data
+        self.devices.all().delete()
+        self.favourites.all().delete()
+        self.favourite_stylists.all().delete()
+        NotificationPreference.objects.filter(account=self).delete()
+        if old_contacts:
+            OtpCode.objects.filter(
+                destination__in=old_contacts, consumed_at__isnull=True
+            ).update(consumed_at=timezone.now())
+            Verification.objects.filter(destination__in=old_contacts).delete()
+
 
     class Meta:
         db_table = "consumer_account"

@@ -20,3 +20,18 @@ class ConsumerAccountManager(BaseUserManager):
         user.set_password(password)
         user.save(using=self._db)
         return user
+
+
+class ActiveConsumerAccountManager(ConsumerAccountManager):
+    """The default manager: hides purged accounts (deleted_at set).
+
+    An account waiting for its purge (purge_at set, deleted_at null) is still
+    here, so its owner can sign in and cancel.
+    """
+
+    # Migrations get a plain manager in its place, so a data migration still
+    # sees every row, purged ones too.
+    use_in_migrations = False
+
+    def get_queryset(self):
+        return super().get_queryset().filter(deleted_at__isnull=True)

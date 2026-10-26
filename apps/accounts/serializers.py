@@ -10,6 +10,7 @@ from rest_framework import serializers
 from .identifiers import InvalidDestination, normalize_destination
 from .models import (
     ConsumerAccount,
+    DeletionReason,
     DestinationType,
     Gender,
     NotificationPreference,
@@ -186,6 +187,11 @@ class ProfileSerializer(serializers.ModelSerializer):
             "points",
             "tier_level",
             "push_token",
+            # account deletion (read-only): purge_at set means "Deletion
+            # scheduled". deleted_at is only set by the purge, and a purged
+            # account cannot sign in, so a caller always reads it as null.
+            "purge_at",
+            "deleted_at",
         ]
         read_only_fields = [
             "id",
@@ -197,6 +203,8 @@ class ProfileSerializer(serializers.ModelSerializer):
             "points",
             "tier_level",
             "push_token",
+            "purge_at",
+            "deleted_at",
         ]
         # The column allows blank, the screen does not: a PATCH may not
         # empty the name. CharField trims first, so "   " is refused too.
@@ -356,6 +364,24 @@ class PasswordChangeSerializer(serializers.Serializer):
                 {"new_password": "New password must differ from the old one."}
             )
         return attrs
+
+
+class DeleteAccountSerializer(serializers.Serializer):
+    """POST /auth/me/delete. The password is the proof, as on password change:
+    a token alone (a phone left unlocked) must not be enough to delete.
+    """
+
+    password = serializers.CharField(max_length=128, write_only=True)
+    reason = serializers.ChoiceField(choices=DeletionReason.choices, required=False)
+    # The model keeps 1000 characters. Refused here rather than cut there, so
+    # the user is told instead of losing the end of what they wrote.
+    note = serializers.CharField(max_length=1000, required=False, allow_blank=True)
+
+
+class DeletionScheduledSerializer(serializers.Serializer):
+    """The answer to a deletion request: when the account will be purged."""
+
+    purge_at = serializers.DateTimeField()
 
 
 class PasswordForgotSerializer(DestinationMixin, serializers.Serializer):
