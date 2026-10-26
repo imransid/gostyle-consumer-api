@@ -70,12 +70,19 @@ this release is deployed.
   "whatsapp_booking_updates": true,
   "points": 0,
   "tier_level": "BRONZE",
-  "push_token": null
+  "push_token": null,
+  "purge_at": null,
+  "deleted_at": null
 }
 ```
 
 - **`date_of_birth`, `gender` and `whatsapp_booking_updates` are always
   there.** Unset reads as `null`, `null` and `false`.
+- **`purge_at` is set while a deletion is scheduled** (`POST /auth/me/delete`)
+  and back to `null` after `POST /auth/me/delete/cancel`. When it is set, show
+  "Deletion scheduled" with that date. `deleted_at` is set only when the
+  account is purged, and a purged account cannot sign in, so you will always
+  read it as `null`. Both are read-only: a PATCH ignores them.
 - **`points` and `tier_level` are placeholders.** `points` is always `0` and
   `tier_level` is always `"BRONZE"`. Loyalty tiers belong to each salon, and
   each salon types its own tier names, so there is no one tier for the whole

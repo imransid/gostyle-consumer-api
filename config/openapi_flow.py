@@ -53,6 +53,8 @@ FLOW = (
             ("PATCH", "/api/v1/auth/me", "Change part of my profile"),
             ("PUT", "/api/v1/auth/me", "Replace my profile"),
             ("POST", "/api/v1/auth/password/change", "Change my password"),
+            ("POST", "/api/v1/auth/me/delete", "Schedule my account for deletion"),
+            ("POST", "/api/v1/auth/me/delete/cancel", "Cancel my account deletion"),
         ),
     ),
     (

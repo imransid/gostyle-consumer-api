@@ -16,7 +16,7 @@ from drf_spectacular.utils import (
 )
 from rest_framework.exceptions import ErrorDetail, NotFound, PermissionDenied, ValidationError
 from rest_framework.exceptions import PermissionDenied
-from .models import Purpose
+from .models import DeletionReason, Purpose
 from .serializers import (
     ContactChangeConfirmSerializer,
     ContactChangeProofSerializer,
@@ -29,6 +29,8 @@ from .models import Favourite
 from . import ratelimit, services
 from .permissions import IsVerified
 from .serializers import (
+    DeleteAccountSerializer,
+    DeletionScheduledSerializer,
     DetailSerializer,
     LoginSerializer,
     LogoutSerializer,
@@ -460,3 +462,60 @@ class UserLookupView(APIView):
             {"found": True, "user": UserLookupResultSerializer(match).data},
             status=status.HTTP_200_OK,
         )
+
+
+class DeleteAccountView(APIView):
+    """
+    POST /api/v1/auth/me/delete
+
+    Schedules the account for purging ConsumerAccount.PURGE_AFTER_DAYS from
+    now. Nothing is removed yet: the member can still sign in and cancel
+    until then. The purge itself is the purge_due_accounts command.
+    """
+
+    permission_classes = [IsAuthenticated]
+    throttle_classes = []
+
+    @extend_schema(
+        request=DeleteAccountSerializer,
+        responses={200: DeletionScheduledSerializer},
+    )
+    def post(self, request):
+        s = DeleteAccountSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+
+        if not request.user.check_password(s.validated_data["password"]):
+            raise PermissionDenied(
+                {
+                    "password": [
+                        ErrorDetail("Wrong password.", code="wrong_password")
+                    ]
+                }
+            )
+
+        # request_deletion sets purge_at on this same instance before it
+        # saves, so request.user already holds the value that was written.
+        request.user.request_deletion(
+            s.validated_data.get("reason", DeletionReason.OTHER),
+            s.validated_data.get("note", ""),
+        )
+        return Response(
+            DeletionScheduledSerializer(request.user).data,
+            status=status.HTTP_200_OK,
+        )
+
+
+class CancelDeletionView(APIView):
+    """
+    POST /api/v1/auth/me/delete/cancel
+
+    Clears a scheduled deletion. Safe to call when none is scheduled.
+    """
+
+    permission_classes = [IsAuthenticated]
+    throttle_classes = []
+
+    @extend_schema(request=None, responses={204: None})
+    def post(self, request):
+        request.user.cancel_deletion()
+        return Response(status=status.HTTP_204_NO_CONTENT)
