@@ -9,11 +9,13 @@ checked in the same 30-second step.
 
 import base64
 import hashlib
+import re
 import uuid
 from datetime import timedelta
 from unittest.mock import patch
 
 import pyotp
+from django.core import mail
 from django.core.cache import cache
 from django.db import IntegrityError, connection, transaction
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
@@ -22,6 +24,7 @@ from rest_framework.exceptions import ErrorDetail, ValidationError
 
 from apps.accounts import sessions, two_factor
 from apps.accounts.exceptions import api_exception_handler
+from apps.accounts.notifications import EmailSender
 from apps.accounts.models import (
     ConsumerAccount,
     LoginChallenge,
@@ -143,11 +146,12 @@ class StorageTests(TestCase):
 
 
 class FakeSender:
-    def __init__(self, outbox):
-        self.outbox = outbox
+    def __init__(self, outbox, extras):
+        self.outbox, self.extras = outbox, extras
 
-    def send(self, destination, code, destination_type):
+    def send(self, destination, code, destination_type, **extra):
         self.outbox.append((destination, code, destination_type))
+        self.extras.append(extra)
 
 
 def error_of(caught):
@@ -162,9 +166,11 @@ class TwoFactorTestCase(TestCase):
         self.addCleanup(cache.clear)
         self.account = self.make_account(PHONE, EMAIL)
         self.sid = uuid.uuid4()
-        self.outbox = []
+        self.outbox, self.extras = [], []
         patcher = patch.object(
-            two_factor, "get_sender", side_effect=lambda method: FakeSender(self.outbox)
+            two_factor,
+            "get_sender",
+            side_effect=lambda method: FakeSender(self.outbox, self.extras),
         )
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -389,6 +395,31 @@ class SendCodeTests(TwoFactorTestCase):
         self.send("phone", account=other, ip="86.98.44.120")
 
 
+class CodeEmailTests(TwoFactorTestCase):
+    def test_says_what_the_code_is_for_and_its_10_minutes(self):
+        self.send("email", ON)
+        self.send("phone", TwoFactorPurpose.SIGN_IN)
+        self.assertEqual(
+            self.extras,
+            [
+                {"subject": "Your Go Style security code", "minutes": 10},
+                {"subject": "Your Go Style sign-in code", "minutes": 10},
+            ],
+        )
+
+    def test_the_email_itself(self):
+        with patch.object(two_factor, "get_sender", return_value=EmailSender()):
+            self.send("email", OFF)
+        (msg,) = mail.outbox
+        self.assertEqual((msg.to, msg.subject), ([EMAIL], "Your Go Style security code"))
+        code = VerificationCode.objects.get()
+        sent = re.match(r"Your verification code is (\d{6})\. It expires in 10 minutes\.", msg.body)
+        self.assertIsNotNone(sent, msg.body)
+        self.check(sent.group(1), "email", OFF)
+        code.refresh_from_db()
+        self.assertIsNotNone(code.used_at)
+
+
 class CheckCodeTests(TwoFactorTestCase):
     def test_a_right_code_works_once(self):
         self.send()
@@ -533,6 +564,82 @@ class VerificationTokenTests(TwoFactorTestCase):
         for raw in (token, None, "", "vt_made-up"):
             with self.subTest(raw=raw), self.assertRaises(two_factor.VerificationRequired):
                 two_factor.spend_token(self.account, self.sid, ON, raw)
+
+
+# --- notices ----------------------------------------------------------------------
+
+
+@override_settings(OTP_SENDER="smtp")
+class NoticeTests(TwoFactorTestCase):
+    def session(self, **fields):
+        return UserSession.objects.create(user=self.account, refresh_token_hash="h", **fields)
+
+    def notify(self, sid, change=OFF):
+        with self.captureOnCommitCallbacks(execute=True):
+            two_factor.notify(self.account, sid, change)
+
+    def test_names_the_device_and_place_it_was_done_from(self):
+        self.notify(self.session(device_name="iPhone 15", location="Dubai").pk)
+        (msg,) = mail.outbox
+        self.assertEqual(msg.to, [EMAIL])
+        self.assertEqual(msg.subject, "Go Style: 2-step verification turned off")
+        self.assertEqual(
+            msg.body,
+            "2-step verification was turned off for your Go Style account"
+            " on iPhone 15 in Dubai.\n\n"
+            "If this was not you, reset your password and contact support straight away.",
+        )
+
+    def test_each_change_says_what_it_was(self):
+        sid = self.session(device_name="iPhone 15").pk
+        for change in (ON, OFF, TwoFactorPurpose.AUTHENTICATOR_REMOVE):
+            self.notify(sid, change)
+        self.assertEqual(
+            [(m.subject, m.body.split(" on iPhone 15.")[0]) for m in mail.outbox],
+            [
+                (
+                    "Go Style: 2-step verification turned on",
+                    "2-step verification was turned on for your Go Style account",
+                ),
+                (
+                    "Go Style: 2-step verification turned off",
+                    "2-step verification was turned off for your Go Style account",
+                ),
+                (
+                    "Go Style: authenticator app removed",
+                    "The authenticator app was removed from your Go Style account",
+                ),
+            ],
+        )
+
+    def test_without_a_place_or_a_device_name(self):
+        self.notify(self.session(device_name="Galaxy S23 Ultra").pk)
+        self.notify(self.session().pk)
+        self.notify(uuid.uuid4())
+        self.assertEqual(
+            [m.body.split("\n")[0] for m in mail.outbox],
+            [
+                "2-step verification was turned off for your Go Style account"
+                " on Galaxy S23 Ultra.",
+                "2-step verification was turned off for your Go Style account"
+                " on an unknown device.",
+                "2-step verification was turned off for your Go Style account"
+                " on an unknown device.",
+            ],
+        )
+
+    def test_sent_only_once_the_change_is_committed(self):
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            two_factor.notify(self.account, self.session().pk, OFF)
+        self.assertEqual((len(callbacks), mail.outbox), (1, []))
+
+    def test_only_to_a_verified_email(self):
+        sid = self.session().pk
+        self.account.email_verified_at = None
+        self.notify(sid)
+        self.account.email = None  # phone only: WhatsApp has no template for it
+        self.notify(sid)
+        self.assertEqual(mail.outbox, [])
 
 
 # --- the authenticator app ---------------------------------------------------------

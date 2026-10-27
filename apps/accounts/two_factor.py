@@ -14,6 +14,8 @@ views only read the request and answer.
   * verification tokens: what a passed Verify it's you answers, and what the
     change it was asked for spends (3.2).
   * the authenticator: its secret, AES-GCM at rest, and its TOTP codes (5).
+  * notices: an email when 2-step goes on or off, or the authenticator is
+    removed, naming the device and place it was done from (4, 5.3).
   * limits: one send per 30 seconds per purpose, and 5 wrong codes per 15
     minutes per account across every call (5.4).
   * the app version gate, TWO_FACTOR_MIN_APP_VERSION.
@@ -51,11 +53,13 @@ from .identifiers import EMAIL, PHONE
 from .models import (
     ConsumerAccount,
     TwoFactorMethod,
+    TwoFactorPurpose,
     UserAuthenticator,
+    UserSession,
     VerificationCode,
     VerificationToken,
 )
-from .notifications import get_sender
+from .notifications import get_sender, send_security_notice
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +82,27 @@ SENDS_PER_ACCOUNT_DAILY = 20
 SENDS_PER_IP_HOURLY = 20
 
 ISSUER = "Go Style"
+
+# An emailed code's subject. Every other word of the email is the OTP
+# email's ("Confirm it's you").
+SIGN_IN_SUBJECT = "Your Go Style sign-in code"
+SECURITY_SUBJECT = "Your Go Style security code"
+
+# Each change's notice: its subject, and what happened.
+_NOTICES = {
+    TwoFactorPurpose.TWO_STEP_ON: (
+        "Go Style: 2-step verification turned on",
+        "2-step verification was turned on for your Go Style account",
+    ),
+    TwoFactorPurpose.TWO_STEP_OFF: (
+        "Go Style: 2-step verification turned off",
+        "2-step verification was turned off for your Go Style account",
+    ),
+    TwoFactorPurpose.AUTHENTICATOR_REMOVE: (
+        "Go Style: authenticator app removed",
+        "The authenticator app was removed from your Go Style account",
+    ),
+}
 TOKEN_PREFIX = "vt_"
 _NONCE_BYTES = 12
 
@@ -242,7 +267,12 @@ def send_code(user, method, purpose, ip):
         # After the commit, as request_otp does: a provider call inside the
         # transaction would hold it open for a network round trip.
         sender = get_sender(method)
-        transaction.on_commit(lambda: sender.send(destination, raw, method))
+        subject = SIGN_IN_SUBJECT if purpose == TwoFactorPurpose.SIGN_IN else SECURITY_SUBJECT
+        transaction.on_commit(
+            lambda: sender.send(
+                destination, raw, method, subject=subject, minutes=CODE_TTL_SECONDS // 60
+            )
+        )
 
     return {
         "sent_to": contact_hints(user)[method],
@@ -327,6 +357,32 @@ def spend_token(user, sid, purpose, raw):
 
 def _hash(raw_token):
     return hashlib.sha256(raw_token.encode()).hexdigest()
+
+
+# --- notices --------------------------------------------------------------------
+
+
+def notify(user, sid, change):
+    """Email the account that `change` (two_step_on, two_step_off or
+    authenticator_remove) was just made, from the device and place of the
+    session `sid`: "2-step verification was turned off for your Go Style
+    account on iPhone 15 in Dubai." Sent once the change is committed.
+
+    Only to a verified email. A phone-only account gets no notice: WhatsApp
+    needs an approved template for one, as for the contact change notice.
+    """
+    if not (user.email and user.email_verified_at):
+        return
+    session = UserSession.objects.filter(pk=sid).first() if sid else None
+    device = (session and session.device_name) or "an unknown device"
+    place = f" in {session.location}" if session and session.location else ""
+    subject, what = _NOTICES[change]
+    message = (
+        f"{what} on {device}{place}.\n\n"
+        "If this was not you, reset your password and contact support straight away."
+    )
+    destination = user.email
+    transaction.on_commit(lambda: send_security_notice(destination, subject, message))
 
 
 # --- the authenticator app ------------------------------------------------------
