@@ -10,11 +10,19 @@ Sign-in & Security: 2-step verification and the authenticator app
     POST   /api/v1/me/security/authenticator/confirm   its first code turns it on
     DELETE /api/v1/me/security/authenticator           remove it
 
+and the sign-in challenge that POST /auth/login answers while 2-step is on:
+
+    POST   /api/v1/auth/2fa/send                       send the sign-in code
+    POST   /api/v1/auth/2fa/verify                     check it: the token pair
+
 Behind TWO_FACTOR_V1 and DEVICE_SESSIONS_V1: either off, all are 404. Every
-call but GET also needs an app at least TWO_FACTOR_MIN_APP_VERSION, else 426
-app_update_required. A change that needs a verification token spends it in
-the change's own transaction, so a change that fails gives the token back.
-The work is in apps/accounts/two_factor.py.
+/me/security call but GET also needs an app at least
+TWO_FACTOR_MIN_APP_VERSION, else 426 app_update_required. /auth/2fa/* does
+not: only a login that passed that check gets a challenge.
+
+A change that needs a verification token spends it in the change's own
+transaction, so a change that fails gives the token back. The work is in
+apps/accounts/two_factor.py.
 """
 
 import re
@@ -23,6 +31,7 @@ from django.db import transaction
 from django.http import Http404
 from drf_spectacular.utils import OpenApiResponse, extend_schema, inline_serializer
 from rest_framework import serializers, status
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -99,6 +108,24 @@ class _TokenSerializer(serializers.Serializer):
 
 class AuthenticatorConfirmSerializer(_CodeSerializer):
     pass
+
+
+class _ChallengeSerializer(serializers.Serializer):
+    challenge_token = serializers.CharField(help_text="From POST /auth/login.")
+
+
+class SignInSendSerializer(_ChallengeSerializer):
+    method = serializers.CharField(help_text="email or phone")
+
+    def validate_method(self, value):
+        return _one_of(value, ("email", "phone"))
+
+
+class SignInVerifySerializer(_CodeSerializer, _ChallengeSerializer):
+    method = serializers.CharField(help_text="email, phone or authenticator")
+
+    def validate_method(self, value):
+        return _one_of(value, ("email", "phone", "authenticator"))
 
 
 class TwoFactorSwitchSerializer(_TokenSerializer):
@@ -398,3 +425,84 @@ class AuthenticatorConfirmView(_SecurityView):
         added_at = two_factor.confirm_setup(request.user, self.sid, data["code"])
         two_factor.notify(request.user, self.sid, TwoFactorPurpose.AUTHENTICATOR_ADD)
         return Response({"added_at": _uae(added_at)})
+
+
+# --- the sign-in challenge ------------------------------------------------------------
+
+
+class _SignInView(APIView):
+    """Anonymous: the challenge token is the proof. No authentication at
+    all, so a stale bearer token cannot turn the call into a 401 first."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = []  # the limits are in two_factor
+
+    def initial(self, request, *args, **kwargs):
+        if not two_factor.enabled():
+            raise Http404("Not found")
+        super().initial(request, *args, **kwargs)
+
+    def body(self, serializer_class):
+        s = serializer_class(data=self.request.data)
+        s.is_valid(raise_exception=True)
+        return s.validated_data
+
+
+_CHALLENGE_EXPIRED = {
+    401: OpenApiResponse(
+        description="`challenge_expired`: the sign-in's 10 minutes are up, or its "
+        "5 wrong codes, or it is used. Sign in again."
+    ),
+    404: _ERRORS[404],
+}
+
+
+class SignInSendView(_SignInView):
+    @extend_schema(
+        request=SignInSendSerializer,
+        description=(
+            "Sends the sign-in code for a challenge from POST /auth/login, as "
+            "POST /me/security/verify/send does: the account's own email, or "
+            "its phone by WhatsApp. For an authenticator there is nothing to "
+            "send."
+        ),
+        responses={
+            200: _SENT,
+            **_CHALLENGE_EXPIRED,
+            422: OpenApiResponse(description="`method` `unavailable`."),
+            429: OpenApiResponse(description="`too_many_attempts`: sent too soon or too often."),
+        },
+    )
+    def post(self, request):
+        data = self.body(SignInSendSerializer)
+        answer = two_factor.send_sign_in_code(
+            data["challenge_token"], data["method"], sessions.client_ip(request)
+        )
+        return Response(answer)
+
+
+class SignInVerifyView(_SignInView):
+    @extend_schema(
+        request=SignInVerifySerializer,
+        description=(
+            "Checks the sign-in code, from the same X-Device-Id as the login. "
+            "Answers the token pair login answers; the session starts here, "
+            "and this device is not asked again while it stays signed in."
+        ),
+        responses={
+            200: inline_serializer(
+                "SignInTokens",
+                {"access": serializers.CharField(), "refresh": serializers.CharField()},
+            ),
+            **_CHALLENGE_EXPIRED,
+            **_CODE_ERRORS,
+        },
+    )
+    def post(self, request):
+        data = self.body(SignInVerifySerializer)
+        # No transaction around it: a wrong code's count must stay counted.
+        tokens = two_factor.finish_sign_in(
+            data["challenge_token"], data["method"], data["code"], request
+        )
+        return Response(tokens)
