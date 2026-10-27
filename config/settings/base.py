@@ -396,6 +396,34 @@ PACKAGE_SAVING_AS_DISCOUNT_V1 = env.bool("PACKAGE_SAVING_AS_DISCOUNT_V1", defaul
 # the whole visit. OFF here, create forwards exactly what it did. Nothing in
 # booking-api changes (views._mend_package_create).
 PACKAGE_END_TIME_FROM_QUOTE_V1 = env.bool("PACKAGE_END_TIME_FROM_QUOTE_V1", default=False)
+
+# Where you're signed in (docs/DEVICE_SESSIONS_API.md): GET /me/sessions,
+# DELETE /me/sessions/{id} and DELETE /me/sessions. ON, a login or register
+# opens a session for the device the app's X-Device-* headers describe, and
+# so does the refresh of a token issued before; both tokens carry its id as
+# `sid`. A request, a refresh or booking-api's VerifyConsumer with an ended
+# session's token answers 401 session_revoked (VerifyConsumer: not valid).
+# An access token with no sid answers the 401 of an invalid token, so the
+# app refreshes it: the first minutes after turning this on, every phone
+# refreshes once. Logout ends the current session, a password reset all of
+# them, and ending one removes the push tokens it registered. OFF here, the
+# three routes are 404, tokens carry no sid and nothing is checked: login,
+# register, refresh, logout and the reset are exactly what they were.
+# Turned off after being on, a signed-out device's access token works again
+# until it expires; its refresh token stays revoked.
+DEVICE_SESSIONS_V1 = env.bool("DEVICE_SESSIONS_V1", default=False)
+
+# What host nginx sends as X-Proxy-Secret (nginx/api.gostyle.uk.conf), so a
+# session's IP is read from X-Forwarded-For only for a request that really
+# came through nginx (apps/accounts/sessions.client_ip). Empty: never, and
+# every session's IP is the socket address, which has no place.
+PROXY_SECRET = env("PROXY_SECRET", default="")
+
+# The MaxMind GeoLite2 City (or GeoIP2 City) .mmdb file a session's
+# location is read from (apps/accounts/geoip.py). Empty, or a file that is
+# not there: location stays null and nothing fails.
+# docs/DEVICE_SESSIONS_SERVER.md says how to install and refresh it.
+GEOIP_CITY_DB = env("GEOIP_CITY_DB", default="")
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
@@ -406,7 +434,8 @@ CACHES = {
 REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "apps.accounts.exceptions.api_exception_handler",
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        # simplejwt's, and an ended session's token is refused (DEVICE_SESSIONS_V1).
+        "apps.accounts.authentication.SessionJWTAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",

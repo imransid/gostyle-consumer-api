@@ -7,6 +7,7 @@ from django.db import close_old_connections
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import AccessToken
 
+from apps.accounts import sessions
 from apps.accounts.models import ConsumerAccount, NotificationPreference
 
 from . import (
@@ -56,6 +57,14 @@ class ConsumerAuthServicer(auth_pb2_grpc.ConsumerAuthServicer):
         consumer_id = token.get("consumer_id")
         if not consumer_id:
             return auth_pb2.VerifyConsumerResponse(valid=False)
+
+        # A signed-out device's token, or one with no session, is refused
+        # here too, as by this service's own API
+        # (apps/accounts/authentication.py).
+        if sessions.enabled():
+            sid = token.get(sessions.SID_CLAIM)
+            if sid is None or not sessions.is_live(sid):
+                return auth_pb2.VerifyConsumerResponse(valid=False)
 
         # The signature only proves the token was issued by us. It does NOT
         # prove the account still exists: access tokens last seven days, so a

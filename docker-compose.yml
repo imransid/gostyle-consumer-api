@@ -97,6 +97,13 @@ services:
       SLOT_MINUTES_AS_BOOKED_V1: ${SLOT_MINUTES_AS_BOOKED_V1:-False}
       PACKAGE_SAVING_AS_DISCOUNT_V1: ${PACKAGE_SAVING_AS_DISCOUNT_V1:-False}
       PACKAGE_END_TIME_FROM_QUOTE_V1: ${PACKAGE_END_TIME_FROM_QUOTE_V1:-False}
+      DEVICE_SESSIONS_V1: ${DEVICE_SESSIONS_V1:-False}
+
+      # Sessions' location from the IP (docs/DEVICE_SESSIONS_SERVER.md).
+      # Empty: location stays null.
+      GEOIP_CITY_DB: ${GEOIP_CITY_DB:-}
+      # The X-Proxy-Secret host nginx sends. The value lives in stack.env.
+      PROXY_SECRET: ${PROXY_SECRET:-}
 
       # File uploads to S3. The keys live in stack.env, never in git.
       AWS_BUCKET_NAME: ${AWS_BUCKET_NAME:-}
@@ -154,6 +161,8 @@ services:
       # ConsumerDirectory (booking-api's reminder emails) refuses every call
       # until this is set, to the same value as booking-api's.
       INTERNAL_GRPC_KEY: ${INTERNAL_GRPC_KEY:-}
+      # VerifyConsumer refuses a signed-out device's token. Same value as api's.
+      DEVICE_SESSIONS_V1: ${DEVICE_SESSIONS_V1:-False}
     networks:
       - gostyle-net
     deploy:

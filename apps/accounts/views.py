@@ -26,7 +26,7 @@ from .serializers import (
 
 from .models import Favourite
 
-from . import ratelimit, services
+from . import ratelimit, services, sessions
 from .permissions import IsVerified
 from .serializers import (
     DeleteAccountSerializer,
@@ -243,6 +243,7 @@ class RegisterView(APIView):
             full_name=data["full_name"],
             password=data["password"],
             gender=data["gender"],
+            request=request,
         )
         return Response(result, status=status.HTTP_201_CREATED)
 
@@ -267,7 +268,7 @@ class LoginView(APIView):
         if not services.contact_verified(account, destination_type):
             raise ValidationError({"detail": "Please verify your account before logging in."})
 
-        return Response(services.tokens_for(account), status=status.HTTP_200_OK)
+        return Response(services.tokens_for(account, request), status=status.HTTP_200_OK)
 
 
 class MeView(RetrieveUpdateAPIView):
@@ -286,7 +287,15 @@ class LogoutView(APIView):
         s.is_valid(raise_exception=True)
         try:
             RefreshToken(s.validated_data["refresh"]).blacklist()
+            refused = False
         except TokenError:
+            refused = True
+        # This device's session ends even when its refresh token was refused:
+        # the device is leaving either way. After the blacklist above, which
+        # would refuse a token that ending the session had blacklisted first.
+        if sessions.enabled():
+            sessions.end_current(request)
+        if refused:
             raise ValidationError({"detail": "Invalid or expired token."})
         return Response(status=status.HTTP_205_RESET_CONTENT)
 

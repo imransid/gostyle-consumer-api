@@ -25,7 +25,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.db import IntegrityError
 from rest_framework.exceptions import ErrorDetail
 
-from . import ratelimit
+from . import ratelimit, sessions
 from .identifiers import EMAIL
 from .models import ConsumerAccount, OtpCode, Purpose, Verification
 from .notifications import get_sender, send_contact_change_notice
@@ -95,7 +95,11 @@ def lookup_account(caller, destination, destination_type):
     )
 
 
-def tokens_for(user):
+def tokens_for(user, request=None):
+    """A new token pair. Given the sign-in's request, it opens a session for
+    that device too (sessions.start) while DEVICE_SESSIONS_V1 is on."""
+    if request is not None and sessions.enabled():
+        return sessions.start(user, request)
     refresh = RefreshToken.for_user(user)
     return {"access": str(refresh.access_token), "refresh": str(refresh)}
 
@@ -222,7 +226,7 @@ def verify_otp_for_user(user, destination_type, purpose, code, ip):
     )
 
 
-def register(destination, destination_type, full_name, password, gender=""):
+def register(destination, destination_type, full_name, password, gender="", request=None):
     """Create the account directly. No OTP/Verification required here —
     verification happens later via request_otp_for_user/verify_otp_for_user
     against this account.
@@ -246,7 +250,7 @@ def register(destination, destination_type, full_name, password, gender=""):
         account.set_password(password)
         account.save()
 
-    tokens = tokens_for(account)
+    tokens = tokens_for(account, request)
     return {
         "detail": "Registration successful. Please verify your account to continue.",
         **tokens,
@@ -392,6 +396,12 @@ def reset_password(reset_token, new_password):
         account.save(update_fields=["password"])
 
         _blacklist_all_refresh_tokens(account)
+
+    # Every refresh token was just revoked, and a session whose refresh
+    # token is revoked has ended: every device is out at once, not when its
+    # access token expires, and stops getting push notifications.
+    if sessions.enabled():
+        sessions.end(account.sessions.all())
 
 
 def _blacklist_all_refresh_tokens(account):
