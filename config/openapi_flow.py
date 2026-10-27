@@ -55,6 +55,9 @@ FLOW = (
             ("POST", "/api/v1/auth/password/change", "Change my password"),
             ("POST", "/api/v1/auth/me/delete", "Schedule my account for deletion"),
             ("POST", "/api/v1/auth/me/delete/cancel", "Cancel my account deletion"),
+            ("GET", "/api/v1/me/sessions", "Where I am signed in"),
+            ("DELETE", "/api/v1/me/sessions/{session_id}", "Sign out one other device"),
+            ("DELETE", "/api/v1/me/sessions", "Sign out every other device"),
         ),
     ),
     (

@@ -3,6 +3,7 @@ from datetime import timedelta
 
 from django.contrib.auth.hashers import check_password, make_password
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
+from django.contrib.postgres.functions import RandomUUID
 from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -150,6 +151,9 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
 
         # 5. Clean related data
         self.devices.all().delete()
+        # Sessions hold IP addresses, places and device names. Their push
+        # token links go with them (CASCADE).
+        self.sessions.all().delete()
         self.favourites.all().delete()
         self.favourite_stylists.all().delete()
         NotificationPreference.objects.filter(account=self).delete()
@@ -433,3 +437,110 @@ class NotificationPreference(models.Model):
         # the unique-constraint error and re-reads. No extra try/except needed.
         prefs, _ = cls.objects.get_or_create(account=account)
         return prefs
+
+# DEFAULT now(), as the brief's table has it. Django's Now() would be
+# STATEMENT_TIMESTAMP().
+_NOW = models.Func(function="now", output_field=models.DateTimeField())
+
+
+class UserSession(models.Model):
+    """
+    One sign-in on one device: a row of Where you're signed in. The table is
+    the one the mobile brief suggests (docs/DEVICE_SESSIONS_API.md), column
+    for column. apps/accounts/sessions.py opens, checks and ends them;
+    nothing else writes here.
+
+    A session starts whenever the API issues a token pair and owns the
+    refresh token from then on: both tokens carry its id as the `sid` claim,
+    refresh_token_hash is the hash of the refresh token it holds now, and a
+    rotation finds the session by it. It ends on logout, on Sign Out from
+    another device, on a newer sign-in from the same device, and when its
+    refresh token is revoked (a password reset). A session whose refresh
+    token has expired has ended too: simplejwt's outstanding-token list says
+    so (sessions.live).
+
+    The device fields come from the app's X-Device-* headers, which anyone
+    can send. They name a session; they never decide access.
+    """
+
+    class DeviceType(models.TextChoices):
+        PHONE = "phone", "phone"
+        TABLET = "tablet", "tablet"
+        BROWSER = "browser", "browser"
+        DESKTOP = "desktop", "desktop"
+        UNKNOWN = "unknown", "unknown"
+
+    class Platform(models.TextChoices):
+        IOS = "ios", "ios"
+        ANDROID = "android", "android"
+        WEB = "web", "web"
+
+    # default for the code, db_default for the table, as the brief has them.
+    id = models.UUIDField(
+        primary_key=True, default=uuid.uuid4, db_default=RandomUUID(), editable=False
+    )
+    # No plain index on user_id: the brief's partial one below covers the
+    # live sessions, which is what every lookup by account asks for.
+    user = models.ForeignKey(
+        ConsumerAccount,
+        on_delete=models.CASCADE,
+        related_name="sessions",
+        db_index=False,
+    )
+
+    # NULL for every value the app did not send: the API answers null for
+    # them, and the one-per-device rule below skips a NULL device.
+    device_id = models.TextField(null=True, blank=True)
+    device_name = models.TextField(null=True, blank=True)
+    device_type = models.TextField(
+        choices=DeviceType.choices, default=DeviceType.UNKNOWN, db_default=DeviceType.UNKNOWN
+    )
+    platform = models.TextField(choices=Platform.choices, null=True, blank=True)
+    os_version = models.TextField(null=True, blank=True)
+    app_version = models.TextField(null=True, blank=True)
+    app_build = models.TextField(null=True, blank=True)
+    # The client's real IP (sessions.client_ip), and the place it is in. The
+    # place name only, never the coordinates.
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    location = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(default=timezone.now, db_default=_NOW)
+    last_seen_at = models.DateTimeField(default=timezone.now, db_default=_NOW)
+    ended_at = models.DateTimeField(null=True, blank=True)
+
+    # SHA-256 of the refresh token this session holds now (the brief: store
+    # the refresh token, or its hash, so a rotation finds its session).
+    # Moves on every rotation.
+    refresh_token_hash = models.CharField(max_length=64)
+
+    class Meta:
+        db_table = "user_sessions"
+        indexes = [
+            models.Index(
+                fields=["user"],
+                name="user_sessions_user_active_idx",
+                condition=Q(ended_at__isnull=True),
+            ),
+            models.Index(fields=["refresh_token_hash"], name="user_sessions_refresh_hash_idx"),
+        ]
+        constraints = [
+            # One live session per device per account. A sign-in from the
+            # same device ends the old one first; this catches two at once.
+            models.UniqueConstraint(
+                fields=["user", "device_id"],
+                condition=Q(ended_at__isnull=True, device_id__isnull=False),
+                name="user_sessions_device_active_idx",
+            ),
+            # The brief's two CHECKs. Spelled out: Meta cannot see the
+            # DeviceType and Platform classes above.
+            models.CheckConstraint(
+                condition=Q(device_type__in=["phone", "tablet", "browser", "desktop", "unknown"]),
+                name="user_sessions_device_type_check",
+            ),
+            models.CheckConstraint(
+                condition=Q(platform__in=["ios", "android", "web"]) | Q(platform__isnull=True),
+                name="user_sessions_platform_check",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.device_name or 'Unknown device'} for {self.user_id}"

@@ -1,7 +1,7 @@
 from django.urls import path
-from rest_framework_simplejwt.views import TokenRefreshView
 from .device_token_views import DeviceTokensView
 from .notification_views import NotificationPreferencesView
+from .session_views import SessionDetailView, SessionsView, SessionTokenRefreshView
 
 from .views import (
     CancelDeletionView,
@@ -29,7 +29,7 @@ urlpatterns = [
     path("auth/register", RegisterView.as_view()),
     path("auth/login", LoginView.as_view()),
     path("auth/logout", LogoutView.as_view()),
-    path("auth/token/refresh", TokenRefreshView.as_view()),
+    path("auth/token/refresh", SessionTokenRefreshView.as_view()),
     path("auth/me", MeView.as_view()),
     path("auth/me/delete", DeleteAccountView.as_view()),
     path("auth/me/delete/cancel", CancelDeletionView.as_view()),
@@ -39,4 +39,6 @@ urlpatterns = [
     path("auth/password/reset", PasswordResetView.as_view()),
     path("user/lookup", UserLookupView.as_view()),
     path("me/device-tokens", DeviceTokensView.as_view(), name="device-tokens"),
+    path("me/sessions", SessionsView.as_view(), name="sessions"),
+    path("me/sessions/<str:session_id>", SessionDetailView.as_view(), name="session-detail"),
 ]

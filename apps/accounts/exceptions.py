@@ -94,6 +94,13 @@ def api_exception_handler(exc, context):
         # traceback still reaches the logs and Sentry.
         return None
 
+    # An error of the whole request, not of any field (the sessions API,
+    # apps/accounts/sessions.py): its own top-level code, an empty errors list.
+    envelope_code = getattr(exc, "envelope_code", None)
+    if envelope_code:
+        response.data = {"detail": str(exc.detail), "code": envelope_code, "errors": []}
+        return response
+
     errors = _flatten(response.data)
 
     # 400 with field errors is a validation failure; the client expects 422.

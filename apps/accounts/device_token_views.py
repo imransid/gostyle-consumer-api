@@ -13,7 +13,7 @@ from rest_framework import serializers, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import push_api
+from . import push_api, sessions
 from .permissions import IsVerified
 
 logger = logging.getLogger(__name__)
@@ -35,21 +35,33 @@ class DeviceTokensView(APIView):
     def post(self, request):
         s = DeviceTokenSerializer(data=request.data)
         s.is_valid(raise_exception=True)
-        return _forward(
+        # Recorded with the bearer's session (sid), so signing that session
+        # out removes the token (sessions.end). The answer to the app does
+        # not change.
+        sid = sessions.current_id(request) if sessions.enabled() else None
+        in_session = {"session_id": sid} if sid else {}
+        response = _forward(
             lambda: push_api.register_device(
                 user_id=request.user.id,
                 token=s.validated_data["token"],
                 platform=s.validated_data["platform"],
+                **in_session,
             )
         )
+        if response.status_code == status.HTTP_204_NO_CONTENT:
+            sessions.retry_pending_push()
+        return response
 
     @extend_schema(request=DeviceTokenDeleteSerializer, responses={204: None})
     def delete(self, request):
         s = DeviceTokenDeleteSerializer(data=request.data)
         s.is_valid(raise_exception=True)
-        return _forward(
+        response = _forward(
             lambda: push_api.unregister_device(token=s.validated_data["token"])
         )
+        if response.status_code == status.HTTP_204_NO_CONTENT:
+            sessions.retry_pending_push()
+        return response
 
 
 def _forward(call):

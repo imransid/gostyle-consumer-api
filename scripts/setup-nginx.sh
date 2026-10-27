@@ -87,6 +87,20 @@ else
   warn "$LOG_FORMAT_SNIPPET missing — vhosts using json_combined will fail nginx -t"
 fi
 
+# --- proxy secret -------------------------------------------------------------
+
+# api.gostyle.uk.conf includes this file (X-Proxy-Secret), and nginx -t fails
+# without it. Written once with a random value and never overwritten: the app
+# must hold the same value as PROXY_SECRET.
+PROXY_SECRET_SNIPPET=/etc/nginx/snippets/gostyle-proxy-secret.conf
+if [ ! -f "$PROXY_SECRET_SNIPPET" ]; then
+  log "Writing $PROXY_SECRET_SNIPPET (a new random X-Proxy-Secret)"
+  install -d -m 755 /etc/nginx/snippets
+  umask 077
+  printf 'proxy_set_header X-Proxy-Secret "%s";\n' "$(openssl rand -hex 32)" > "$PROXY_SECRET_SNIPPET"
+  umask 022
+fi
+
 # --- certificate --------------------------------------------------------------
 
 if [ -d "$LIVE_DIR" ]; then

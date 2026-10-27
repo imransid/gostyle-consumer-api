@@ -21,19 +21,33 @@ class PushApiUnavailable(Exception):
     """The push service could not be reached, or did not answer with JSON."""
 
 
-def register_device(*, user_id, token, platform, app="customer"):
-    """PUT /devices. Creates the device, or refreshes it if the token exists."""
-    return _send("PUT", "/devices", {
+def register_device(*, user_id, token, platform, app="customer", session_id=None):
+    """PUT /devices. Creates the device, or refreshes it if the token exists.
+
+    session_id is the sign-in session (apps/accounts/sessions.py) the device
+    is recorded under, so signing that session out removes it. A push
+    service older than that field drops it unread.
+    """
+    payload = {
         "userId": str(user_id),
         "app": app,
         "token": token,
         "platform": platform,
-    })
+    }
+    if session_id is not None:
+        payload["sessionId"] = str(session_id)
+    return _send("PUT", "/devices", payload)
 
 
 def unregister_device(*, token):
     """POST /devices/unregister. Removes the device with this token."""
     return _send("POST", "/devices/unregister", {"token": token})
+
+
+def unregister_session(*, session_id):
+    """POST /devices/unregister-session. Removes every device registered
+    under this sign-in session."""
+    return _send("POST", "/devices/unregister-session", {"sessionId": str(session_id)})
 
 
 def _send(method, path, payload):
