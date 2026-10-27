@@ -9,12 +9,15 @@ checked in the same 30-second step.
 
 import base64
 import hashlib
+import json
 import re
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
+from datetime import timezone as dt_timezone
 from unittest.mock import patch
 
 import pyotp
+from django.conf import settings
 from django.core import mail
 from django.core.cache import cache
 from django.db import IntegrityError, connection, transaction
@@ -1516,3 +1519,115 @@ class SignInVerifyTests(SignInTestCase):
         code = self.sign_in_code(challenge)
         ConsumerAccount.objects.filter(pk=self.account.pk).update(is_active=False)
         self.assertRequestError(self.finish(challenge, code), 401, "challenge_expired")
+
+
+# --- the FE guide ---------------------------------------------------------------------
+
+FE_DOC = settings.BASE_DIR / "docs" / "TWO_FACTOR_API.md"
+UAE = dt_timezone(timedelta(hours=4))
+EXAMPLE_SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+EXAMPLE_TOKEN = "4f8b2c9e1a7d5e3b9c0f6a2d8e4b1c7f3a9d5e2b0c6"
+EXAMPLE_CHALLENGE = "6a1f9e3c7b2d8f4a0e5c1b9d7f3a6e2c8b4d0f5a1e7"
+
+
+class TwoFactorDocTests(SignInTestCase):
+    """docs/TWO_FACTOR_API.md promises every JSON block is a real answer,
+    and every authenticator code in its requests a real code. This builds
+    the brief's account (2-step on, verified email and phone), sends the
+    same requests at the same times and must get the same bodies."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.text = FE_DOC.read_text(encoding="utf-8")
+        cls.blocks = [json.loads(b) for b in re.findall(r"```json\n(.*?)\n```", cls.text, re.S)]
+
+    def at(self, hour, minute, second):
+        self.now = datetime(2026, 10, 27, hour, minute, second, tzinfo=UAE)
+
+    def example_code(self, expected):
+        """The example secret's code now, which the page's request shows."""
+        code = self.code(EXAMPLE_SECRET)
+        self.assertEqual(code, expected)
+        self.assertIn(f'"code": "{code}"', self.text)
+        return code
+
+    def add_example_authenticator(self):
+        self.at(14, 5, 12)
+        body = {"verification_token": self.token(ADD), "purpose": "authenticator_add"}
+        with patch.object(two_factor.pyotp, "random_base32", return_value=EXAMPLE_SECRET):
+            resp = self.call("post", "/authenticator", body)
+        self.assertEqual((resp.status_code, resp.json()), (201, self.blocks[4]))
+        resp = self.call("post", "/authenticator/confirm", {"code": self.example_code("377576")})
+        self.assertEqual((resp.status_code, resp.json()), (200, self.blocks[5]))
+
+    def test_get(self):
+        self.assertEqual(self.call("get", "").json(), self.blocks[0])
+
+    def test_verify_its_you_and_the_switch(self):
+        resp = self.call("post", "/verify/send", {"method": "email", "purpose": "two_step_on"})
+        self.assertEqual(resp.json(), self.blocks[1])
+        self.add_example_authenticator()
+        self.at(14, 6, 40)
+        body = {
+            "method": "authenticator",
+            "purpose": "two_step_off",
+            "code": self.example_code("057138"),
+        }
+        with patch.object(two_factor.secrets, "token_urlsafe", return_value=EXAMPLE_TOKEN):
+            resp = self.call("post", "/verify", body)
+        self.assertEqual(resp.json(), self.blocks[2])
+        body = {"enabled": False, "verification_token": "vt_" + EXAMPLE_TOKEN}
+        self.assertEqual(self.call("patch", "/two-factor", body).json(), self.blocks[3])
+
+    def test_signing_in(self):
+        self.add_example_authenticator()
+        self.at(14, 10, 5)
+        with patch.object(two_factor.secrets, "token_urlsafe", return_value=EXAMPLE_CHALLENGE):
+            self.assertEqual(self.sign_in().json(), self.blocks[6])
+        challenge = "ch_" + EXAMPLE_CHALLENGE
+        resp = self.anonymous(SEND, {"challenge_token": challenge, "method": "phone"})
+        self.assertEqual(resp.json(), self.blocks[7])
+        resp = self.finish(challenge, self.example_code("417231"), method="authenticator")
+        self.assertEqual((resp.status_code, set(resp.json())), (200, {"access", "refresh"}))
+
+    def test_the_error_examples(self):
+        resp = self.call("patch", "/two-factor", {"enabled": True})
+        self.assertEqual(resp.json(), self.blocks[8])
+        self.call("post", "/verify/send", {"method": "email", "purpose": "two_step_on"})
+        body = {"method": "email", "purpose": "two_step_on", "code": self.wrong(self.sent_code())}
+        self.assertEqual(self.call("post", "/verify", body).json(), self.blocks[9])
+        old_app = {**IPAD, "HTTP_X_APP_VERSION": "1.3.0"}
+        self.assertEqual(self.sign_in(old_app).json(), self.blocks[10])
+
+    def test_no_other_json_blocks(self):
+        self.assertEqual(len(self.blocks), 11)
+
+    def test_every_error_message_is_on_the_page(self):
+        messages = [
+            two_factor.WRONG_CODE[2],
+            two_factor.EXPIRED_CODE[2],
+            two_factor.METHOD_UNAVAILABLE[2],
+            two_factor.SIGN_IN_UPDATE,
+        ] + [
+            exc.default_detail
+            for exc in (
+                two_factor.VerificationRequired,
+                two_factor.AlreadyAdded,
+                two_factor.NoSetup,
+                two_factor.TooManyAttempts,
+                two_factor.ChallengeExpired,
+                two_factor.AppUpdateRequired,
+                two_factor.AuthenticatorUnavailable,
+            )
+        ]
+        for message in messages:
+            with self.subTest(message=message):
+                self.assertIn(message, self.text)
+
+    def test_every_email_is_on_the_page(self):
+        for subject, what in two_factor._NOTICES.values():
+            with self.subTest(subject=subject):
+                self.assertIn(f"| {subject} | {what} on iPhone 15 in Dubai. |", self.text)
+        for subject in (two_factor.SECURITY_SUBJECT, two_factor.SIGN_IN_SUBJECT):
+            self.assertIn(f'"{subject}"', self.text)
