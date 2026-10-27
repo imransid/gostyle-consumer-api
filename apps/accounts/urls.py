@@ -2,6 +2,14 @@ from django.urls import path
 from .device_token_views import DeviceTokensView
 from .notification_views import NotificationPreferencesView
 from .session_views import SessionDetailView, SessionsView, SessionTokenRefreshView
+from .two_factor_views import (
+    AuthenticatorConfirmView,
+    AuthenticatorView,
+    SecurityView,
+    TwoFactorSwitchView,
+    VerifySendView,
+    VerifyView,
+)
 
 from .views import (
     CancelDeletionView,
@@ -41,4 +49,14 @@ urlpatterns = [
     path("me/device-tokens", DeviceTokensView.as_view(), name="device-tokens"),
     path("me/sessions", SessionsView.as_view(), name="sessions"),
     path("me/sessions/<str:session_id>", SessionDetailView.as_view(), name="session-detail"),
+    path("me/security", SecurityView.as_view(), name="security"),
+    path("me/security/verify/send", VerifySendView.as_view(), name="security-verify-send"),
+    path("me/security/verify", VerifyView.as_view(), name="security-verify"),
+    path("me/security/two-factor", TwoFactorSwitchView.as_view(), name="security-two-factor"),
+    path("me/security/authenticator", AuthenticatorView.as_view(), name="security-authenticator"),
+    path(
+        "me/security/authenticator/confirm",
+        AuthenticatorConfirmView.as_view(),
+        name="security-authenticator-confirm",
+    ),
 ]

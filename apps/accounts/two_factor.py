@@ -14,8 +14,9 @@ views only read the request and answer.
   * verification tokens: what a passed Verify it's you answers, and what the
     change it was asked for spends (3.2).
   * the authenticator: its secret, AES-GCM at rest, and its TOTP codes (5).
-  * notices: an email when 2-step goes on or off, or the authenticator is
-    removed, naming the device and place it was done from (4, 5.3).
+  * notices: an email when 2-step goes on or off, or an authenticator is
+    added or removed, naming the device and place it was done from (4, 5.3;
+    the one on adding is ours).
   * limits: one send per 30 seconds per purpose, and 5 wrong codes per 15
     minutes per account across every call (5.4).
   * the app version gate, TWO_FACTOR_MIN_APP_VERSION.
@@ -97,6 +98,12 @@ _NOTICES = {
     TwoFactorPurpose.TWO_STEP_OFF: (
         "Go Style: 2-step verification turned off",
         "2-step verification was turned off for your Go Style account",
+    ),
+    # Not in the brief (Rafa, 2026-10-27): adding an authenticator is the one
+    # change an intruder would make to keep access, so the owner hears of it.
+    TwoFactorPurpose.AUTHENTICATOR_ADD: (
+        "Go Style: authenticator app added",
+        "An authenticator app was added to your Go Style account",
     ),
     TwoFactorPurpose.AUTHENTICATOR_REMOVE: (
         "Go Style: authenticator app removed",
@@ -359,12 +366,39 @@ def _hash(raw_token):
     return hashlib.sha256(raw_token.encode()).hexdigest()
 
 
+# --- the switch -------------------------------------------------------------------
+
+
+def set_enabled(user, sid, enabled):
+    """PATCH /me/security/two-factor, once its token is spent: turn 2-step on
+    or off. Returns whether it changed.
+
+    Turning it on also marks this session as having passed 2-step: it has
+    just passed Verify it's you, so this phone is not asked at its next
+    sign-in. Turning it off leaves the authenticator linked, for Verify it's
+    you and for when 2-step goes on again.
+    """
+    now = timezone.now()
+    changed = (
+        ConsumerAccount.all_objects.filter(pk=user.pk)
+        .exclude(two_factor_enabled=enabled)
+        .update(two_factor_enabled=enabled, two_factor_changed_at=now)
+    )
+    if enabled:
+        UserSession.objects.filter(pk=sid, user=user).update(two_factor_passed_at=now)
+    user.two_factor_enabled = enabled
+    if changed:
+        user.two_factor_changed_at = now
+    return bool(changed)
+
+
 # --- notices --------------------------------------------------------------------
 
 
 def notify(user, sid, change):
-    """Email the account that `change` (two_step_on, two_step_off or
-    authenticator_remove) was just made, from the device and place of the
+    """Email the account that `change` (two_step_on, two_step_off,
+    authenticator_add or authenticator_remove) was just made, from the
+    device and place of the
     session `sid`: "2-step verification was turned off for your Go Style
     account on iPhone 15 in Dubai." Sent once the change is committed.
 
@@ -466,10 +500,13 @@ def check_authenticator_code(user, code):
 
 def remove(user):
     """DELETE /me/security/authenticator: pending or confirmed, it goes.
-    Nothing to remove is not an error."""
+    Nothing to remove is not an error. Returns whether a confirmed one went:
+    a setup never finished is no news for a notice."""
     with transaction.atomic():
         _lock(user)
+        removed = active_authenticator(user) is not None
         UserAuthenticator.objects.filter(user=user).delete()
+    return removed
 
 
 def _check_totp(user, row, code):

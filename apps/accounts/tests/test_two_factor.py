@@ -21,8 +21,10 @@ from django.db import IntegrityError, connection, transaction
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from rest_framework.exceptions import ErrorDetail, ValidationError
+from rest_framework.test import APIClient
+from rest_framework_simplejwt.tokens import AccessToken
 
-from apps.accounts import sessions, two_factor
+from apps.accounts import sessions, two_factor, two_factor_views
 from apps.accounts.exceptions import api_exception_handler
 from apps.accounts.notifications import EmailSender
 from apps.accounts.models import (
@@ -41,6 +43,25 @@ IP = "94.200.14.31"
 KEY = base64.b64encode(bytes(range(32))).decode()
 ON = TwoFactorPurpose.TWO_STEP_ON
 OFF = TwoFactorPurpose.TWO_STEP_OFF
+ADD = TwoFactorPurpose.AUTHENTICATOR_ADD
+REMOVE = TwoFactorPurpose.AUTHENTICATOR_REMOVE
+PASSWORD = "Str0ng!Pass"
+SECURITY = "/api/v1/me/security"
+UAE_TIME = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+04:00$")
+
+IPHONE = {
+    "HTTP_X_DEVICE_ID": "9F1C2B7E-3D4A-4C1F-8E2B-6A0D5C9B1E47",
+    "HTTP_X_DEVICE_NAME": "iPhone 15",
+    "HTTP_X_DEVICE_TYPE": "phone",
+    "HTTP_X_PLATFORM": "ios",
+    "HTTP_X_APP_VERSION": "1.4.0",
+    "REMOTE_ADDR": IP,
+}
+IPAD = {
+    **IPHONE,
+    "HTTP_X_DEVICE_ID": "1B7E4D2A-0C6F-4A93-8E15-7D9B3F2C6A40",
+    "HTTP_X_DEVICE_NAME": "iPad",
+}
 TABLES = ("user_authenticators", "verification_codes", "verification_tokens", "login_challenges")
 
 
@@ -891,3 +912,340 @@ class VersionGateTests(SimpleTestCase):
         self.assertEqual(
             str(caught.exception.detail["detail"]), "Update the Go Style app to sign in."
         )
+
+
+# --- the /me/security routes ----------------------------------------------------------
+
+ROUTES = (
+    ("get", ""),
+    ("post", "/verify/send"),
+    ("post", "/verify"),
+    ("patch", "/two-factor"),
+    ("post", "/authenticator"),
+    ("post", "/authenticator/confirm"),
+    ("delete", "/authenticator"),
+)
+
+
+@override_settings(
+    DEVICE_SESSIONS_V1=True,
+    TWO_FACTOR_V1=True,
+    TWO_FACTOR_MIN_APP_VERSION="1.4.0",
+    OTP_SENDER="smtp",
+)
+class SecurityApiTestCase(AuthenticatorTestCase):
+    """Through the real URLs, signed in with /auth/login, so every token has
+    its session. The clock stands still (AuthenticatorTestCase)."""
+
+    def setUp(self):
+        super().setUp()
+        self.account.set_password(PASSWORD)
+        self.account.save()
+        self.phone = self.login(IPHONE)
+
+    def login(self, device):
+        client = APIClient()
+        body = {"destination_type": "phone", "destination": PHONE, "password": PASSWORD}
+        resp = client.post("/api/v1/auth/login", body, format="json", **device)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {resp.json()['access']}", **device)
+        client.sid = uuid.UUID(AccessToken(resp.json()["access"])["sid"])
+        return client
+
+    def call(self, method, path, body=None, client=None):
+        with self.captureOnCommitCallbacks(execute=True):
+            return getattr(client or self.phone, method)(SECURITY + path, body, format="json")
+
+    def token(self, purpose, method="email", client=None):
+        """A verification token for `purpose`, from Verify it's you."""
+        if method == "authenticator":
+            code = self.code(self.secret)
+            self.now += timedelta(seconds=30)  # the next code is a new one
+        else:
+            cache.delete(f"2fa:resend:{self.account.pk}:{purpose}")
+            resp = self.call("post", "/verify/send", {"method": method, "purpose": purpose}, client)
+            self.assertEqual(resp.status_code, 200, resp.content)
+            code = self.sent_code()
+        body = {"method": method, "purpose": purpose, "code": code}
+        resp = self.call("post", "/verify", body, client)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        return resp.json()["verification_token"]
+
+    def add_authenticator(self, client=None):
+        """Adds one through the routes. Keeps its secret in self.secret."""
+        body = {"verification_token": self.token(ADD, client=client), "purpose": ADD}
+        resp = self.call("post", "/authenticator", body, client)
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.secret = resp.json()["secret"]
+        resp = self.call("post", "/authenticator/confirm", {"code": self.code(self.secret)}, client)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.now += timedelta(seconds=30)
+        return resp
+
+    def assertRequestError(self, resp, status_code, code):
+        """An error of no field, as auth-error-response.md section 4 has it."""
+        self.assertEqual(resp.status_code, status_code, resp.content)
+        body = resp.json()
+        self.assertEqual(body["code"], code)
+        self.assertEqual(body["errors"], [{"field": None, "code": code, "message": body["detail"]}])
+
+    def assertFieldError(self, resp, field, code):
+        self.assertEqual(resp.status_code, 422, resp.content)
+        self.assertEqual(
+            [(e["field"], e["code"]) for e in resp.json()["errors"]], [(field, code)]
+        )
+
+
+class SecuritySwitchTests(SecurityApiTestCase):
+    def test_every_route_is_404_while_either_switch_is_off(self):
+        for switches in ({"TWO_FACTOR_V1": False}, {"DEVICE_SESSIONS_V1": False}):
+            with override_settings(**switches):
+                for method, path in ROUTES:
+                    with self.subTest(switches=switches, route=f"{method} {path}"):
+                        self.assertEqual(self.call(method, path, {}).status_code, 404)
+
+    def test_no_token_is_401_before_the_app_version(self):
+        stranger = APIClient()
+        stranger.credentials(**{**IPHONE, "HTTP_X_APP_VERSION": "1.0.0"})
+        for method, path in ROUTES:
+            with self.subTest(route=f"{method} {path}"):
+                self.assertEqual(self.call(method, path, {}, stranger).status_code, 401)
+
+    def test_every_call_but_get_needs_a_new_enough_app(self):
+        old = self.login({**IPAD, "HTTP_X_APP_VERSION": "1.3.9"})
+        self.assertEqual(self.call("get", "", client=old).status_code, 200)
+        for method, path in ROUTES[1:]:
+            with self.subTest(route=f"{method} {path}"):
+                resp = self.call(method, path, {}, old)
+                self.assertRequestError(resp, 426, "app_update_required")
+                self.assertEqual(
+                    resp.json()["detail"], "Update the Go Style app to use 2-step verification."
+                )
+
+    @override_settings(TWO_FACTOR_MIN_APP_VERSION="")
+    def test_with_no_minimum_no_app_may_change_anything(self):
+        new = self.login({**IPAD, "HTTP_X_APP_VERSION": "99.0.0"})
+        self.assertEqual(self.call("get", "", client=new).status_code, 200)
+        resp = self.call("post", "/verify/send", {"method": "email", "purpose": ON}, new)
+        self.assertRequestError(resp, 426, "app_update_required")
+        self.assertEqual(self.outbox, [])
+
+
+class SecurityReadTests(SecurityApiTestCase):
+    def test_a_new_account_as_the_brief_has_it(self):
+        resp = self.call("get", "")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            resp.json(),
+            {
+                "two_factor_enabled": False,
+                "methods": {
+                    "email": {"available": True, "hint": "k•••@gmail.com"},
+                    "phone": {"available": True, "hint": "+971 •• ••• 4567"},
+                    "authenticator": {"available": False, "added_at": None},
+                },
+            },
+        )
+
+    def test_a_contact_not_verified_is_not_available(self):
+        ConsumerAccount.objects.filter(pk=self.account.pk).update(email_verified_at=None)
+        self.assertEqual(
+            self.call("get", "").json()["methods"]["email"], {"available": False, "hint": None}
+        )
+
+    def test_a_confirmed_authenticator_with_its_date_and_never_a_pending_one(self):
+        body = {"verification_token": self.token(ADD)}
+        self.assertEqual(self.call("post", "/authenticator", body).status_code, 201)
+        pending = self.call("get", "").json()["methods"]["authenticator"]
+        self.assertEqual(pending, {"available": False, "added_at": None})
+        self.call("delete", "/authenticator", {"verification_token": self.token(REMOVE)})
+        added_at = self.add_authenticator().json()["added_at"]
+        self.assertRegex(added_at, UAE_TIME)
+        self.assertEqual(
+            self.call("get", "").json()["methods"]["authenticator"],
+            {"available": True, "added_at": added_at},
+        )
+
+
+class VerifyItsYouApiTests(SecurityApiTestCase):
+    def test_send_then_check_answers_a_token(self):
+        resp = self.call("post", "/verify/send", {"method": "phone", "purpose": ON})
+        self.assertEqual(
+            (resp.status_code, resp.json()),
+            (200, {"sent_to": "+971 •• ••• 4567", "expires_in": 600, "resend_in": 30}),
+        )
+        self.assertEqual(self.outbox[-1][0], PHONE)
+        body = {"method": "phone", "purpose": ON, "code": self.sent_code()}
+        resp = self.call("post", "/verify", body)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(set(resp.json()), {"verification_token", "expires_in"})
+        self.assertEqual(VerificationToken.objects.get().session_id, self.phone.sid)
+
+    def test_nothing_to_send_for_an_authenticator_or_a_sign_in(self):
+        for body, field in (
+            ({"method": "authenticator", "purpose": ON}, "method"),
+            ({"method": "email", "purpose": "sign_in"}, "purpose"),
+        ):
+            with self.subTest(body=body):
+                resp = self.call("post", "/verify/send", body)
+                self.assertFieldError(resp, field, "invalid_choice")
+        self.assertEqual(self.outbox, [])
+
+    def test_a_code_that_is_not_six_digits_is_wrong_and_costs_no_try(self):
+        self.call("post", "/verify/send", {"method": "email", "purpose": ON})
+        for code in ("12ab56", "12345", "1234567"):
+            with self.subTest(code=code):
+                body = {"method": "email", "purpose": ON, "code": code}
+                resp = self.call("post", "/verify", body)
+                self.assertFieldError(resp, "code", "invalid")
+        self.assertEqual(
+            resp.json()["errors"][0]["message"], "That code isn’t right. Check it and try again."
+        )
+        self.assertIsNone(cache.get(f"2fa:tries:{self.account.pk}"))
+
+    def test_5_wrong_codes_then_429(self):
+        self.call("post", "/verify/send", {"method": "email", "purpose": ON})
+        body = {"method": "email", "purpose": ON, "code": self.wrong(self.sent_code())}
+        for _ in range(5):
+            self.assertFieldError(self.call("post", "/verify", body), "code", "invalid")
+        body["code"] = self.sent_code()
+        self.assertRequestError(self.call("post", "/verify", body), 429, "too_many_attempts")
+
+
+class TwoFactorSwitchApiTests(SecurityApiTestCase):
+    def switch(self, enabled, token, client=None):
+        body = {"enabled": enabled, "verification_token": token}
+        return self.call("patch", "/two-factor", body, client)
+
+    def test_turning_it_on(self):
+        UserSession.objects.update(location="Dubai")
+        resp = self.switch(True, self.token(ON))
+        self.assertEqual((resp.status_code, resp.json()), (200, {"two_factor_enabled": True}))
+        self.account.refresh_from_db()
+        self.assertTrue(self.account.two_factor_enabled)
+        self.assertEqual(self.account.two_factor_changed_at, self.now)
+        # This phone just passed Verify it's you: it is not asked at its next sign-in.
+        session = UserSession.objects.get(pk=self.phone.sid)
+        self.assertEqual(session.two_factor_passed_at, self.now)
+        (notice,) = mail.outbox
+        self.assertEqual(notice.subject, "Go Style: 2-step verification turned on")
+        self.assertIn("for your Go Style account on iPhone 15 in Dubai.", notice.body)
+
+    def test_turning_it_off_leaves_the_authenticator(self):
+        self.add_authenticator()
+        self.switch(True, self.token(ON))
+        resp = self.switch(False, self.token(OFF, method="authenticator"))
+        self.assertEqual(resp.json(), {"two_factor_enabled": False})
+        self.assertIsNotNone(two_factor.active_authenticator(self.account))
+        self.assertEqual(mail.outbox[-1].subject, "Go Style: 2-step verification turned off")
+
+    def test_needs_a_token_for_its_own_direction_this_session_and_once(self):
+        ipad = self.login(IPAD)
+        on = self.token(ON)
+        for token, client in (
+            (None, None),
+            ("", None),
+            (self.token(OFF), None),
+            (on, ipad),
+        ):
+            with self.subTest(token=token, client=client):
+                resp = self.switch(True, token, client)
+                self.assertRequestError(resp, 403, "verification_required")
+                self.assertEqual(resp.json()["detail"], "Please verify it’s you first.")
+        self.assertEqual(self.switch(True, on).status_code, 200)
+        self.assertRequestError(self.switch(False, on), 403, "verification_required")
+        self.assertRequestError(self.switch(True, on), 403, "verification_required")
+
+    def test_the_value_it_has_is_200_uses_the_token_and_tells_nobody(self):
+        off = self.token(OFF)
+        resp = self.switch(False, off)
+        self.assertEqual((resp.status_code, resp.json()), (200, {"two_factor_enabled": False}))
+        self.assertRequestError(self.switch(False, off), 403, "verification_required")
+        self.assertEqual(mail.outbox, [])
+        self.account.refresh_from_db()
+        self.assertIsNone(self.account.two_factor_changed_at)
+
+
+class AuthenticatorApiTests(SecurityApiTestCase):
+    def test_adding_one(self):
+        UserSession.objects.update(location="Dubai")
+        token = self.token(ADD)
+        resp = self.call("post", "/authenticator", {"verification_token": token, "purpose": ADD})
+        self.assertEqual(resp.status_code, 201, resp.content)
+        answer = resp.json()
+        self.assertEqual(set(answer), {"secret", "otpauth_url", "expires_in"})
+        self.assertEqual(answer["expires_in"], 600)
+        self.assertEqual(
+            answer["otpauth_url"], two_factor.otpauth_url(self.account, answer["secret"])
+        )
+        self.assertEqual(mail.outbox, [])  # not added yet
+
+        resp = self.call("post", "/authenticator/confirm", {"code": self.code(answer["secret"])})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json(), {"added_at": two_factor_views._uae(self.now)})
+        (notice,) = mail.outbox
+        self.assertEqual(notice.subject, "Go Style: authenticator app added")
+        self.assertEqual(
+            notice.body.split("\n")[0],
+            "An authenticator app was added to your Go Style account on iPhone 15 in Dubai.",
+        )
+
+    def test_starting_needs_a_token_for_adding(self):
+        for token in (None, self.token(REMOVE)):
+            with self.subTest(token=token):
+                body = {"verification_token": token} if token else {}
+                resp = self.call("post", "/authenticator", body)
+                self.assertRequestError(resp, 403, "verification_required")
+        self.assertFalse(UserAuthenticator.objects.exists())
+
+    def test_one_already_on_is_409_and_the_token_is_kept(self):
+        self.add_authenticator()
+        token = self.token(ADD)
+        resp = self.call("post", "/authenticator", {"verification_token": token})
+        self.assertRequestError(resp, 409, "already_added")
+        remove = self.token(REMOVE, method="authenticator")
+        resp = self.call("delete", "/authenticator", {"verification_token": remove})
+        self.assertEqual(resp.status_code, 204)
+        resp = self.call("post", "/authenticator", {"verification_token": token})
+        self.assertEqual(resp.status_code, 201, resp.content)
+
+    def test_no_key_is_503_and_the_token_is_kept(self):
+        token = self.token(ADD)
+        with override_settings(TWO_FACTOR_ENCRYPTION_KEY=""):
+            with self.assertLogs("apps.accounts.two_factor", "ERROR"):
+                resp = self.call("post", "/authenticator", {"verification_token": token})
+        self.assertRequestError(resp, 503, "authenticator_unavailable")
+        resp = self.call("post", "/authenticator", {"verification_token": token})
+        self.assertEqual(resp.status_code, 201, resp.content)
+
+    def test_confirming_is_this_sessions_and_a_wrong_code_keeps_it_pending(self):
+        resp = self.call("post", "/authenticator", {"verification_token": self.token(ADD)})
+        secret = resp.json()["secret"]
+        ipad = self.login(IPAD)
+        resp = self.call("post", "/authenticator/confirm", {"code": self.code(secret)}, ipad)
+        self.assertRequestError(resp, 409, "no_setup")
+        resp = self.call("post", "/authenticator/confirm", {"code": self.wrong(self.code(secret))})
+        self.assertFieldError(resp, "code", "invalid")
+        resp = self.call("post", "/authenticator/confirm", {"code": self.code(secret)})
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+    def test_removing_it_with_its_own_code(self):
+        self.add_authenticator()
+        self.call("patch", "/two-factor", {"enabled": True, "verification_token": self.token(ON)})
+        mail.outbox.clear()
+        token = self.token(REMOVE, method="authenticator")
+        body = {"verification_token": token, "purpose": REMOVE}
+        resp = self.call("delete", "/authenticator", body)
+        self.assertEqual(resp.status_code, 204, resp.content)
+        self.assertFalse(UserAuthenticator.objects.exists())
+        self.account.refresh_from_db()
+        self.assertTrue(self.account.two_factor_enabled)  # email and phone still work
+        (notice,) = mail.outbox
+        self.assertEqual(notice.subject, "Go Style: authenticator app removed")
+
+    def test_removing_none_is_204_but_still_needs_a_token(self):
+        resp = self.call("delete", "/authenticator", {})
+        self.assertRequestError(resp, 403, "verification_required")
+        resp = self.call("delete", "/authenticator", {"verification_token": self.token(REMOVE)})
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(mail.outbox, [])
