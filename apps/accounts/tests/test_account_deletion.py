@@ -27,7 +27,12 @@ from apps.accounts.models import (
     Device,
     Favourite,
     FavouriteStylist,
+    LoginChallenge,
     NotificationPreference,
+    TwoFactorPurpose,
+    UserAuthenticator,
+    VerificationCode,
+    VerificationToken,
 )
 from apps.accounts.tests.test_auth import PASSWORD, AuthTestCase
 
@@ -243,6 +248,40 @@ class PurgeCommandTests(DeletionTestCase):
         for model in (Device, Favourite, FavouriteStylist, NotificationPreference):
             with self.subTest(model=model.__name__):
                 self.assertFalse(model.objects.filter(account=self.account).exists())
+
+    def test_the_purge_removes_2_step_verification(self):
+        ConsumerAccount.objects.filter(pk=self.account.pk).update(
+            two_factor_enabled=True, two_factor_changed_at=timezone.now()
+        )
+        later = timezone.now() + timedelta(minutes=5)
+        UserAuthenticator.objects.create(
+            user=self.account, secret_encrypted=b"x", status=UserAuthenticator.Status.ACTIVE
+        )
+        VerificationCode.objects.create(
+            user=self.account,
+            method="email",
+            purpose=TwoFactorPurpose.TWO_STEP_OFF,
+            code_hash="h",
+            expires_at=later,
+        )
+        VerificationToken.objects.create(
+            token_hash="t",
+            user=self.account,
+            session_id=uuid.uuid4(),
+            purpose=TwoFactorPurpose.AUTHENTICATOR_REMOVE,
+            expires_at=later,
+        )
+        LoginChallenge.objects.create(token_hash="c", user=self.account, expires_at=later)
+        self.request_deletion()
+        self.make_due(self.account)
+
+        self.purge()
+
+        gone = ConsumerAccount.all_objects.get(pk=self.account.pk)
+        self.assertEqual((gone.two_factor_enabled, gone.two_factor_changed_at), (False, None))
+        for model in (UserAuthenticator, VerificationCode, VerificationToken, LoginChallenge):
+            with self.subTest(model=model.__name__):
+                self.assertFalse(model.objects.filter(user=self.account).exists())
 
 
 class AfterPurgeTests(DeletionTestCase):

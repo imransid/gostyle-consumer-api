@@ -145,6 +145,8 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
         self.image = ""
         self.date_of_birth = None
         self.location = ""
+        self.two_factor_enabled = False
+        self.two_factor_changed_at = None
         self.save()
 
         # 4. End every session. Without this a refresh token (30 days) reaches
@@ -163,6 +165,12 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
         self.favourites.all().delete()
         self.favourite_stylists.all().delete()
         NotificationPreference.objects.filter(account=self).delete()
+        # 2-step verification: the authenticator's secret, and any code,
+        # token or sign-in challenge still waiting.
+        UserAuthenticator.objects.filter(user=self).delete()
+        self.verification_codes.all().delete()
+        self.verification_tokens.all().delete()
+        self.login_challenges.all().delete()
         if old_contacts:
             OtpCode.objects.filter(
                 destination__in=old_contacts, consumed_at__isnull=True
