@@ -27,6 +27,8 @@ FLOW = (
         (
             ("POST", "/api/v1/auth/register", "Create an account"),
             ("POST", "/api/v1/auth/login", "Log in, get the tokens"),
+            ("POST", "/api/v1/auth/2fa/send", "2-step verification on: send the sign-in code"),
+            ("POST", "/api/v1/auth/2fa/verify", "2-step verification on: check it, get the tokens"),
             ("POST", "/api/v1/auth/otp/request", "Send a code to confirm my phone or email"),
             ("POST", "/api/v1/auth/otp/resend", "Send the code again"),
             ("POST", "/api/v1/auth/otp/verify", "Confirm the code"),

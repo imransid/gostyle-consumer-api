@@ -268,10 +268,11 @@ def _hash(raw_token):
 # --- open ---------------------------------------------------------------------
 
 
-def start(user, request):
-    """Open a session for a sign-in and return its token pair."""
+def start(user, request, **fields):
+    """Open a session for a sign-in and return its token pair. `fields` are
+    the session's own beyond the request's (two_factor_passed_at)."""
     refresh = RefreshToken.for_user(user)
-    _open(user, request, refresh)
+    _open(user, request, refresh, **fields)
     return _pair(refresh)
 
 
@@ -279,7 +280,7 @@ def _pair(refresh):
     return {"access": str(refresh.access_token), "refresh": str(refresh)}
 
 
-def _open(user, request, refresh):
+def _open(user, request, refresh, **fields):
     """Create the session that owns `refresh`, and stamp its id on it.
 
     One live session per device: a sign-in from a device that has one ends
@@ -288,7 +289,9 @@ def _open(user, request, refresh):
     from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 
     ip = client_ip(request)
-    session = UserSession(user=user, **_device_for_new_session(request), ip_address=ip)
+    session = UserSession(
+        user=user, **_device_for_new_session(request), ip_address=ip, **fields
+    )
     session.location = _place(session, ip).get("location")
     refresh[SID_CLAIM] = str(session.id)
     raw = str(refresh)

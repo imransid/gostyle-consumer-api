@@ -19,6 +19,8 @@ views only read the request and answer.
     the one on adding is ours).
   * limits: one send per 30 seconds per purpose, and 5 wrong codes per 15
     minutes per account across every call (5.4).
+  * the sign-in challenge: what login answers instead of tokens, and the
+    code that finishes it (6).
   * the app version gate, TWO_FACTOR_MIN_APP_VERSION.
 
 An error that belongs to no field answers in the shape of
@@ -49,10 +51,11 @@ from django.utils.crypto import constant_time_compare, salted_hmac
 from rest_framework import status
 from rest_framework.exceptions import APIException, ErrorDetail, ValidationError
 
-from . import sessions
+from . import services, sessions
 from .identifiers import EMAIL, PHONE
 from .models import (
     ConsumerAccount,
+    LoginChallenge,
     TwoFactorMethod,
     TwoFactorPurpose,
     UserAuthenticator,
@@ -112,6 +115,11 @@ _NOTICES = {
 }
 TOKEN_PREFIX = "vt_"
 _NONCE_BYTES = 12
+
+CHALLENGE_PREFIX = "ch_"
+CHALLENGE_TTL_SECONDS = 600
+CHALLENGE_WRONG_CODES = 5
+SIGN_IN_UPDATE = "Update the Go Style app to sign in."
 
 _TRIES_KEY = "2fa:tries:{}"
 
@@ -620,6 +628,111 @@ def _count(key, window):
     except ValueError:  # expired between the add and the incr
         cache.set(key, 1, timeout=window)
         return 1
+
+
+# --- the sign-in challenge ----------------------------------------------------------
+
+
+def sign_in(user, request):
+    """POST /auth/login for an account with 2-step on, once its password is
+    right. Answers what login answers: the token pair at once for a device
+    that has passed 2-step (its new session stays passed), else a challenge
+    listing the ways the account can send or make a code.
+
+    426 for an app too old for the challenge, before anything else: tokens
+    never go out without it, to any app.
+    """
+    require_new_app(request, SIGN_IN_UPDATE)
+    device_id = sessions.read_device(request).get("device_id")
+    passed_at = _passed_at(user, device_id)
+    if passed_at is not None:
+        return services.tokens_for(user, request, two_factor_passed_at=passed_at)
+
+    raw = CHALLENGE_PREFIX + secrets.token_urlsafe(32)
+    LoginChallenge.objects.create(
+        token_hash=_hash(raw),
+        user=user,
+        device_id=device_id,
+        expires_at=timezone.now() + timedelta(seconds=CHALLENGE_TTL_SECONDS),
+    )
+    methods = [{"method": m, "hint": hint} for m, hint in contact_hints(user).items()]
+    if active_authenticator(user) is not None:
+        methods.append({"method": TwoFactorMethod.AUTHENTICATOR, "hint": None})
+    return {
+        "two_factor_required": True,
+        "challenge_token": raw,
+        "expires_in": CHALLENGE_TTL_SECONDS,
+        "methods": methods,
+    }
+
+
+def _passed_at(user, device_id):
+    """When this device passed 2-step, while it still has a session that
+    did and has not ended (as /me/sessions counts them): a device is
+    remembered until it signs out or is signed out. Never without an
+    X-Device-Id."""
+    if not device_id:
+        return None
+    return next(
+        (
+            s.two_factor_passed_at
+            for s in sessions.live(user)
+            if s.device_id == device_id and s.two_factor_passed_at
+        ),
+        None,
+    )
+
+
+def send_sign_in_code(raw_challenge, method, ip):
+    """POST /auth/2fa/send: 3.1's rules, for the challenge's account."""
+    user = _live_challenge(raw_challenge).user
+    return send_code(user, method, TwoFactorPurpose.SIGN_IN, ip)
+
+
+def finish_sign_in(raw_challenge, method, code, request):
+    """POST /auth/2fa/verify: the challenge's code, from the device that
+    signed in, answers the token pair. The session starts here and its
+    device is remembered as having passed. A wrong code counts against the
+    challenge, which 5 use up."""
+    challenge = _live_challenge(raw_challenge)
+    if challenge.device_id != sessions.read_device(request).get("device_id"):
+        raise ChallengeExpired()
+    user = challenge.user
+    try:
+        if method == TwoFactorMethod.AUTHENTICATOR:
+            check_authenticator_code(user, code)
+        else:
+            check_code(user, method, TwoFactorPurpose.SIGN_IN, code)
+    except ValidationError as e:
+        if any(d.code == "invalid" for d in e.detail.get("code", [])):
+            LoginChallenge.objects.filter(pk=challenge.pk).update(attempts=F("attempts") + 1)
+        raise
+
+    now = timezone.now()
+    # Once: a second right code at the same moment finds it used.
+    if not LoginChallenge.objects.filter(pk=challenge.pk, used_at__isnull=True).update(
+        used_at=now
+    ):
+        raise ChallengeExpired()
+    return services.tokens_for(user, request, two_factor_passed_at=now)
+
+
+def _live_challenge(raw_challenge):
+    """The challenge whose token this is, unused, unexpired, with tries
+    left, of an account that may still sign in. Else 401 challenge_expired."""
+    challenge = (
+        LoginChallenge.objects.select_related("user")
+        .filter(
+            token_hash=_hash(raw_challenge or ""),
+            used_at__isnull=True,
+            expires_at__gt=timezone.now(),
+            attempts__lt=CHALLENGE_WRONG_CODES,
+        )
+        .first()
+    )
+    if challenge is None or not challenge.user.is_active or challenge.user.is_deleted:
+        raise ChallengeExpired()
+    return challenge
 
 
 # --- the app version gate ----------------------------------------------------------

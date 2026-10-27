@@ -95,11 +95,12 @@ def lookup_account(caller, destination, destination_type):
     )
 
 
-def tokens_for(user, request=None):
+def tokens_for(user, request=None, **session_fields):
     """A new token pair. Given the sign-in's request, it opens a session for
-    that device too (sessions.start) while DEVICE_SESSIONS_V1 is on."""
+    that device too (sessions.start) while DEVICE_SESSIONS_V1 is on, with
+    `session_fields` on it (two_factor_passed_at)."""
     if request is not None and sessions.enabled():
-        return sessions.start(user, request)
+        return sessions.start(user, request, **session_fields)
     refresh = RefreshToken.for_user(user)
     return {"access": str(refresh.access_token), "refresh": str(refresh)}
 

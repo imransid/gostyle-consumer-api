@@ -9,12 +9,15 @@ checked in the same 30-second step.
 
 import base64
 import hashlib
+import json
 import re
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
+from datetime import timezone as dt_timezone
 from unittest.mock import patch
 
 import pyotp
+from django.conf import settings
 from django.core import mail
 from django.core.cache import cache
 from django.db import IntegrityError, connection, transaction
@@ -1249,3 +1252,382 @@ class AuthenticatorApiTests(SecurityApiTestCase):
         resp = self.call("delete", "/authenticator", {"verification_token": self.token(REMOVE)})
         self.assertEqual(resp.status_code, 204)
         self.assertEqual(mail.outbox, [])
+
+
+# --- the sign-in challenge ----------------------------------------------------------------
+
+LOGIN = "/api/v1/auth/login"
+SEND = "/api/v1/auth/2fa/send"
+FINISH = "/api/v1/auth/2fa/verify"
+SIGN_IN = TwoFactorPurpose.SIGN_IN
+NO_DEVICE_ID = {k: v for k, v in IPAD.items() if k != "HTTP_X_DEVICE_ID"}
+GALAXY = {**IPAD, "HTTP_X_DEVICE_ID": "a1b2c3d4e5f60718", "HTTP_X_DEVICE_NAME": "Galaxy"}
+
+
+class SignInTestCase(SecurityApiTestCase):
+    """The account has 2-step on. The iPhone signed in before it was; the
+    iPad signs in now."""
+
+    def setUp(self):
+        super().setUp()
+        ConsumerAccount.objects.filter(pk=self.account.pk).update(two_factor_enabled=True)
+
+    def anonymous(self, path, body, device=IPAD):
+        with self.captureOnCommitCallbacks(execute=True):
+            return APIClient().post(path, body, format="json", **device)
+
+    def sign_in(self, device=IPAD):
+        body = {"destination_type": "phone", "destination": PHONE, "password": PASSWORD}
+        return self.anonymous(LOGIN, body, device)
+
+    def challenge(self, device=IPAD):
+        resp = self.sign_in(device)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(resp.json().get("two_factor_required"), resp.content)
+        return resp.json()["challenge_token"]
+
+    def sign_in_code(self, challenge, method="email", device=IPAD):
+        cache.delete(f"2fa:resend:{self.account.pk}:{SIGN_IN}")
+        resp = self.anonymous(SEND, {"challenge_token": challenge, "method": method}, device)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        return self.sent_code()
+
+    def finish(self, challenge, code, method="email", device=IPAD):
+        body = {"challenge_token": challenge, "method": method, "code": code}
+        return self.anonymous(FINISH, body, device)
+
+    def signed_in(self, device=IPAD):
+        """Through the whole challenge. Returns the token pair."""
+        challenge = self.challenge(device)
+        resp = self.finish(challenge, self.sign_in_code(challenge, device=device), device=device)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        return resp.json()
+
+    def session_of(self, tokens):
+        return UserSession.objects.get(pk=AccessToken(tokens["access"])["sid"])
+
+
+class SignInSwitchTests(SignInTestCase):
+    def test_switched_off_login_answers_tokens_as_before(self):
+        for switches in ({"TWO_FACTOR_V1": False}, {"DEVICE_SESSIONS_V1": False}):
+            with self.subTest(switches=switches), override_settings(**switches):
+                resp = self.sign_in({**IPAD, "HTTP_X_APP_VERSION": "1.0.0"})
+                self.assertEqual(resp.status_code, 200, resp.content)
+                self.assertEqual(set(resp.json()), {"access", "refresh"})
+                for path in (SEND, FINISH):
+                    self.assertEqual(self.anonymous(path, {}).status_code, 404)
+        self.assertFalse(LoginChallenge.objects.exists())
+
+    def test_an_account_with_2_step_off_signs_in_as_before_from_any_app(self):
+        ConsumerAccount.objects.filter(pk=self.account.pk).update(two_factor_enabled=False)
+        for device in ({**IPAD, "HTTP_X_APP_VERSION": "1.0.0"}, NO_DEVICE_ID):
+            with self.subTest(device=device):
+                resp = self.sign_in(device)
+                self.assertEqual(set(resp.json()), {"access", "refresh"})
+
+
+class ChallengeTests(SignInTestCase):
+    def test_login_answers_the_briefs_challenge_and_no_tokens(self):
+        resp = self.sign_in()
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        raw = body.pop("challenge_token")
+        self.assertRegex(raw, r"^ch_[A-Za-z0-9_-]{43}$")
+        self.assertEqual(
+            body,
+            {
+                "two_factor_required": True,
+                "expires_in": 600,
+                "methods": [
+                    {"method": "email", "hint": "k•••@gmail.com"},
+                    {"method": "phone", "hint": "+971 •• ••• 4567"},
+                ],
+            },
+        )
+        challenge = LoginChallenge.objects.get()
+        self.assertEqual(challenge.token_hash, hashlib.sha256(raw.encode()).hexdigest())
+        self.assertEqual(challenge.device_id, IPAD["HTTP_X_DEVICE_ID"])
+        self.assertEqual(challenge.expires_at, self.now + timedelta(minutes=10))
+        self.assertFalse(UserSession.objects.filter(device_id=IPAD["HTTP_X_DEVICE_ID"]).exists())
+
+    def test_the_methods_are_only_what_the_account_has(self):
+        self.add_authenticator(client=self.phone)
+        ConsumerAccount.objects.filter(pk=self.account.pk).update(email_verified_at=None)
+        self.assertEqual(
+            self.sign_in().json()["methods"],
+            [
+                {"method": "phone", "hint": "+971 •• ••• 4567"},
+                {"method": "authenticator", "hint": None},
+            ],
+        )
+
+    def test_a_wrong_password_is_only_a_wrong_password(self):
+        body = {"destination_type": "phone", "destination": PHONE, "password": "wrong"}
+        resp = self.anonymous(LOGIN, body, {**IPAD, "HTTP_X_APP_VERSION": "1.0.0"})
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["detail"], "Invalid credentials.")
+        self.assertFalse(LoginChallenge.objects.exists())
+
+    def test_an_app_too_old_gets_no_tokens_and_no_challenge(self):
+        for device, minimum in (
+            ({**IPAD, "HTTP_X_APP_VERSION": "1.3.9"}, "1.4.0"),
+            ({k: v for k, v in IPAD.items() if k != "HTTP_X_APP_VERSION"}, "1.4.0"),
+            (IPAD, ""),
+        ):
+            with self.subTest(device=device, minimum=minimum):
+                with override_settings(TWO_FACTOR_MIN_APP_VERSION=minimum):
+                    resp = self.sign_in(device)
+                self.assertRequestError(resp, 426, "app_update_required")
+                self.assertEqual(resp.json()["detail"], "Update the Go Style app to sign in.")
+        self.assertFalse(LoginChallenge.objects.exists())
+        self.assertFalse(UserSession.objects.filter(device_id=IPAD["HTTP_X_DEVICE_ID"]).exists())
+
+    def test_a_device_that_passed_gets_the_tokens_while_it_stays_signed_in(self):
+        first = self.session_of(self.signed_in())
+        passed_at = first.two_factor_passed_at
+        self.now += timedelta(minutes=1)
+        resp = self.sign_in()
+        self.assertEqual(set(resp.json()), {"access", "refresh"})
+        again = self.session_of(resp.json())
+        self.assertEqual(again.two_factor_passed_at, passed_at)
+        first.refresh_from_db()
+        self.assertIsNotNone(first.ended_at)  # one session per device, as ever
+
+    def test_a_device_is_asked_again_once_it_signs_out(self):
+        tokens = self.signed_in()
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens['access']}", **IPAD)
+        resp = client.post("/api/v1/auth/logout", {"refresh": tokens["refresh"]}, format="json")
+        self.assertEqual(resp.status_code, 205)
+        self.assertTrue(self.sign_in().json()["two_factor_required"])
+
+    def test_a_device_signed_out_from_another_is_asked_again(self):
+        sid = self.session_of(self.signed_in()).pk
+        self.assertEqual(self.phone.delete(f"/api/v1/me/sessions/{sid}").status_code, 204)
+        self.assertTrue(self.sign_in().json()["two_factor_required"])
+
+    def test_without_an_x_device_id_it_always_asks(self):
+        self.signed_in(NO_DEVICE_ID)
+        self.assertTrue(self.sign_in(NO_DEVICE_ID).json()["two_factor_required"])
+
+    def test_another_device_is_asked(self):
+        self.signed_in()
+        self.assertTrue(self.sign_in(GALAXY).json()["two_factor_required"])
+
+    def test_the_phone_that_turned_it_on_is_not_asked(self):
+        ConsumerAccount.objects.filter(pk=self.account.pk).update(two_factor_enabled=False)
+        body = {"enabled": True, "verification_token": self.token(ON)}
+        self.assertEqual(self.call("patch", "/two-factor", body).status_code, 200)
+        self.assertEqual(set(self.sign_in(IPHONE).json()), {"access", "refresh"})
+        self.assertTrue(self.sign_in(IPAD).json()["two_factor_required"])
+
+
+class SignInSendTests(SignInTestCase):
+    def test_sends_the_sign_in_code_to_the_accounts_own_contact(self):
+        challenge = self.challenge()
+        resp = self.anonymous(SEND, {"challenge_token": challenge, "method": "phone"})
+        self.assertEqual(
+            (resp.status_code, resp.json()),
+            (200, {"sent_to": "+971 •• ••• 4567", "expires_in": 600, "resend_in": 30}),
+        )
+        self.assertEqual(self.outbox[-1][0], PHONE)
+        self.assertEqual(VerificationCode.objects.get().purpose, SIGN_IN)
+        resp = self.anonymous(SEND, {"challenge_token": challenge, "method": "email"})
+        self.assertRequestError(resp, 429, "too_many_attempts")
+
+    def test_nothing_to_send_for_an_authenticator(self):
+        body = {"challenge_token": self.challenge(), "method": "authenticator"}
+        self.assertFieldError(self.anonymous(SEND, body), "method", "invalid_choice")
+
+    def test_only_for_a_live_challenge(self):
+        used = self.challenge()
+        self.finish(used, self.sign_in_code(used))
+        expired = self.challenge(GALAXY)  # the iPad is remembered now
+        self.now += timedelta(minutes=10, seconds=1)
+        for raw in ("ch_made-up", used, expired):
+            with self.subTest(raw=raw):
+                resp = self.anonymous(SEND, {"challenge_token": raw, "method": "email"})
+                self.assertRequestError(resp, 401, "challenge_expired")
+                self.assertEqual(
+                    resp.json()["detail"], "Your sign-in timed out. Please sign in again."
+                )
+
+
+class SignInVerifyTests(SignInTestCase):
+    def test_the_code_answers_the_token_pair_and_starts_the_session(self):
+        challenge = self.challenge()
+        resp = self.finish(challenge, self.sign_in_code(challenge))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        tokens = resp.json()
+        self.assertEqual(set(tokens), {"access", "refresh"})
+        session = self.session_of(tokens)
+        self.assertEqual(
+            (session.device_id, session.device_name, session.two_factor_passed_at),
+            (IPAD["HTTP_X_DEVICE_ID"], "iPad", self.now),
+        )
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens['access']}", **IPAD)
+        self.assertEqual(client.get("/api/v1/auth/me").status_code, 200)
+
+    def test_by_authenticator(self):
+        self.add_authenticator(client=self.phone)
+        resp = self.finish(self.challenge(), self.code(self.secret), method="authenticator")
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+    def test_a_challenge_finishes_once(self):
+        challenge = self.challenge()
+        self.assertEqual(self.finish(challenge, self.sign_in_code(challenge)).status_code, 200)
+        self.add_authenticator(client=self.phone)
+        resp = self.finish(challenge, self.code(self.secret), method="authenticator")
+        self.assertRequestError(resp, 401, "challenge_expired")
+
+    def test_only_from_the_device_that_signed_in(self):
+        challenge = self.challenge()
+        code = self.sign_in_code(challenge)
+        for device in (IPHONE, NO_DEVICE_ID):
+            with self.subTest(device=device["HTTP_X_DEVICE_NAME"]):
+                resp = self.finish(challenge, code, device=device)
+                self.assertRequestError(resp, 401, "challenge_expired")
+        self.assertEqual(self.finish(challenge, code).status_code, 200)
+
+    def test_5_wrong_codes_use_the_challenge_up(self):
+        challenge = self.challenge()
+        code = self.sign_in_code(challenge)
+        for _ in range(5):
+            self.assertFieldError(self.finish(challenge, self.wrong(code)), "code", "invalid")
+        self.assertEqual(LoginChallenge.objects.get().attempts, 5)
+        self.assertRequestError(self.finish(challenge, code), 401, "challenge_expired")
+
+    def test_a_code_not_sent_is_expired_and_does_not_count(self):
+        challenge = self.challenge()
+        self.assertFieldError(self.finish(challenge, "123456"), "code", "expired")
+        self.assertEqual(LoginChallenge.objects.get().attempts, 0)
+
+    def test_after_10_minutes_it_has_expired(self):
+        challenge = self.challenge()
+        code = self.sign_in_code(challenge)
+        self.now += timedelta(minutes=10, seconds=1)
+        self.assertRequestError(self.finish(challenge, code), 401, "challenge_expired")
+
+    def test_a_verify_its_you_code_does_not_sign_in(self):
+        self.call("post", "/verify/send", {"method": "email", "purpose": ON})
+        resp = self.finish(self.challenge(), self.sent_code())
+        self.assertFieldError(resp, "code", "expired")
+
+    def test_an_account_disabled_meanwhile_cannot_finish(self):
+        challenge = self.challenge()
+        code = self.sign_in_code(challenge)
+        ConsumerAccount.objects.filter(pk=self.account.pk).update(is_active=False)
+        self.assertRequestError(self.finish(challenge, code), 401, "challenge_expired")
+
+
+# --- the FE guide ---------------------------------------------------------------------
+
+FE_DOC = settings.BASE_DIR / "docs" / "TWO_FACTOR_API.md"
+UAE = dt_timezone(timedelta(hours=4))
+EXAMPLE_SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+EXAMPLE_TOKEN = "4f8b2c9e1a7d5e3b9c0f6a2d8e4b1c7f3a9d5e2b0c6"
+EXAMPLE_CHALLENGE = "6a1f9e3c7b2d8f4a0e5c1b9d7f3a6e2c8b4d0f5a1e7"
+
+
+class TwoFactorDocTests(SignInTestCase):
+    """docs/TWO_FACTOR_API.md promises every JSON block is a real answer,
+    and every authenticator code in its requests a real code. This builds
+    the brief's account (2-step on, verified email and phone), sends the
+    same requests at the same times and must get the same bodies."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.text = FE_DOC.read_text(encoding="utf-8")
+        cls.blocks = [json.loads(b) for b in re.findall(r"```json\n(.*?)\n```", cls.text, re.S)]
+
+    def at(self, hour, minute, second):
+        self.now = datetime(2026, 10, 27, hour, minute, second, tzinfo=UAE)
+
+    def example_code(self, expected):
+        """The example secret's code now, which the page's request shows."""
+        code = self.code(EXAMPLE_SECRET)
+        self.assertEqual(code, expected)
+        self.assertIn(f'"code": "{code}"', self.text)
+        return code
+
+    def add_example_authenticator(self):
+        self.at(14, 5, 12)
+        body = {"verification_token": self.token(ADD), "purpose": "authenticator_add"}
+        with patch.object(two_factor.pyotp, "random_base32", return_value=EXAMPLE_SECRET):
+            resp = self.call("post", "/authenticator", body)
+        self.assertEqual((resp.status_code, resp.json()), (201, self.blocks[4]))
+        resp = self.call("post", "/authenticator/confirm", {"code": self.example_code("377576")})
+        self.assertEqual((resp.status_code, resp.json()), (200, self.blocks[5]))
+
+    def test_get(self):
+        self.assertEqual(self.call("get", "").json(), self.blocks[0])
+
+    def test_verify_its_you_and_the_switch(self):
+        resp = self.call("post", "/verify/send", {"method": "email", "purpose": "two_step_on"})
+        self.assertEqual(resp.json(), self.blocks[1])
+        self.add_example_authenticator()
+        self.at(14, 6, 40)
+        body = {
+            "method": "authenticator",
+            "purpose": "two_step_off",
+            "code": self.example_code("057138"),
+        }
+        with patch.object(two_factor.secrets, "token_urlsafe", return_value=EXAMPLE_TOKEN):
+            resp = self.call("post", "/verify", body)
+        self.assertEqual(resp.json(), self.blocks[2])
+        body = {"enabled": False, "verification_token": "vt_" + EXAMPLE_TOKEN}
+        self.assertEqual(self.call("patch", "/two-factor", body).json(), self.blocks[3])
+
+    def test_signing_in(self):
+        self.add_example_authenticator()
+        self.at(14, 10, 5)
+        with patch.object(two_factor.secrets, "token_urlsafe", return_value=EXAMPLE_CHALLENGE):
+            self.assertEqual(self.sign_in().json(), self.blocks[6])
+        challenge = "ch_" + EXAMPLE_CHALLENGE
+        resp = self.anonymous(SEND, {"challenge_token": challenge, "method": "phone"})
+        self.assertEqual(resp.json(), self.blocks[7])
+        resp = self.finish(challenge, self.example_code("417231"), method="authenticator")
+        self.assertEqual((resp.status_code, set(resp.json())), (200, {"access", "refresh"}))
+
+    def test_the_error_examples(self):
+        resp = self.call("patch", "/two-factor", {"enabled": True})
+        self.assertEqual(resp.json(), self.blocks[8])
+        self.call("post", "/verify/send", {"method": "email", "purpose": "two_step_on"})
+        body = {"method": "email", "purpose": "two_step_on", "code": self.wrong(self.sent_code())}
+        self.assertEqual(self.call("post", "/verify", body).json(), self.blocks[9])
+        old_app = {**IPAD, "HTTP_X_APP_VERSION": "1.3.0"}
+        self.assertEqual(self.sign_in(old_app).json(), self.blocks[10])
+
+    def test_no_other_json_blocks(self):
+        self.assertEqual(len(self.blocks), 11)
+
+    def test_every_error_message_is_on_the_page(self):
+        messages = [
+            two_factor.WRONG_CODE[2],
+            two_factor.EXPIRED_CODE[2],
+            two_factor.METHOD_UNAVAILABLE[2],
+            two_factor.SIGN_IN_UPDATE,
+        ] + [
+            exc.default_detail
+            for exc in (
+                two_factor.VerificationRequired,
+                two_factor.AlreadyAdded,
+                two_factor.NoSetup,
+                two_factor.TooManyAttempts,
+                two_factor.ChallengeExpired,
+                two_factor.AppUpdateRequired,
+                two_factor.AuthenticatorUnavailable,
+            )
+        ]
+        for message in messages:
+            with self.subTest(message=message):
+                self.assertIn(message, self.text)
+
+    def test_every_email_is_on_the_page(self):
+        for subject, what in two_factor._NOTICES.values():
+            with self.subTest(subject=subject):
+                self.assertIn(f"| {subject} | {what} on iPhone 15 in Dubai. |", self.text)
+        for subject in (two_factor.SECURITY_SUBJECT, two_factor.SIGN_IN_SUBJECT):
+            self.assertIn(f'"{subject}"', self.text)

@@ -26,7 +26,7 @@ from .serializers import (
 
 from .models import Favourite
 
-from . import ratelimit, services, sessions
+from . import ratelimit, services, sessions, two_factor
 from .permissions import IsVerified
 from .serializers import (
     DeleteAccountSerializer,
@@ -253,7 +253,26 @@ class LoginView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "login"
 
-    @extend_schema(request=LoginSerializer, responses={200: TokenPairSerializer})
+    @extend_schema(
+        request=LoginSerializer,
+        description=(
+            "With 2-step verification on for the account (and on the server), "
+            "a device that has not passed it gets a challenge instead of the "
+            "tokens: `{two_factor_required, challenge_token, expires_in, "
+            "methods}`. The code then goes to /auth/2fa/send and /auth/2fa/verify "
+            "(docs/TWO_FACTOR_API.md section 6)."
+        ),
+        responses={
+            200: TokenPairSerializer,
+            426: OpenApiResponse(
+                description=(
+                    "`app_update_required`: 2-step verification is on for the "
+                    "account, and X-App-Version is older than the server's "
+                    "minimum, or missing. No tokens."
+                ),
+            ),
+        },
+    )
     def post(self, request):
         s = LoginSerializer(data=request.data)
         s.is_valid(raise_exception=True)
@@ -267,6 +286,10 @@ class LoginView(APIView):
             raise ValidationError({"detail": "Account disabled."})
         if not services.contact_verified(account, destination_type):
             raise ValidationError({"detail": "Please verify your account before logging in."})
+
+        # Only once the password is right, so a stranger learns nothing of it.
+        if account.two_factor_enabled and two_factor.enabled():
+            return Response(two_factor.sign_in(account, request), status=status.HTTP_200_OK)
 
         return Response(services.tokens_for(account, request), status=status.HTTP_200_OK)
 
