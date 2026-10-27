@@ -39,8 +39,12 @@ class EmailSender:
     def send(self, destination, code, destination_type):
         from django.core.mail import EmailMultiAlternatives
         from .emails import render_otp_email
+        # Imported here: services imports this module.
+        from .services import OTP_TTL_SECONDS
 
-        minutes = 5  # matches OTP_TTL_SECONDS in services.py
+        # How long request_otp's code really lasts. It said 5 while codes
+        # lasted 10.
+        minutes = OTP_TTL_SECONDS // 60
 
         text = (
             f"Your verification code is {code}. "
