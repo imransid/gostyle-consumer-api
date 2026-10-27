@@ -119,7 +119,10 @@ def api_exception_handler(exc, context):
 
     response.data = {
         "detail": detail,
-        "code": _TOP_LEVEL_CODES.get(code, "error"),
+        # An error of the whole request in the shape of auth-error-response.md
+        # section 4 (2-step verification, apps/accounts/two_factor.py): its
+        # own code at the top, and the same error as the one entry in errors.
+        "code": getattr(exc, "top_level_code", None) or _TOP_LEVEL_CODES.get(code, "error"),
         "errors": errors,
     }
     return response
