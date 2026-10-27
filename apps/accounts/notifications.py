@@ -2,7 +2,12 @@
 
 A sender implements a single method:
 
-    send(destination, code, destination_type) -> None
+    send(destination, code, destination_type, subject=None, minutes=None) -> None
+
+subject and minutes are for an email's subject line and its "expires in"
+(2-step verification passes its own). Left out, an email says what it always
+has. The console and WhatsApp take them and ignore them: WhatsApp's text is
+its approved template's.
 
 The router picks a concrete sender per call: ConsoleSender when OTP_SENDER is
 "console" (local dev), otherwise WhatsApp for the phone destination type and
@@ -25,7 +30,7 @@ WHATSAPP_API_VERSION = "v23.0"
 class ConsoleSender:
     """Logs the code to stdout. For local development only."""
 
-    def send(self, destination, code, destination_type):
+    def send(self, destination, code, destination_type, subject=None, minutes=None):
         print(f"\n>>> OTP for {destination} [{destination_type}]: {code}\n")
 
 
@@ -36,11 +41,16 @@ class EmailSender:
     template for everything else.
     """
 
-    def send(self, destination, code, destination_type):
+    def send(self, destination, code, destination_type, subject=None, minutes=None):
         from django.core.mail import EmailMultiAlternatives
         from .emails import render_otp_email
+        # Imported here: services imports this module.
+        from .services import OTP_TTL_SECONDS
 
-        minutes = 5  # matches OTP_TTL_SECONDS in services.py
+        # By default how long request_otp's code really lasts. It said 5
+        # while codes lasted 10.
+        if minutes is None:
+            minutes = OTP_TTL_SECONDS // 60
 
         text = (
             f"Your verification code is {code}. "
@@ -49,7 +59,7 @@ class EmailSender:
         )
 
         msg = EmailMultiAlternatives(
-            subject="Your Go Style verification code",
+            subject=subject or "Your Go Style verification code",
             body=text,
             from_email=settings.DEFAULT_FROM_EMAIL,
             to=[destination],
@@ -60,9 +70,10 @@ class EmailSender:
 class WhatsAppSender:
     """Delivers the code over the WhatsApp Cloud API using an authentication
     template. The template renders the code in its body and in a copy-code
-    button, so both components carry the same value."""
+    button, so both components carry the same value. Its text is fixed when
+    Meta approves it, so subject and minutes have nowhere to go."""
 
-    def send(self, destination, code, destination_type):
+    def send(self, destination, code, destination_type, subject=None, minutes=None):
         phone_number_id = settings.WHATSAPP_PHONE_NUMBER_ID
         access_token = settings.WHATSAPP_ACCESS_TOKEN
         template_name = settings.WHATSAPP_TEMPLATE_NAME
@@ -145,6 +156,28 @@ def send_contact_change_notice(destination, destination_type, changed_type):
             f"The {changed_type} on your Go Style account was just changed. "
             "If this was not you, contact support straight away."
         ),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[destination],
+        fail_silently=True,
+    )
+
+
+def send_security_notice(destination, subject, message):
+    """Tell an account's email that a security setting changed: 2-step
+    verification turned on or off, the authenticator app removed
+    (apps/accounts/two_factor.notify). An unexpected one is how a customer
+    notices someone else in their account.
+
+    Email only, for the reason the notice above is. A failure is silent: the
+    change it reports has already been made.
+    """
+    if getattr(settings, "OTP_SENDER", "console") == "console":
+        print(f"\n>>> NOTICE to {destination}: {message}\n")
+        return
+
+    send_mail(
+        subject=subject,
+        message=message,
         from_email=settings.DEFAULT_FROM_EMAIL,
         recipient_list=[destination],
         fail_silently=True,

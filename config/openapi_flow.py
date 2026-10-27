@@ -58,6 +58,17 @@ FLOW = (
             ("GET", "/api/v1/me/sessions", "Where I am signed in"),
             ("DELETE", "/api/v1/me/sessions/{session_id}", "Sign out one other device"),
             ("DELETE", "/api/v1/me/sessions", "Sign out every other device"),
+            ("GET", "/api/v1/me/security", "My 2-step verification and ways to verify"),
+            ("POST", "/api/v1/me/security/verify/send", "Send a Verify it's you code"),
+            ("POST", "/api/v1/me/security/verify", "Check the code, get a verification token"),
+            ("PATCH", "/api/v1/me/security/two-factor", "Turn 2-step verification on or off"),
+            ("POST", "/api/v1/me/security/authenticator", "Start adding an authenticator app"),
+            (
+                "POST",
+                "/api/v1/me/security/authenticator/confirm",
+                "Turn the authenticator app on with its first code",
+            ),
+            ("DELETE", "/api/v1/me/security/authenticator", "Remove the authenticator app"),
         ),
     ),
     (

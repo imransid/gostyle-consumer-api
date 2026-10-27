@@ -95,6 +95,12 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
     def is_pending_deletion(self):
         return self.purge_at is not None and self.deleted_at is None
 
+    # 2-step verification (docs/TWO_FACTOR_API.md): when on, a password
+    # sign-in on a device that has not passed it needs one more code.
+    # db_default too, so a row written by code from before this column is off.
+    two_factor_enabled = models.BooleanField(default=False, db_default=False)
+    two_factor_changed_at = models.DateTimeField(null=True, blank=True)
+
     USERNAME_FIELD = "phone"
     REQUIRED_FIELDS = []
 
@@ -512,6 +518,12 @@ class UserSession(models.Model):
     # Moves on every rotation.
     refresh_token_hash = models.CharField(max_length=64)
 
+    # When this sign-in passed 2-step verification (docs/TWO_FACTOR_API.md
+    # section 6). A device with a live session that passed is not asked again
+    # at its next sign-in, and that sign-in's session carries the stamp on.
+    # NULL: never asked.
+    two_factor_passed_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         db_table = "user_sessions"
         indexes = [
@@ -544,3 +556,157 @@ class UserSession(models.Model):
 
     def __str__(self):
         return f"{self.device_name or 'Unknown device'} for {self.user_id}"
+
+
+# --- 2-step verification (docs/TWO_FACTOR_API.md) ------------------------------
+# The brief's four tables, column for column, written only by
+# apps/accounts/two_factor.py. Each is deleted with its account (ON DELETE
+# CASCADE, migration 0026). otp_code, which register, login and the password
+# reset use, has no part in any of it.
+
+
+class TwoFactorPurpose(models.TextChoices):
+    """What a 2-step code or verification token is for. The first four are
+    the app's own names (src/lib/security.ts), each asked before one change;
+    sign_in is the code of a sign-in challenge, and has no token."""
+
+    TWO_STEP_ON = "two_step_on", "two_step_on"
+    TWO_STEP_OFF = "two_step_off", "two_step_off"
+    AUTHENTICATOR_ADD = "authenticator_add", "authenticator_add"
+    AUTHENTICATOR_REMOVE = "authenticator_remove", "authenticator_remove"
+    SIGN_IN = "sign_in", "sign_in"
+
+
+class TwoFactorMethod(models.TextChoices):
+    """Where a 2-step code comes from: the account's own email or phone, or
+    its authenticator app."""
+
+    EMAIL = "email", "email"
+    PHONE = "phone", "phone"
+    AUTHENTICATOR = "authenticator", "authenticator"
+
+
+class UserAuthenticator(models.Model):
+    """
+    The account's authenticator app (TOTP). One per account: pending from
+    POST /me/security/authenticator until its first code confirms it, then
+    active until it is removed, which deletes the row.
+
+    The secret is never stored in plain text: secret_encrypted is AES-GCM
+    under TWO_FACTOR_ENCRYPTION_KEY.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "pending"
+        ACTIVE = "active", "active"
+
+    id = models.UUIDField(
+        primary_key=True, default=uuid.uuid4, db_default=RandomUUID(), editable=False
+    )
+    user = models.OneToOneField(
+        ConsumerAccount, on_delete=models.CASCADE, related_name="authenticator"
+    )
+    secret_encrypted = models.BinaryField()
+    status = models.TextField(choices=Status.choices)
+    # The session that started a pending setup: only it may confirm it.
+    session_id = models.UUIDField(null=True, blank=True)
+    # The last 30-second step a code passed for, so no code passes twice.
+    last_used_step = models.BigIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(default=timezone.now, db_default=_NOW)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "user_authenticators"
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(status__in=["pending", "active"]),
+                name="user_authenticators_status_check",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Authenticator ({self.status}) for {self.user_id}"
+
+
+class VerificationCode(models.Model):
+    """
+    A six-digit code sent to the account's own email or phone: for Verify
+    it's you, or for a sign-in challenge (purpose sign_in). At most one live
+    code per (user, purpose): a new send voids the last one by setting its
+    used_at. Only the code's hash is stored.
+    """
+
+    id = models.UUIDField(
+        primary_key=True, default=uuid.uuid4, db_default=RandomUUID(), editable=False
+    )
+    user = models.ForeignKey(
+        ConsumerAccount, on_delete=models.CASCADE, related_name="verification_codes"
+    )
+    method = models.TextField(choices=DestinationType.choices)
+    purpose = models.TextField(choices=TwoFactorPurpose.choices)
+    code_hash = models.TextField()
+    attempts = models.IntegerField(default=0, db_default=0)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "verification_codes"
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(method__in=["email", "phone"]),
+                name="verification_codes_method_check",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.purpose} code by {self.method} for {self.user_id}"
+
+
+class VerificationToken(models.Model):
+    """
+    What a passed Verify it's you answers: the proof one sensitive change
+    carries. Bound to the user, the session (the bearer's sid) and the
+    purpose, valid for 5 minutes, used once. Only the token's SHA-256 is
+    stored, as its key.
+    """
+
+    token_hash = models.TextField(primary_key=True)
+    user = models.ForeignKey(
+        ConsumerAccount, on_delete=models.CASCADE, related_name="verification_tokens"
+    )
+    session_id = models.UUIDField()
+    purpose = models.TextField(choices=TwoFactorPurpose.choices)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "verification_tokens"
+
+    def __str__(self):
+        return f"{self.purpose} token for {self.user_id}"
+
+
+class LoginChallenge(models.Model):
+    """
+    A password sign-in waiting for its second code: what POST /auth/login
+    answers instead of tokens while 2-step is on. Valid for 10 minutes,
+    allows 5 wrong codes, used up by the sign-in it finishes. Only the
+    challenge_token's SHA-256 is stored, as its key.
+    """
+
+    token_hash = models.TextField(primary_key=True)
+    user = models.ForeignKey(
+        ConsumerAccount, on_delete=models.CASCADE, related_name="login_challenges"
+    )
+    # The sign-in's X-Device-Id, if it sent one: the code must come from the
+    # same device, and that device is remembered once it passes.
+    device_id = models.TextField(null=True, blank=True)
+    attempts = models.IntegerField(default=0, db_default=0)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "login_challenges"
+
+    def __str__(self):
+        return f"Sign-in challenge for {self.user_id}"

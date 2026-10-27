@@ -44,3 +44,8 @@ filetype==1.2.0
 maxminddb==2.8.2
 
 
+
+# 2-step verification (apps/accounts/two_factor.py): the authenticator app's
+# TOTP codes, and AES-GCM for its secret at rest.
+pyotp==2.10.0
+cryptography==50.0.2
