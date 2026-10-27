@@ -173,8 +173,8 @@ With a test account. Each login below opens one session.
 In the database:
 
 ```sql
-SELECT device_name, location, last_seen_at, ended_at, end_reason
-FROM consumer.consumer_session ORDER BY created_at DESC LIMIT 10;
+SELECT device_name, location, last_seen_at, ended_at
+FROM consumer.user_sessions ORDER BY created_at DESC LIMIT 10;
 ```
 
 ## Rollback
