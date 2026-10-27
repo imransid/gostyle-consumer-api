@@ -413,6 +413,27 @@ PACKAGE_END_TIME_FROM_QUOTE_V1 = env.bool("PACKAGE_END_TIME_FROM_QUOTE_V1", defa
 # until it expires; its refresh token stays revoked.
 DEVICE_SESSIONS_V1 = env.bool("DEVICE_SESSIONS_V1", default=False)
 
+# 2-step verification and the authenticator app (docs/TWO_FACTOR_API.md):
+# GET /me/security and the /me/security/* calls, POST /auth/2fa/send and
+# /auth/2fa/verify, and the sign-in challenge on POST /auth/login. Works only
+# with DEVICE_SESSIONS_V1 on too: a verification token belongs to a session.
+# OFF (either one), the new routes are 404 and login is what it was, even for
+# an account that turned 2-step on while it was ON.
+TWO_FACTOR_V1 = env.bool("TWO_FACTOR_V1", default=False)
+
+# The oldest app version (X-App-Version, as 1.4.0) that has the sign-in
+# challenge screen. An older, unknown or missing version gets 426
+# app_update_required: on every /me/security call but GET, and on login for an
+# account with 2-step on, which never gets tokens without the code. Empty: no
+# app is new enough, so nobody can turn 2-step on and nothing changes.
+TWO_FACTOR_MIN_APP_VERSION = env("TWO_FACTOR_MIN_APP_VERSION", default="")
+
+# The key authenticator secrets are encrypted with (AES-GCM): 32 random bytes,
+# base64. docs/TWO_FACTOR_SERVER.md says how to make one. Empty or not a key:
+# the authenticator calls answer 503 and log it, email and phone codes still
+# work. Never change it while secrets exist: they would not decrypt.
+TWO_FACTOR_ENCRYPTION_KEY = env("TWO_FACTOR_ENCRYPTION_KEY", default="")
+
 # What host nginx sends as X-Proxy-Secret (nginx/api.gostyle.uk.conf), so a
 # session's IP is read from X-Forwarded-For only for a request that really
 # came through nginx (apps/accounts/sessions.client_ip). Empty: never, and
