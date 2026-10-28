@@ -224,7 +224,7 @@ it opens to decide whether to show you the "verify your account" screen.
 ## 📨 About sending codes
 
 - **Phone: WhatsApp only.** Phone codes go through the WhatsApp Cloud API. There is no SMS.
-- **Email:** sent through the normal email server in production.
+- **Email:** sent through SendGrid's web API in production (no SMTP). Registering, resetting a password and everything else each get their own branded email, addressed to the member by first name. See [EMAIL.md](EMAIL.md).
 - **Dev:** keep `OTP_SENDER=console` (the local default) and codes print to the terminal.
 
 Details live in [`notifications.py`](../apps/accounts/notifications.py) and the settings files.

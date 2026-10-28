@@ -3,7 +3,7 @@ from .base import *  # noqa
 DEBUG = True
 ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
 
-# Print OTP emails to the console instead of sending them in local dev.
+# Print emails to the console instead of sending them through SendGrid.
 # EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 
 # No Redis dependency for local dev or the test runner: the OTP rate limits and
@@ -14,7 +14,7 @@ CACHES = {
     }
 }
 
-# Log OTP codes to the console rather than calling WhatsApp or SMTP.
+# Log OTP codes to the console rather than calling WhatsApp or SendGrid.
 # OTP_SENDER = "console"
 
 # JSON log lines are for Loki, not for a human reading a terminal. Set

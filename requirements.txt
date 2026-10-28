@@ -49,3 +49,10 @@ maxminddb==2.8.2
 # TOTP codes, and AES-GCM for its secret at rest.
 pyotp==2.10.0
 cryptography==50.0.2
+
+# Email: Twilio SendGrid Mail Send API (HTTPS), apps/accounts/sendgrid_backend.py.
+# No SMTP. python-http-client and werkzeug are the SDK's own dependencies.
+sendgrid==6.12.5
+python-http-client==3.3.7
+werkzeug==3.1.9
+MarkupSafe==3.0.4

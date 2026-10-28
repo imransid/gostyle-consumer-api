@@ -9,6 +9,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .managers import ActiveConsumerAccountManager, ConsumerAccountManager
+from .notifications import send_account_deleted_notice, verified_email
 
 
 class DestinationType(models.TextChoices):
@@ -129,6 +130,9 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
 
         # 1. Remember the old contacts before we clear them
         old_contacts = [c for c in (self.phone, self.email) if c]
+        # The address to tell the deletion is done, once it is. Held only
+        # until the commit; nothing stores it after.
+        farewell_to = verified_email(self)
 
         # 2. Mark as deleted and block login
         self.deleted_at = timezone.now()
@@ -176,6 +180,9 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
                 destination__in=old_contacts, consumed_at__isnull=True
             ).update(consumed_at=timezone.now())
             Verification.objects.filter(destination__in=old_contacts).delete()
+
+        if farewell_to:
+            transaction.on_commit(lambda: send_account_deleted_notice(farewell_to))
 
 
     class Meta:

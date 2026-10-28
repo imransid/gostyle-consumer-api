@@ -575,15 +575,24 @@ LOGGING = {
 }
 
 
-# Email (used for email-channel OTP delivery). SMTP in production; the local
-# settings module overrides EMAIL_BACKEND with the console backend for dev.
-EMAIL_BACKEND = env("EMAIL_BACKEND", default="django.core.mail.backends.smtp.EmailBackend")
-EMAIL_HOST = env("EMAIL_HOST", default="")
-EMAIL_PORT = env.int("EMAIL_PORT", default=587)
-EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
-EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
-EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
-DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="Go Style <no-reply@gostyle.app>")
+# Email (code emails and security notices), over the SendGrid Mail Send HTTPS
+# API. There is no SMTP path and nothing falls back to one: a send SendGrid
+# refuses raises (apps/accounts/sendgrid_backend.py). The names are the ones
+# gostyle-platform and gostyle-booking-api read, so one SendGrid account and
+# one authenticated domain (gostyle.uk) serve all three. See docs/EMAIL.md.
+#
+# `.strip() or default`, not env(default=...): compose expands an unset ${VAR}
+# to "", which env() hands back as-is.
+SENDGRID_API_KEY = env("SENDGRID_API_KEY", default="").strip()
+SENDGRID_FROM_EMAIL = env("SENDGRID_FROM_EMAIL", default="").strip() or "noreply@gostyle.uk"
+SENDGRID_FROM_NAME = env("SENDGRID_FROM_NAME", default="").strip() or "GoStyle"
+
+EMAIL_BACKEND = env(
+    "EMAIL_BACKEND", default="apps.accounts.sendgrid_backend.SendGridEmailBackend"
+)
+# Kept aligned with the SendGrid sender: SendGrid refuses any From that is not
+# on the authenticated domain, so a separate default here could only be wrong.
+DEFAULT_FROM_EMAIL = f"{SENDGRID_FROM_NAME} <{SENDGRID_FROM_EMAIL}>"
 
 
 # OTP delivery. "console" logs codes to stdout (local dev); any other value

@@ -70,14 +70,17 @@ services:
       # Short name resolves because redis is in this same stack.
       REDIS_URL: redis://redis:6379/0
 
-      OTP_SENDER: smtp
-      EMAIL_BACKEND: ${EMAIL_BACKEND:-django.core.mail.backends.smtp.EmailBackend}
-      EMAIL_HOST: ${EMAIL_HOST}
-      EMAIL_PORT: ${EMAIL_PORT:-587}
-      EMAIL_HOST_USER: ${EMAIL_HOST_USER}
-      EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD}
-      EMAIL_USE_TLS: ${EMAIL_USE_TLS:-True}
-      DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL}
+      # Anything but "console" selects the real senders: WhatsApp for a phone,
+      # email for an email.
+      OTP_SENDER: live
+      # Email goes over the SendGrid Mail Send API (no SMTP). Same names as
+      # gostyle-platform and gostyle-booking-api, so one account and one
+      # authenticated domain (gostyle.uk) serve all three. The sender must be on
+      # that domain. The key lives in stack.env, never in git; unset, an email
+      # code fails loudly rather than vanishing.
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+      SENDGRID_FROM_EMAIL: ${SENDGRID_FROM_EMAIL:-noreply@gostyle.uk}
+      SENDGRID_FROM_NAME: ${SENDGRID_FROM_NAME:-GoStyle}
       WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID}
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN}
       WHATSAPP_TEMPLATE_NAME: ${WHATSAPP_TEMPLATE_NAME}

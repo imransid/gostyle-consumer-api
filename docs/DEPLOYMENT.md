@@ -78,6 +78,13 @@ DB_PASSWORD=<consumer_app password>
 WHATSAPP_PHONE_NUMBER_ID=...
 WHATSAPP_ACCESS_TOKEN=...
 WHATSAPP_TEMPLATE_NAME=...
+# Email codes and security notices go out through SendGrid (docs/EMAIL.md).
+# Without the key an email code fails loudly instead of being dropped. The
+# sender defaults to noreply@gostyle.uk, the authenticated domain;
+# SENDGRID_FROM_EMAIL and SENDGRID_FROM_NAME are only needed to change it.
+# EMAIL_HOST, EMAIL_PORT, EMAIL_HOST_USER, EMAIL_HOST_PASSWORD, EMAIL_USE_TLS
+# and DEFAULT_FROM_EMAIL are no longer read: remove them from stack.env.
+SENDGRID_API_KEY=<SendGrid API key with Mail Send access>
 
 # Long-lived read:packages token so Swarm can still pull when it reschedules a
 # task days later. A CI-issued token would be expired by then.

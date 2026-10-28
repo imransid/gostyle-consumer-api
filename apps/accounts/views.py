@@ -1,3 +1,4 @@
+from django.db import transaction
 from rest_framework import status
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.generics import RetrieveUpdateAPIView
@@ -27,6 +28,7 @@ from .serializers import (
 from .models import Favourite
 
 from . import ratelimit, services, sessions, two_factor
+from .notifications import send_deletion_cancelled_notice, send_deletion_scheduled_notice
 from .permissions import IsVerified
 from .serializers import (
     DeleteAccountSerializer,
@@ -531,6 +533,8 @@ class DeleteAccountView(APIView):
             s.validated_data.get("reason", DeletionReason.OTHER),
             s.validated_data.get("note", ""),
         )
+        account = request.user
+        transaction.on_commit(lambda: send_deletion_scheduled_notice(account))
         return Response(
             DeletionScheduledSerializer(request.user).data,
             status=status.HTTP_200_OK,
@@ -549,5 +553,11 @@ class CancelDeletionView(APIView):
 
     @extend_schema(request=None, responses={204: None})
     def post(self, request):
+        # Told only when there was a deletion to cancel: this is safe to
+        # call when none is scheduled, and then nothing changed.
+        was_scheduled = request.user.purge_at is not None
         request.user.cancel_deletion()
+        if was_scheduled:
+            account = request.user
+            transaction.on_commit(lambda: send_deletion_cancelled_notice(account))
         return Response(status=status.HTTP_204_NO_CONTENT)

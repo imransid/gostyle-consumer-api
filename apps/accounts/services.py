@@ -28,7 +28,13 @@ from rest_framework.exceptions import ErrorDetail
 from . import ratelimit, sessions
 from .identifiers import EMAIL
 from .models import ConsumerAccount, OtpCode, Purpose, Verification
-from .notifications import get_sender, send_contact_change_notice
+from .notifications import (
+    get_sender,
+    send_contact_change_notice,
+    send_password_changed_notice,
+    send_phone_changed_notice,
+    send_welcome_email,
+)
 
 OTP_TTL_SECONDS = 600
 VERIFICATION_TTL_SECONDS = Verification.TTL_SECONDS
@@ -59,6 +65,27 @@ def find_account(destination, destination_type):
 def account_exists(destination, destination_type):
     field = _account_field(destination_type)
     return ConsumerAccount.objects.filter(**{field: destination}).exists()
+
+
+def _first_name(destination, destination_type):
+    """The first name on the account that owns `destination`, for the greeting
+    in an email, or None. Only an email greets by name, so a phone destination
+    costs no query.
+
+    The name goes only to the address it belongs to, and a destination with no
+    account simply gets the template's name-less greeting: nothing in the
+    request's outcome depends on this lookup, so it is no way to learn which
+    contacts are registered.
+    """
+    if destination_type != EMAIL:
+        return None
+    full_name = (
+        ConsumerAccount.objects.filter(**{_account_field(destination_type): destination})
+        .values_list("full_name", flat=True)
+        .first()
+    )
+    parts = (full_name or "").split()
+    return parts[0] if parts else None
 
 
 def contact_verified(user, destination_type):
@@ -121,6 +148,7 @@ def request_otp(destination, destination_type, purpose, ip, enforce_limits=True)
         ratelimit.enforce_request_otp(destination, purpose, ip)
 
     raw_code = f"{secrets.randbelow(1_000_000):06d}"
+    first_name = _first_name(destination, destination_type)
 
     with transaction.atomic():
         live = list(
@@ -144,7 +172,13 @@ def request_otp(destination, destination_type, purpose, ip, enforce_limits=True)
         # for the length of a network round trip.
         sender = get_sender(destination_type)
         transaction.on_commit(
-            lambda: sender.send(destination, raw_code, destination_type)
+            lambda: sender.send(
+                destination,
+                raw_code,
+                destination_type,
+                purpose=purpose,
+                first_name=first_name,
+            )
         )
 
 
@@ -220,11 +254,20 @@ def verify_otp_for_user(user, destination_type, purpose, code, ip):
     if not matched:
         raise ValidationError({"detail": "Invalid code."})
 
+    first_time = not user.account_verified
+    now = timezone.now()
     ConsumerAccount.objects.filter(pk=user.pk).update(
-        **{_verified_field(destination_type): timezone.now()},
+        **{_verified_field(destination_type): now},
         account_verified=True,
         is_active=True,
     )
+    setattr(user, _verified_field(destination_type), now)
+    user.account_verified = user.is_active = True
+
+    # The welcome, once: the first time the account is verified, when that is
+    # by its email. Verified by its phone first, it has no address to send to.
+    if first_time and destination_type == EMAIL:
+        transaction.on_commit(lambda: send_welcome_email(user))
 
 
 def register(destination, destination_type, full_name, password, gender="", request=None):
@@ -275,6 +318,7 @@ def change_password(user, old_password, new_password):
 
     user.set_password(new_password)
     user.save(update_fields=["password"])
+    transaction.on_commit(lambda: send_password_changed_notice(user))
 
 
 def request_password_reset(destination, destination_type, ip):
@@ -397,6 +441,8 @@ def reset_password(reset_token, new_password):
         account.save(update_fields=["password"])
 
         _blacklist_all_refresh_tokens(account)
+
+        transaction.on_commit(lambda: send_password_changed_notice(account))
 
     # Every refresh token was just revoked, and a session whose refresh
     # token is revoked has ended: every device is out at once, not when its
@@ -641,6 +687,9 @@ def confirm_contact_change(user, change_token, destination, destination_type, co
                 changed_type=destination_type,
             )
         )
+    if destination_type != EMAIL:
+        # The old phone cannot be told (above), so the verified email is.
+        transaction.on_commit(lambda: send_phone_changed_notice(user))
 
     user.refresh_from_db()
     return user
