@@ -411,7 +411,12 @@ def notify(user, sid, change):
         "If this was not you, reset your password and contact support straight away."
     )
     destination = user.email
-    transaction.on_commit(lambda: send_security_notice(destination, subject, message))
+    # "Go Style: authenticator app removed" heads the email as "Authenticator app removed".
+    headline = subject.removeprefix("Go Style: ")
+    headline = headline[:1].upper() + headline[1:]
+    transaction.on_commit(
+        lambda: send_security_notice(destination, subject, message, headline=headline)
+    )
 
 
 # --- the authenticator app ------------------------------------------------------

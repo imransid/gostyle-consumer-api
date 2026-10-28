@@ -17,6 +17,7 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 
 from apps.salons import booking_api, skills, slots, timezones, translate
 from apps.salons.booking_api import BookingApiUnavailable
+from apps.salons.customer_sync import NoUsablePhone
 from apps.salons.geo import bounding_box, format_distance, radius_box
 from apps.salons.hours import is_within, next_opening, next_opening_at, resolve
 from apps.salons.money import bps_to_percent, major
@@ -1515,9 +1516,24 @@ class Customer:
     """The authenticated caller, without a database to put one in."""
 
     is_authenticated = True
+    pk = uuid.UUID("99999999-9999-9999-9999-999999999999")
 
 
-class BookingCreateViewTests(SimpleTestCase):
+class NoCustomerSync:
+    """
+    `resolve_customer` writes the platform's customer table, and these tests
+    have no database, so it is replaced; what it is asked is asserted through
+    `self.resolve`.
+    """
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch("apps.salons.views.resolve_customer")
+        self.resolve = patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class BookingCreateViewTests(NoCustomerSync, SimpleTestCase):
     """
     The endpoint, with the client replaced.
 
@@ -1603,6 +1619,34 @@ class BookingCreateViewTests(SimpleTestCase):
             self.post(HTTP_X_TENANT_ID="ten-1")
         self.assertEqual(create.call_args.kwargs["tenant_id"], "ten-1")
 
+    def test_the_customer_row_exists_before_the_booking_is_sent(self):
+        """booking-api writes a booking pointing at that row, so it comes first."""
+        order = []
+        self.resolve.side_effect = lambda *args: order.append("customer")
+        with mock.patch(
+            "apps.salons.views.create_booking",
+            side_effect=lambda *args, **kwargs: order.append("booking") or (201, {}),
+        ):
+            self.post(HTTP_X_TENANT_ID="ten-1")
+        self.assertEqual(order, ["customer", "booking"])
+
+    def test_a_customer_sync_that_fails_never_stops_the_booking(self):
+        for failure in (NoUsablePhone("no phone"), RuntimeError("platform db is down")):
+            with self.subTest(type(failure).__name__):
+                self.resolve.side_effect = failure
+                with self.call((201, {"id": "bkg_1"})) as create, self.assertLogs(
+                    "apps.salons.views", level="WARNING"
+                ):
+                    response = self.post(HTTP_X_TENANT_ID="ten-1")
+                self.assertEqual(response.status_code, 201)
+                create.assert_called_once()
+
+    def test_no_tenant_no_customer_row(self):
+        """Without a tenant there is no directory to put the row in."""
+        with self.call((201, {})):
+            self.post()
+        self.resolve.assert_not_called()
+
     def test_an_unreachable_booking_service_is_503_in_our_envelope(self):
         with mock.patch(
             "apps.salons.views.create_booking",
@@ -1626,7 +1670,7 @@ class BookingCreateViewTests(SimpleTestCase):
         create.assert_not_called()
 
 
-class BookingRoutingTests(SimpleTestCase):
+class BookingRoutingTests(NoCustomerSync, SimpleTestCase):
     """
     What the app has to send, and what this service works out for itself.
 
@@ -1677,6 +1721,12 @@ class BookingRoutingTests(SimpleTestCase):
         # receives what it actually reads into branchId.
         call = self.send(('{"salon_id":"%s"}' % self.STOREFRONT).encode())
         self.assertEqual(self.sent_body(call)["salon_id"], self.BRANCH)
+
+    def test_the_customer_row_is_made_under_the_tenant_the_salon_resolved_to(self):
+        self.send(('{"salon_id":"%s"}' % self.STOREFRONT).encode())
+        user, tenant_id = self.resolve.call_args.args
+        self.assertEqual(user.pk, Customer.pk)
+        self.assertEqual(tenant_id, self.TENANT)
 
     def test_a_branch_id_is_left_exactly_as_it_arrived(self):
         """

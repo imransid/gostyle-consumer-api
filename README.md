@@ -363,6 +363,7 @@ Further reading, all in [docs/](docs/):
 - [BOOKING_CREATE_API.md](docs/BOOKING_CREATE_API.md) — creating a booking: what this service forwards to gostyle-booking-api, what it refuses on its own, and why two error shapes share one endpoint; pricing it first (`POST /booking/quote`) and booking a package
 - [BOOKING_LIST_API.md](docs/BOOKING_LIST_API.md) — listing, reading and paying for bookings: the three shelves, and the three fields only this service can answer (`salon`, `can_cancel`, `can_reschedule`)
 - [AUTH_GUIDE.md](docs/AUTH_GUIDE.md) — the OTP → verify → register flow in plain language
+- [EMAIL.md](docs/EMAIL.md) — how email is sent (SendGrid, no SMTP), the code and notice templates, the variables, and how to send yourself a test
 - [DEPLOYMENT.md](docs/DEPLOYMENT.md) — CI/CD, image tags, and the rollback lever
 - [OBSERVABILITY.md](docs/OBSERVABILITY.md) — logs in Grafana Loki, and the request ID that ties Django, gunicorn and nginx together
 

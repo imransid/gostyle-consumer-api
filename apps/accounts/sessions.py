@@ -39,6 +39,7 @@ from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 
 from . import geoip, push_api
 from .models import ConsumerAccount, UserSession
+from .notifications import send_new_sign_in_notice
 
 logger = logging.getLogger(__name__)
 
@@ -270,10 +271,32 @@ def _hash(raw_token):
 
 def start(user, request, **fields):
     """Open a session for a sign-in and return its token pair. `fields` are
-    the session's own beyond the request's (two_factor_passed_at)."""
+    the session's own beyond the request's (two_factor_passed_at).
+
+    A sign-in from a device the account has never used emails its verified
+    address (notifications.send_new_sign_in_notice). The account's first
+    session, at registration, is not news to anyone."""
+    earlier = UserSession.objects.filter(user=user)
+    first = not earlier.exists()
+    known = _known_device(earlier, _device_for_new_session(request))
     refresh = RefreshToken.for_user(user)
-    _open(user, request, refresh, **fields)
+    session = _open(user, request, refresh, **fields)
+    if not (first or known):
+        transaction.on_commit(lambda: send_new_sign_in_notice(user, session))
     return _pair(refresh)
+
+
+def _known_device(earlier, device):
+    """Whether one of the `earlier` sessions, live or ended, was this
+    device: the same device id when the app sent one, otherwise the same
+    name and platform ("Chrome on macOS" on web). A client that sends
+    neither matches an earlier one that sent neither, so a sign-in from an
+    app that has no headers is news once, not every time."""
+    if device.get("device_id"):
+        return earlier.filter(device_id=device["device_id"]).exists()
+    return earlier.filter(
+        device_name=device.get("device_name"), platform=device.get("platform")
+    ).exists()
 
 
 def _pair(refresh):

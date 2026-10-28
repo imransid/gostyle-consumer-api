@@ -430,7 +430,7 @@ class CodeEmailTests(TwoFactorTestCase):
         (msg,) = mail.outbox
         self.assertEqual((msg.to, msg.subject), ([EMAIL], "Your Go Style security code"))
         code = VerificationCode.objects.get()
-        sent = re.match(r"Your verification code is (\d{6})\. It expires in 10 minutes\.", msg.body)
+        sent = re.search(r"Your code: (\d{6})\nIt expires in 10 minutes\.", msg.body)
         self.assertIsNotNone(sent, msg.body)
         self.check(sent.group(1), "email", OFF)
         code.refresh_from_db()
@@ -586,7 +586,7 @@ class VerificationTokenTests(TwoFactorTestCase):
 # --- notices ----------------------------------------------------------------------
 
 
-@override_settings(OTP_SENDER="smtp")
+@override_settings(OTP_SENDER="live")
 class NoticeTests(TwoFactorTestCase):
     def session(self, **fields):
         return UserSession.objects.create(user=self.account, refresh_token_hash="h", **fields)
@@ -604,8 +604,13 @@ class NoticeTests(TwoFactorTestCase):
             msg.body,
             "2-step verification was turned off for your Go Style account"
             " on iPhone 15 in Dubai.\n\n"
-            "If this was not you, reset your password and contact support straight away.",
+            "If this was not you, reset your password and contact support straight away."
+            "\n\nAutomated message from GoStyle. Replies to this address are not read.",
         )
+        html, mimetype = msg.alternatives[0]
+        self.assertEqual(mimetype, "text/html")
+        self.assertIn("2-step verification turned off", html)  # the headline
+        self.assertIn("on iPhone 15 in Dubai.", html)
 
     def test_each_change_says_what_it_was(self):
         sid = self.session(device_name="iPhone 15").pk
@@ -882,7 +887,8 @@ ROUTES = (
 @override_settings(
     DEVICE_SESSIONS_V1=True,
     TWO_FACTOR_V1=True,
-    OTP_SENDER="smtp",
+    TWO_FACTOR_MIN_APP_VERSION="1.4.0",
+    OTP_SENDER="live",
 )
 class SecurityApiTestCase(AuthenticatorTestCase):
     """Through the real URLs, signed in with /auth/login, so every token has
