@@ -21,7 +21,6 @@ views only read the request and answer.
     minutes per account across every call (5.4).
   * the sign-in challenge: what login answers instead of tokens, and the
     code that finishes it (6).
-  * the app version gate, TWO_FACTOR_MIN_APP_VERSION.
 
 An error that belongs to no field answers in the shape of
 auth-error-response.md section 4: its own code at the top, and the same
@@ -34,7 +33,6 @@ import hashlib
 import hmac
 import logging
 import os
-import re
 import secrets
 from datetime import timedelta
 
@@ -119,7 +117,6 @@ _NONCE_BYTES = 12
 CHALLENGE_PREFIX = "ch_"
 CHALLENGE_TTL_SECONDS = 600
 CHALLENGE_WRONG_CODES = 5
-SIGN_IN_UPDATE = "Update the Go Style app to sign in."
 
 _TRIES_KEY = "2fa:tries:{}"
 
@@ -136,9 +133,8 @@ class _RequestError(APIException):
     code twice, as default_code and as top_level_code, the way the sessions
     errors name envelope_code."""
 
-    def __init__(self, detail=None):
-        message = detail or self.default_detail
-        super().__init__({"detail": ErrorDetail(message, code=self.default_code)})
+    def __init__(self):
+        super().__init__({"detail": ErrorDetail(self.default_detail, code=self.default_code)})
 
 
 class VerificationRequired(_RequestError):
@@ -180,15 +176,6 @@ class ChallengeExpired(_RequestError):
     status_code = status.HTTP_401_UNAUTHORIZED
     default_detail = "Your sign-in timed out. Please sign in again."
     default_code = top_level_code = "challenge_expired"
-
-
-class AppUpdateRequired(_RequestError):
-    """426: an app older than TWO_FACTOR_MIN_APP_VERSION, or one that did not
-    say its version. Not in the brief: Rafa's version gate."""
-
-    status_code = status.HTTP_426_UPGRADE_REQUIRED
-    default_detail = "Update the Go Style app to use 2-step verification."
-    default_code = top_level_code = "app_update_required"
 
 
 class AuthenticatorUnavailable(_RequestError):
@@ -639,10 +626,9 @@ def sign_in(user, request):
     that has passed 2-step (its new session stays passed), else a challenge
     listing the ways the account can send or make a code.
 
-    426 for an app too old for the challenge, before anything else: tokens
-    never go out without it, to any app.
+    Any client gets the challenge, whatever X-App-Version it sends, or none:
+    the code is what keeps the tokens back, not the app's version.
     """
-    require_new_app(request, SIGN_IN_UPDATE)
     device_id = sessions.read_device(request).get("device_id")
     passed_at = _passed_at(user, device_id)
     if passed_at is not None:
@@ -733,33 +719,3 @@ def _live_challenge(raw_challenge):
     if challenge is None or not challenge.user.is_active or challenge.user.is_deleted:
         raise ChallengeExpired()
     return challenge
-
-
-# --- the app version gate ----------------------------------------------------------
-
-_VERSION = re.compile(r"^[0-9]+(\.[0-9]+)*$")
-
-
-def _version(value):
-    """'1.4.0' as (1, 4), trailing zeros dropped so 1.4 and 1.4.0 are equal.
-    None for anything else, which is never new enough."""
-    value = (value or "").strip()
-    if not _VERSION.match(value):
-        return None
-    parts = [int(part) for part in value.split(".")]
-    while len(parts) > 1 and parts[-1] == 0:
-        parts.pop()
-    return tuple(parts)
-
-
-def app_is_new_enough(request):
-    """Whether the request's X-App-Version is at least
-    TWO_FACTOR_MIN_APP_VERSION. Never while that is empty."""
-    minimum = _version(settings.TWO_FACTOR_MIN_APP_VERSION)
-    current = _version(sessions.read_device(request).get("app_version"))
-    return minimum is not None and current is not None and current >= minimum
-
-
-def require_new_app(request, message=None):
-    if not app_is_new_enough(request):
-        raise AppUpdateRequired(message)
