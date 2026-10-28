@@ -34,6 +34,7 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 from apps.salons import booking_api, packages, selectors
 from apps.salons.booking_api import BookingApiUnavailable
 from apps.salons.test_group_booking import Customer
+from apps.salons.tests import NoCustomerSync
 from apps.salons.test_package_detail import (
     BEARD,
     BRANCH,
@@ -426,7 +427,7 @@ class QuoteClientTests(SimpleTestCase):
         self.assertNotIn("x-tenant-id", {k.lower() for k in urlopen.call_args.args[0].headers})
 
 
-class QuoteViewTests(SimpleTestCase):
+class QuoteViewTests(NoCustomerSync, SimpleTestCase):
     """POST /api/v1/booking/quote, with booking-api and the salon lookup replaced."""
 
     def post(self, body=None, *, view=None, resolves="default", authenticated=True,
@@ -572,7 +573,7 @@ class QuoteOpenApiTests(SimpleTestCase):
 # ---------------------------------------------------------------------------
 
 
-class CreateWithAPackageLineTests(SimpleTestCase):
+class CreateWithAPackageLineTests(NoCustomerSync, SimpleTestCase):
     """
     booking-api takes a package as a line of `services` ({id, amount}, the
     package price), with no package_id field. Nothing in this service's
@@ -672,7 +673,7 @@ class PackageCreateSeams:
         return create.call_args
 
 
-class PackageSavingFoldTests(PackageCreateSeams, SimpleTestCase):
+class PackageSavingFoldTests(NoCustomerSync, PackageCreateSeams, SimpleTestCase):
     """
     POST /booking with a package's saving sent as `discount`
     (PACKAGE_SAVING_AS_DISCOUNT_V1): moved back into the price only when
@@ -753,7 +754,7 @@ class PackageSavingFoldTests(PackageCreateSeams, SimpleTestCase):
                 self.quote_call.assert_not_called()
 
 
-class PackageEndTimeMendTests(PackageCreateSeams, SimpleTestCase):
+class PackageEndTimeMendTests(NoCustomerSync, PackageCreateSeams, SimpleTestCase):
     """
     POST /booking with a package and an end_time of the app's own
     (PACKAGE_END_TIME_FROM_QUOTE_V1): the quote's end_time replaces it when

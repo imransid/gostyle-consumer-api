@@ -796,6 +796,10 @@ class Customer:
         self.id = id
         self.full_name = full_name
 
+    @property
+    def pk(self):
+        return self.id
+
 
 SALON = types.SimpleNamespace(id=uuid.UUID(SALON_ID), branch_timezone="Asia/Dubai")
 TIMING = [
