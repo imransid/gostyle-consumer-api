@@ -15,10 +15,8 @@ and the sign-in challenge that POST /auth/login answers while 2-step is on:
     POST   /api/v1/auth/2fa/send                       send the sign-in code
     POST   /api/v1/auth/2fa/verify                     check it: the token pair
 
-Behind TWO_FACTOR_V1 and DEVICE_SESSIONS_V1: either off, all are 404. Every
-/me/security call but GET also needs an app at least
-TWO_FACTOR_MIN_APP_VERSION, else 426 app_update_required. /auth/2fa/* does
-not: only a login that passed that check gets a challenge.
+Behind TWO_FACTOR_V1 and DEVICE_SESSIONS_V1: either off, all are 404. No
+call looks at X-App-Version: it only names the session.
 
 A change that needs a verification token spends it in the change's own
 transaction, so a change that fails gives the token back. The work is in
@@ -189,9 +187,6 @@ _SENT = inline_serializer(
 _ERRORS = {
     401: OpenApiResponse(description="`not_authenticated` or `session_revoked`."),
     404: OpenApiResponse(description="2-step verification is switched off on the server."),
-    426: OpenApiResponse(
-        description="`app_update_required`: X-App-Version older than the server's minimum."
-    ),
 }
 _CODE_ERRORS = {
     422: OpenApiResponse(
@@ -217,9 +212,6 @@ class _SecurityView(APIView):
         if not two_factor.enabled():
             raise Http404("Not found")
         super().initial(request, *args, **kwargs)
-        # After sign-in, so no token is still a 401.
-        if request.method != "GET":
-            two_factor.require_new_app(request)
 
     def body(self, serializer_class):
         s = serializer_class(data=self.request.data)
@@ -236,9 +228,9 @@ class SecurityView(_SecurityView):
         description=(
             "The 2-step switch, and the ways this account can verify: its "
             "verified email and phone (masked), and a confirmed authenticator "
-            "app. Not behind the app version check."
+            "app."
         ),
-        responses={200: _SECURITY, 401: _ERRORS[401], 404: _ERRORS[404]},
+        responses={200: _SECURITY, **_ERRORS},
     )
     def get(self, request):
         user = request.user

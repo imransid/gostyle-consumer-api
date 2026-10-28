@@ -24,13 +24,15 @@ Two PRs, both on base `main`. PR A merges first.
   /auth/login` answers a challenge for an account with 2-step on,
   `POST /auth/2fa/send` and `/auth/2fa/verify`, account purge clears 2-step,
   and these two docs. No migration.
+- **PR C, `fix/no-app-version-gate`: no app version check** (the mobile
+  team's ask, 2026-10-28). No call answers `426 app_update_required` any
+  more, and sign-in for an account with 2-step on always answers the
+  challenge, from any client. The setting `TWO_FACTOR_MIN_APP_VERSION` is
+  gone. No migration.
 - **Settings**, on `gostyle-consumer_api` only (the gRPC service does not
   read them):
   - `TWO_FACTOR_V1`, off by default. Off, every new route is `404` and
     sign-in is what it was. It works only with `DEVICE_SESSIONS_V1` on too.
-  - `TWO_FACTOR_MIN_APP_VERSION`, empty by default: the first app version
-    with the 2-step screens, from the mobile team. Empty, no app is new
-    enough, so nobody can turn 2-step on.
   - `TWO_FACTOR_ENCRYPTION_KEY`: the key the authenticator secrets are
     encrypted with. Missing, the authenticator calls answer `503` and log
     it; email and phone codes still work.
@@ -70,28 +72,34 @@ away. So:
    ```
 
 4. **Make the key and set it** (next section).
-5. **Turn `TWO_FACTOR_V1` on.** Nothing changes for anyone yet: with the
-   minimum empty, every app gets `426` on the setup calls, so nobody can turn
-   2-step on.
+5. **Turn `TWO_FACTOR_V1` on.** From then on, a customer can turn 2-step on
+   from an app that has the screens.
 
    ```sh
    docker service update --env-add TWO_FACTOR_V1=True gostyle-consumer_api
    ```
 
-6. **When the mobile team has given both answers** (docs/TWO_FACTOR_API.md,
-   first section: the version, and that their app shows `detail` on a
-   `426`) **and that version is in the stores**, set the minimum:
-
-   ```sh
-   docker service update --env-add TWO_FACTOR_MIN_APP_VERSION=<version> gostyle-consumer_api
-   ```
-
-7. Live proof (below).
+6. Live proof (below).
 
 Like every switch, `--env-add` lives on the service only: also add
-`TWO_FACTOR_V1`, `TWO_FACTOR_MIN_APP_VERSION` and `TWO_FACTOR_ENCRYPTION_KEY`
-to `/root/gostyle-customer/stack.env`, or a `docker stack deploy` drops them
-(docker-compose.yml passes all three through).
+`TWO_FACTOR_V1` and `TWO_FACTOR_ENCRYPTION_KEY` to
+`/root/gostyle-customer/stack.env`, or a `docker stack deploy` drops them
+(docker-compose.yml passes both through).
+
+### PR C on a server that ran PR B
+
+Deploy it the same way, tagging `before-no-app-version-gate`. The switches
+stay as they are. Then take the old setting off the service and out of
+`/root/gostyle-customer/stack.env`. Nothing reads it any more, so this is
+only tidying:
+
+```sh
+docker service update --env-rm TWO_FACTOR_MIN_APP_VERSION gostyle-consumer_api
+```
+
+Rolling back to PR B's image brings the `426` back, and with no minimum set
+a customer with 2-step on cannot sign in at all. So turn `TWO_FACTOR_V1` off
+first (Rollback, below).
 
 ## The key
 
@@ -121,9 +129,6 @@ email or phone code) and adds it again.
   what it was for everyone, including accounts with 2-step on: while it is
   off they sign in **without** the second code. Nothing is lost; turned on
   again, those accounts are asked again.
-- **Do not empty `TWO_FACTOR_MIN_APP_VERSION` to roll back.** With it empty,
-  every app gets `426` at sign-in for an account with 2-step on: those
-  customers cannot sign in at all.
 - **The image:** `docker service update --force --image
   gostyle-consumer-api:before-two-factor gostyle-consumer_api` (and
   `gostyle-consumer_grpc`). The migrations can stay: the new column has a
@@ -132,9 +137,8 @@ email or phone code) and adds it again.
 
 ## Live proof
 
-After step 6, with a test account that has a verified email. One call at a
-time. Every call sends `-H 'X-App-Version: <the minimum>'`; the logins also
-send an `X-Device-Id`.
+After step 5, with a test account that has a verified email. One call at a
+time. The logins send an `X-Device-Id`.
 
 1. Sign in as "phone 1" (`X-Device-Id: live-2fa-1`), keep its `access` as A.
 2. `GET /api/v1/me/security` with A: `two_factor_enabled: false`, the email
@@ -155,8 +159,8 @@ send an `X-Device-Id`.
    `{"challenge_token": "C", "method": "email", "code": "<the code>"}`:
    `access` and `refresh`.
 9. Sign in as "phone 2" again: the tokens at once (it is remembered).
-10. Sign in as "phone 3" with `X-App-Version: 1.0.0`: `426`,
-    `"code": "app_update_required"`.
+10. Sign in as "phone 3" with no `X-App-Version` and no `X-Device-Id`, as a
+    browser does: `200` with `"two_factor_required": true`, not `426`.
 11. Turn it off again: 3 and 4 with `"purpose": "two_step_off"`, then 5 with
     `"enabled": false`.
 
@@ -184,8 +188,8 @@ ORDER BY created_at DESC LIMIT 5;
   instead of the device id.
 - **Someone with the password can spend the 5 wrong codes** and block the
   owner's codes for 15 minutes. That is the brief's per-account limit.
-- **A web browser cannot sign in to an account with 2-step on** (no
-  `X-App-Version`, so `426`), until the web app supports the challenge.
+- **A web browser cannot sign in to an account with 2-step on** until the
+  web app shows the challenge screen: it gets the challenge like any client.
 - **An account with no verified email gets no notice emails.** WhatsApp
   needs an approved template for them.
 - **Phone codes use the existing WhatsApp OTP template**

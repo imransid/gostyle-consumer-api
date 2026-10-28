@@ -99,8 +99,6 @@ services:
       PACKAGE_END_TIME_FROM_QUOTE_V1: ${PACKAGE_END_TIME_FROM_QUOTE_V1:-False}
       DEVICE_SESSIONS_V1: ${DEVICE_SESSIONS_V1:-False}
       TWO_FACTOR_V1: ${TWO_FACTOR_V1:-False}
-      # Empty: no app version may turn 2-step on (docs/TWO_FACTOR_SERVER.md).
-      TWO_FACTOR_MIN_APP_VERSION: ${TWO_FACTOR_MIN_APP_VERSION:-}
       # The authenticator secrets' key. The value lives in stack.env.
       TWO_FACTOR_ENCRYPTION_KEY: ${TWO_FACTOR_ENCRYPTION_KEY:-}
 
