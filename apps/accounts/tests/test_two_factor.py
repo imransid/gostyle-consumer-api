@@ -21,7 +21,7 @@ from django.conf import settings
 from django.core import mail
 from django.core.cache import cache
 from django.db import IntegrityError, connection, transaction
-from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from rest_framework.exceptions import ErrorDetail, ValidationError
 from rest_framework.test import APIClient
@@ -232,14 +232,13 @@ class ErrorShapeTests(SimpleTestCase):
         response = api_exception_handler(exc, {})
         return response.status_code, response.data
 
-    # Section 7 word for word, and our own two at the end.
+    # Section 7 word for word, and our own one at the end.
     BRIEF = {
         "verification_required": (403, "Please verify it’s you first."),
         "already_added": (409, "Remove your current authenticator app first."),
         "no_setup": (409, "Start setting up your authenticator app again."),
         "too_many_attempts": (429, "Too many tries. Wait a few minutes and try again."),
         "challenge_expired": (401, "Your sign-in timed out. Please sign in again."),
-        "app_update_required": (426, "Update the Go Style app to use 2-step verification."),
         "authenticator_unavailable": (
             503,
             "The authenticator app can’t be used right now. Please try again later.",
@@ -253,7 +252,6 @@ class ErrorShapeTests(SimpleTestCase):
             two_factor.NoSetup,
             two_factor.TooManyAttempts,
             two_factor.ChallengeExpired,
-            two_factor.AppUpdateRequired,
             two_factor.AuthenticatorUnavailable,
         )
         self.assertEqual({c.default_code for c in classes}, set(self.BRIEF))
@@ -272,11 +270,6 @@ class ErrorShapeTests(SimpleTestCase):
                         },
                     ),
                 )
-
-    def test_a_message_of_its_own_keeps_the_code(self):
-        _, data = self.answer(two_factor.AppUpdateRequired("Update the Go Style app to sign in."))
-        self.assertEqual(data["detail"], "Update the Go Style app to sign in.")
-        self.assertEqual(data["code"], "app_update_required")
 
     def test_the_422s_are_on_their_field(self):
         cases = (
@@ -878,50 +871,6 @@ class EncryptionKeyTests(AuthenticatorTestCase):
                 two_factor._decrypt(copy)
 
 
-# --- the app version gate ---------------------------------------------------------------
-
-
-class VersionGateTests(SimpleTestCase):
-    def request(self, version=None):
-        headers = {"HTTP_X_APP_VERSION": version} if version is not None else {}
-        return RequestFactory().post("/", **headers)
-
-    @override_settings(TWO_FACTOR_MIN_APP_VERSION="1.4.0")
-    def test_at_least_the_minimum_passes(self):
-        for version, passes in (
-            ("1.4.0", True),
-            ("1.4", True),
-            ("1.4.1", True),
-            ("1.10.0", True),
-            ("2", True),
-            (" 1.4.0 ", True),
-            ("1.3.9", False),
-            ("1.3", False),
-            ("1.4.0-beta", False),
-            ("v1.4.0", False),
-            ("", False),
-            (None, False),
-        ):
-            with self.subTest(version=version):
-                self.assertEqual(two_factor.app_is_new_enough(self.request(version)), passes)
-
-    def test_while_the_minimum_is_empty_no_app_is_new_enough(self):
-        for minimum in ("", "not a version"):
-            with self.subTest(minimum=minimum):
-                with override_settings(TWO_FACTOR_MIN_APP_VERSION=minimum):
-                    self.assertFalse(two_factor.app_is_new_enough(self.request("99.0.0")))
-
-    @override_settings(TWO_FACTOR_MIN_APP_VERSION="1.4.0")
-    def test_an_old_app_is_told_to_update(self):
-        two_factor.require_new_app(self.request("1.4.0"))
-        with self.assertRaises(two_factor.AppUpdateRequired) as caught:
-            two_factor.require_new_app(self.request("1.3.0"), "Update the Go Style app to sign in.")
-        self.assertEqual(caught.exception.status_code, 426)
-        self.assertEqual(
-            str(caught.exception.detail["detail"]), "Update the Go Style app to sign in."
-        )
-
-
 # --- the /me/security routes ----------------------------------------------------------
 
 ROUTES = (
@@ -1012,31 +961,25 @@ class SecuritySwitchTests(SecurityApiTestCase):
                     with self.subTest(switches=switches, route=f"{method} {path}"):
                         self.assertEqual(self.call(method, path, {}).status_code, 404)
 
-    def test_no_token_is_401_before_the_app_version(self):
+    def test_no_token_is_401(self):
         stranger = APIClient()
-        stranger.credentials(**{**IPHONE, "HTTP_X_APP_VERSION": "1.0.0"})
+        stranger.credentials(**IPHONE)
         for method, path in ROUTES:
             with self.subTest(route=f"{method} {path}"):
                 self.assertEqual(self.call(method, path, {}, stranger).status_code, 401)
 
-    def test_every_call_but_get_needs_a_new_enough_app(self):
-        old = self.login({**IPAD, "HTTP_X_APP_VERSION": "1.3.9"})
-        self.assertEqual(self.call("get", "", client=old).status_code, 200)
-        for method, path in ROUTES[1:]:
-            with self.subTest(route=f"{method} {path}"):
-                resp = self.call(method, path, {}, old)
-                self.assertRequestError(resp, 426, "app_update_required")
-                self.assertEqual(
-                    resp.json()["detail"], "Update the Go Style app to use 2-step verification."
-                )
-
-    @override_settings(TWO_FACTOR_MIN_APP_VERSION="")
-    def test_with_no_minimum_no_app_may_change_anything(self):
-        new = self.login({**IPAD, "HTTP_X_APP_VERSION": "99.0.0"})
-        self.assertEqual(self.call("get", "", client=new).status_code, 200)
-        resp = self.call("post", "/verify/send", {"method": "email", "purpose": ON}, new)
-        self.assertRequestError(resp, 426, "app_update_required")
-        self.assertEqual(self.outbox, [])
+    def test_no_call_looks_at_the_app_version(self):
+        for version in ("1.0.0", "v1.4.0-beta", None):
+            device = {**IPAD, "HTTP_X_APP_VERSION": version}
+            if version is None:
+                del device["HTTP_X_APP_VERSION"]
+            with self.subTest(version=version):
+                client = self.login(device)
+                self.assertEqual(self.call("get", "", client=client).status_code, 200)
+                self.add_authenticator(client=client)
+                body = {"verification_token": self.token(REMOVE, client=client)}
+                resp = self.call("delete", "/authenticator", body, client)
+                self.assertEqual(resp.status_code, 204, resp.content)
 
 
 class SecurityReadTests(SecurityApiTestCase):
@@ -1266,6 +1209,7 @@ SEND = "/api/v1/auth/2fa/send"
 FINISH = "/api/v1/auth/2fa/verify"
 SIGN_IN = TwoFactorPurpose.SIGN_IN
 NO_DEVICE_ID = {k: v for k, v in IPAD.items() if k != "HTTP_X_DEVICE_ID"}
+BROWSER = {"REMOTE_ADDR": IP}  # no device headers at all
 GALAXY = {**IPAD, "HTTP_X_DEVICE_ID": "a1b2c3d4e5f60718", "HTTP_X_DEVICE_NAME": "Galaxy"}
 
 
@@ -1373,19 +1317,20 @@ class ChallengeTests(SignInTestCase):
         self.assertEqual(resp.json()["detail"], "Invalid credentials.")
         self.assertFalse(LoginChallenge.objects.exists())
 
-    def test_an_app_too_old_gets_no_tokens_and_no_challenge(self):
-        for device, minimum in (
-            ({**IPAD, "HTTP_X_APP_VERSION": "1.3.9"}, "1.4.0"),
-            ({k: v for k, v in IPAD.items() if k != "HTTP_X_APP_VERSION"}, "1.4.0"),
-            (IPAD, ""),
-        ):
-            with self.subTest(device=device, minimum=minimum):
-                with override_settings(TWO_FACTOR_MIN_APP_VERSION=minimum):
-                    resp = self.sign_in(device)
-                self.assertRequestError(resp, 426, "app_update_required")
-                self.assertEqual(resp.json()["detail"], "Update the Go Style app to sign in.")
-        self.assertFalse(LoginChallenge.objects.exists())
+    def test_any_app_or_browser_gets_the_challenge_whatever_its_version(self):
+        no_version = {k: v for k, v in IPAD.items() if k != "HTTP_X_APP_VERSION"}
+        for device in ({**IPAD, "HTTP_X_APP_VERSION": "1.0.0"}, no_version, BROWSER):
+            with self.subTest(device=device):
+                resp = self.sign_in(device)
+                self.assertEqual(resp.status_code, 200, resp.content)
+                self.assertTrue(resp.json()["two_factor_required"])
+                self.assertNotIn("access", resp.json())
         self.assertFalse(UserSession.objects.filter(device_id=IPAD["HTTP_X_DEVICE_ID"]).exists())
+
+    def test_a_browser_can_finish_the_challenge(self):
+        tokens = self.signed_in(BROWSER)
+        self.assertEqual(set(tokens), {"access", "refresh"})
+        self.assertIsNone(self.session_of(tokens).app_version)
 
     def test_a_device_that_passed_gets_the_tokens_while_it_stays_signed_in(self):
         first = self.session_of(self.signed_in())
@@ -1602,18 +1547,15 @@ class TwoFactorDocTests(SignInTestCase):
         self.call("post", "/verify/send", {"method": "email", "purpose": "two_step_on"})
         body = {"method": "email", "purpose": "two_step_on", "code": self.wrong(self.sent_code())}
         self.assertEqual(self.call("post", "/verify", body).json(), self.blocks[9])
-        old_app = {**IPAD, "HTTP_X_APP_VERSION": "1.3.0"}
-        self.assertEqual(self.sign_in(old_app).json(), self.blocks[10])
 
     def test_no_other_json_blocks(self):
-        self.assertEqual(len(self.blocks), 11)
+        self.assertEqual(len(self.blocks), 10)
 
     def test_every_error_message_is_on_the_page(self):
         messages = [
             two_factor.WRONG_CODE[2],
             two_factor.EXPIRED_CODE[2],
             two_factor.METHOD_UNAVAILABLE[2],
-            two_factor.SIGN_IN_UPDATE,
         ] + [
             exc.default_detail
             for exc in (
@@ -1622,7 +1564,6 @@ class TwoFactorDocTests(SignInTestCase):
                 two_factor.NoSetup,
                 two_factor.TooManyAttempts,
                 two_factor.ChallengeExpired,
-                two_factor.AppUpdateRequired,
                 two_factor.AuthenticatorUnavailable,
             )
         ]

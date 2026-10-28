@@ -17,16 +17,13 @@ the example times (UAE time, 27 Oct 2026): `377576` at 14:05:12, `057138` at
 
 ---
 
-## What we need from you before the switch goes on
+## Changed on 2026-10-28: no app version check
 
-1. **The first app version with the 2-step screens and the sign-in
-   challenge screen**, as it sends it in `X-App-Version` (for example
-   `1.4.0`). We set it as the server's minimum. Until then every app gets
-   `426` on the calls in section 0, item 3, so nobody can turn 2-step on.
-2. **Confirmation that your app shows the `detail` text on a `426`**,
-   including the builds in the stores today. An older app signing in to an
-   account with 2-step on gets `426` and no tokens. It must show the text
-   ("Update the Go Style app to sign in."), not sign out, retry or crash.
+As you asked, the API never looks at the app's version. No call answers
+`426 app_update_required` any more, with or without `X-App-Version`, and
+sign-in for an account with 2-step on always answers the challenge
+(section 6), whatever the client sends. We need no app version from you, now
+or for later releases.
 
 ---
 
@@ -37,16 +34,13 @@ the example times (UAE time, 27 Oct 2026): `377576` at 14:05:12, `057138` at
 2. **Behind server switches, off for now.** While they are off every new
    route answers `404` and sign-in is exactly what it is today. We tell you
    when they are on.
-3. **Send `X-App-Version` on every call.** An app older than the server's
-   minimum, or one that sends no version, gets `426 app_update_required` on
-   every `/me/security` call except `GET`, and on `POST /auth/login` for an
-   account with 2-step on. That is how an old app never gets tokens without
-   the second code. It is not in your brief; it answers its release-order
-   warning.
-4. **A web browser cannot sign in to an account with 2-step on.** A browser
-   sends no `X-App-Version`, so it gets `426` at sign-in. Once an account
-   turns 2-step on, it cannot sign in from a web browser until the web app
-   supports the challenge. The phone app is not affected.
+3. **`X-App-Version` is optional.** It only names the session in Sign-in
+   & Security (the Sessions guide). No call looks at it. An app without the
+   challenge screen that signs in to an account with 2-step on gets the
+   challenge (section 6) and no tokens, like any other client.
+4. **A web browser gets the same challenge.** Once an account turns 2-step
+   on, it cannot sign in from a web browser until the web app shows the
+   challenge screen. The phone app is not affected.
 5. **Phone codes go by WhatsApp, not SMS**, the way the existing OTP codes
    already do. This API has no SMS sender. Show "WhatsApp" where the screens
    say "text message".
@@ -299,8 +293,8 @@ Standard TOTP (RFC 6238), so every common authenticator app works.
 
 On a password sign-in, when the account has `two_factor_enabled`:
 
-- **An app older than the minimum, or with no `X-App-Version`: `426
-  app_update_required`.** No tokens, no challenge (section 0, item 3).
+- **Any client is asked**, whatever `X-App-Version` it sends, or none: a web
+  browser too.
 - **A device that has passed 2-step and is still signed in is not asked**:
   the token pair at once. "Still signed in" is a session the Sessions list
   would show for this `X-Device-Id`. It is forgotten when the device signs
@@ -407,21 +401,9 @@ An error of one field is `422` `validation_error`, with the field:
 | 409 | null | `no_setup` | Confirming with no pending setup on this phone | Start setting up your authenticator app again. |
 | 429 | null | `too_many_attempts` | 5 wrong codes in 15 minutes, or a send too soon or too often | Too many tries. Wait a few minutes and try again. |
 | 401 | null | `challenge_expired` | Sign-in challenge expired, used up, or from another device | Your sign-in timed out. Please sign in again. |
-| 426 | null | `app_update_required` | App older than the minimum, or no `X-App-Version` | Update the Go Style app to use 2-step verification. |
 | 503 | null | `authenticator_unavailable` | A problem with the server's key | The authenticator app can’t be used right now. Please try again later. |
 
-The last two are ours, not in your brief. At sign-in the `426` says it its
-own way:
-
-```json
-{
-  "detail": "Update the Go Style app to sign in.",
-  "code": "app_update_required",
-  "errors": [
-    {"field": null, "code": "app_update_required", "message": "Update the Go Style app to sign in."}
-  ]
-}
-```
+The last one is ours, not in your brief.
 
 ---
 
@@ -452,7 +434,8 @@ straight away."
 
 ## 9. On the app side
 
-- [ ] Send `X-App-Version` (and the other device headers) on every call.
+- [ ] Send the device headers of the Sessions guide on every call. Each
+      one is optional, and none of them decides access.
 - [ ] Read `GET /me/security` on the three screens.
 - [ ] Verify it's you: send with 3.1, check with 3.2, then pass the
       `verification_token` to the change it was asked for.
@@ -461,8 +444,7 @@ straight away."
 - [ ] The sign-in challenge screen: on `two_factor_required`, show
       `methods`, send with `/auth/2fa/send`, finish with `/auth/2fa/verify`
       from the same device.
-- [ ] On `426`, show `detail`. On `401 challenge_expired`, go back to
-      sign-in.
+- [ ] On `401 challenge_expired`, go back to sign-in.
 - [ ] Say "WhatsApp", not "text message", for phone codes.
 
 ---
@@ -470,24 +452,20 @@ straight away."
 ## 10. What differs from your brief
 
 1. **Phone codes go by WhatsApp**, not SMS (section 0).
-2. **`426 app_update_required`**, on `/me/security` calls but `GET` and on
-   sign-in, for an app older than the minimum (section 0). Not in the brief.
-3. **A web browser cannot sign in to an account with 2-step on** until the
-   web app supports the challenge (section 0).
-4. **`503 authenticator_unavailable`**, for a problem with the server's key.
+2. **`503 authenticator_unavailable`**, for a problem with the server's key.
    Not in the brief.
-5. **An email when an authenticator is added** (section 8). Deliberate.
-6. **No email when nothing changed**, and none for an account with no
+3. **An email when an authenticator is added** (section 8). Deliberate.
+4. **No email when nothing changed**, and none for an account with no
    verified email.
-7. **`/auth/2fa/verify` must come from the login's `X-Device-Id`**, or it is
+5. **`/auth/2fa/verify` must come from the login's `X-Device-Id`**, or it is
    `401 challenge_expired`.
-8. **A code that is not six digits** is `422` `invalid` without a try being
+6. **A code that is not six digits** is `422` `invalid` without a try being
    used, and `method: "authenticator"` on a send is `422` `invalid_choice`.
-9. **`hint` is `null`** for a method that is not available.
-10. **More limits than the brief's**: at most 10 sends an hour and 20 a day
-    per account, and 20 an hour from one IP address.
-11. **Sign-in by one-time code**: this API has no such sign-in, so the
-    brief's rule for it (the second code from another method) has nothing to
-    apply to.
-12. **The example codes are real**, for the example secret at the example
+7. **`hint` is `null`** for a method that is not available.
+8. **More limits than the brief's**: at most 10 sends an hour and 20 a day
+   per account, and 20 an hour from one IP address.
+9. **Sign-in by one-time code**: this API has no such sign-in, so the
+   brief's rule for it (the second code from another method) has nothing to
+   apply to.
+10. **The example codes are real**, for the example secret at the example
     times. The brief's were made up.

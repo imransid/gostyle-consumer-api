@@ -421,13 +421,6 @@ DEVICE_SESSIONS_V1 = env.bool("DEVICE_SESSIONS_V1", default=False)
 # an account that turned 2-step on while it was ON.
 TWO_FACTOR_V1 = env.bool("TWO_FACTOR_V1", default=False)
 
-# The oldest app version (X-App-Version, as 1.4.0) that has the sign-in
-# challenge screen. An older, unknown or missing version gets 426
-# app_update_required: on every /me/security call but GET, and on login for an
-# account with 2-step on, which never gets tokens without the code. Empty: no
-# app is new enough, so nobody can turn 2-step on and nothing changes.
-TWO_FACTOR_MIN_APP_VERSION = env("TWO_FACTOR_MIN_APP_VERSION", default="")
-
 # The key authenticator secrets are encrypted with (AES-GCM): 32 random bytes,
 # base64. docs/TWO_FACTOR_SERVER.md says how to make one. Empty or not a key:
 # the authenticator calls answer 503 and log it, email and phone codes still

@@ -264,16 +264,7 @@ class LoginView(APIView):
             "methods}`. The code then goes to /auth/2fa/send and /auth/2fa/verify "
             "(docs/TWO_FACTOR_API.md section 6)."
         ),
-        responses={
-            200: TokenPairSerializer,
-            426: OpenApiResponse(
-                description=(
-                    "`app_update_required`: 2-step verification is on for the "
-                    "account, and X-App-Version is older than the server's "
-                    "minimum, or missing. No tokens."
-                ),
-            ),
-        },
+        responses={200: TokenPairSerializer},
     )
     def post(self, request):
         s = LoginSerializer(data=request.data)
