@@ -5,18 +5,22 @@ GET /me/security, and PATCH /me/security for the switch.
 """
 
 import importlib
+import json
+import re
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
+from datetime import timezone as dt_timezone
 from unittest.mock import patch
 
 from django.apps import apps as django_apps
+from django.conf import settings
 from django.core import mail
 from django.db import connection
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.accounts import push_api, services, sessions
+from apps.accounts import push_api, services, sessions, two_factor, two_factor_views
 from apps.accounts.models import (
     ConsumerAccount,
     NotificationPreference,
@@ -24,6 +28,7 @@ from apps.accounts.models import (
     UserSession,
     Verification,
 )
+from apps.accounts.notifications import send_new_sign_in_notice, send_new_sign_in_push
 
 from .test_two_factor import (
     EMAIL,
@@ -474,3 +479,80 @@ class PushApiTests(SimpleTestCase):
                 "data": {"k": "v"},
             },
         )
+
+
+# --- the FE guide ---------------------------------------------------------------------
+
+FE_GUIDE = settings.BASE_DIR / "docs" / "SIGN_IN_ALERTS_API.md"
+UAE = dt_timezone(timedelta(hours=4))
+
+
+@override_settings(PUSH_API_KEY="test-key")
+class SignInAlertsDocTests(SecurityApiTestCase):
+    """docs/SIGN_IN_ALERTS_API.md promises every JSON block is a real
+    answer. This builds the brief's account (2-step on, verified email and
+    phone, password set 14 June 2026), sends the same requests and must get
+    the same bodies. The emails and the push are the real words too."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.text = FE_GUIDE.read_text(encoding="utf-8")
+        cls.blocks = [json.loads(b) for b in re.findall(r"```json\n(.*?)\n```", cls.text, re.S)]
+
+    def setUp(self):
+        super().setUp()
+        ConsumerAccount.objects.filter(pk=self.account.pk).update(
+            two_factor_enabled=True,
+            password_changed_at=datetime(2026, 6, 14, 10, 22, 5, tzinfo=UAE),
+        )
+
+    def test_get(self):
+        self.assertEqual(self.call("get", "").json(), self.blocks[0])
+
+    def test_patch(self):
+        self.assertIn('{"sign_in_alerts": false}', self.text)
+        resp = self.call("patch", "", {"sign_in_alerts": False})
+        self.assertEqual((resp.status_code, resp.json()), (200, self.blocks[1]))
+
+    def test_the_error_examples(self):
+        self.assertIn('{"sign_in_alerts": false, "two_factor_enabled": false}', self.text)
+        resp = self.call("patch", "", {"sign_in_alerts": False, "two_factor_enabled": False})
+        self.assertEqual((resp.status_code, resp.json()), (422, self.blocks[2]))
+        resp = self.call("patch", "", {"sign_in_alerts": False}, APIClient())
+        self.assertEqual((resp.status_code, resp.json()), (401, self.blocks[3]))
+
+    def test_no_other_json_blocks(self):
+        self.assertEqual(len(self.blocks), 4)
+
+    def test_every_error_message_is_on_the_page(self):
+        for message in (
+            "This field is required.",
+            "Must be a boolean.",
+            two_factor_views.READ_ONLY,
+            two_factor.NotSignedIn.default_detail,
+        ):
+            with self.subTest(message=message):
+                self.assertIn(f"| {message} |", self.text)
+
+    def test_the_emails_and_the_push_are_on_the_page(self):
+        subject, what = two_factor._NOTICES[two_factor.SIGN_IN_ALERTS_OFF]
+        self.assertIn(
+            f"| {subject} | {what} on iPhone 15 in Dubai. If this was not you, reset your "
+            "password and contact support straight away. |",
+            self.text,
+        )
+
+        session = UserSession(device_name="iPhone 15", location="Dubai")
+        send_new_sign_in_notice(self.account, session)
+        (msg,) = mail.outbox
+        self.assertIn(f'Subject "{msg.subject}"', self.text)
+        text = msg.body.split("\n\nAutomated message")[0].replace("\n\n", " ")
+        self.assertIn(f'Text: "{text}"', self.text)
+
+        with patch.object(push_api, "send_to_user", return_value=(202, {})) as push:
+            send_new_sign_in_push(self.account, session)
+        sent = push.call_args.kwargs
+        self.assertIn(f'Title "{sent["title"]}". Body "{sent["body"]}"', self.text)
+        self.assertEqual(sent["data"]["type"], "new_sign_in")
+        self.assertIn("Data `type`: `new_sign_in`, `sessionId`", self.text)
