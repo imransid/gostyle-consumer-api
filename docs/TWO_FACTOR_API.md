@@ -52,6 +52,7 @@ or for later releases.
 | Method   | Path                                 | Purpose                                                       |
 | -------- | ------------------------------------ | ------------------------------------------------------------- |
 | `GET`    | `/me/security`                       | The switch and which methods the account has                  |
+| `PATCH`  | `/me/security`                       | Sign-in alerts on or off (docs/SIGN_IN_ALERTS_API.md)         |
 | `POST`   | `/me/security/verify/send`           | Send a "Verify it's you" code by email or WhatsApp            |
 | `POST`   | `/me/security/verify`                | Check that code, or an authenticator code: a verification token |
 | `PATCH`  | `/me/security/two-factor`            | Turn 2-step verification on or off                            |
@@ -82,7 +83,9 @@ Authorization: Bearer <access_token>
     "email": {"available": true, "hint": "k•••@gmail.com"},
     "phone": {"available": true, "hint": "+971 •• ••• 4567"},
     "authenticator": {"available": false, "added_at": null}
-  }
+  },
+  "password_changed_at": "2026-06-14T10:22:05+04:00",
+  "sign_in_alerts": true
 }
 ```
 
@@ -95,8 +98,8 @@ Authorization: Bearer <access_token>
 | `methods.phone.hint` | string or null | Masked: the country code and the last 4 digits. `null` when not available. |
 | `methods.authenticator.available` | boolean | An authenticator was added and confirmed. A pending setup does not count. |
 | `methods.authenticator.added_at` | string or null | `2026-10-27T14:05:12+04:00`: UAE time, whole seconds, like the Sessions API. |
-
-Not behind the app version check: any app may read it.
+| `password_changed_at` | string or null | When the password was last set. Added 2026-10-29: see docs/SIGN_IN_ALERTS_API.md. |
+| `sign_in_alerts` | boolean | Alert me about new sign-ins. Added 2026-10-29: see docs/SIGN_IN_ALERTS_API.md. |
 
 ---
 
@@ -418,6 +421,7 @@ place of the phone that made it:
 | Turning it off | Go Style: 2-step verification turned off | 2-step verification was turned off for your Go Style account on iPhone 15 in Dubai. |
 | Adding an authenticator | Go Style: authenticator app added | An authenticator app was added to your Go Style account on iPhone 15 in Dubai. |
 | Removing it | Go Style: authenticator app removed | The authenticator app was removed from your Go Style account on iPhone 15 in Dubai. |
+| Turning sign-in alerts off (docs/SIGN_IN_ALERTS_API.md) | Go Style: sign-in alerts turned off | Sign-in alerts were turned off for your Go Style account on iPhone 15 in Dubai. |
 
 Then: "If this was not you, reset your password and contact support
 straight away."

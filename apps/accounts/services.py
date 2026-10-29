@@ -289,6 +289,7 @@ def register(destination, destination_type, full_name, password, gender="", requ
             gender=gender,
             accepted_terms_at=now,
             is_active=True,
+            password_changed_at=now,
         )
         setattr(account, field, destination)
         account.set_password(password)
@@ -317,7 +318,8 @@ def change_password(user, old_password, new_password):
         raise ValidationError({"detail": "Invalid credentials."})
 
     user.set_password(new_password)
-    user.save(update_fields=["password"])
+    user.password_changed_at = timezone.now()
+    user.save(update_fields=["password", "password_changed_at"])
     transaction.on_commit(lambda: send_password_changed_notice(user))
 
 
@@ -438,7 +440,8 @@ def reset_password(reset_token, new_password):
         verification.save(update_fields=["consumed_at"])
 
         account.set_password(new_password)
-        account.save(update_fields=["password"])
+        account.password_changed_at = now
+        account.save(update_fields=["password", "password_changed_at"])
 
         _blacklist_all_refresh_tokens(account)
 

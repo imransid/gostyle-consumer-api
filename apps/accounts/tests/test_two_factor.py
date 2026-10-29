@@ -875,6 +875,7 @@ class EncryptionKeyTests(AuthenticatorTestCase):
 
 ROUTES = (
     ("get", ""),
+    ("patch", ""),
     ("post", "/verify/send"),
     ("post", "/verify"),
     ("patch", "/two-factor"),
@@ -995,6 +996,8 @@ class SecurityReadTests(SecurityApiTestCase):
                     "phone": {"available": True, "hint": "+971 •• ••• 4567"},
                     "authenticator": {"available": False, "added_at": None},
                 },
+                "password_changed_at": two_factor_views._uae(self.account.created_at),
+                "sign_in_alerts": True,
             },
         )
 
@@ -1512,6 +1515,8 @@ class TwoFactorDocTests(SignInTestCase):
         self.assertEqual((resp.status_code, resp.json()), (200, self.blocks[5]))
 
     def test_get(self):
+        changed = datetime(2026, 6, 14, 10, 22, 5, tzinfo=UAE)
+        ConsumerAccount.objects.filter(pk=self.account.pk).update(password_changed_at=changed)
         self.assertEqual(self.call("get", "").json(), self.blocks[0])
 
     def test_verify_its_you_and_the_switch(self):

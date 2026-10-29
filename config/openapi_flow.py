@@ -61,6 +61,7 @@ FLOW = (
             ("DELETE", "/api/v1/me/sessions/{session_id}", "Sign out one other device"),
             ("DELETE", "/api/v1/me/sessions", "Sign out every other device"),
             ("GET", "/api/v1/me/security", "My 2-step verification and ways to verify"),
+            ("PATCH", "/api/v1/me/security", "Turn new sign-in alerts on or off"),
             ("POST", "/api/v1/me/security/verify/send", "Send a Verify it's you code"),
             ("POST", "/api/v1/me/security/verify", "Check the code, get a verification token"),
             ("PATCH", "/api/v1/me/security/two-factor", "Turn 2-step verification on or off"),
