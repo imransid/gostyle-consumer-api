@@ -50,6 +50,19 @@ def unregister_session(*, session_id):
     return _send("POST", "/devices/unregister-session", {"sessionId": str(session_id)})
 
 
+def send_to_user(*, user_id, event_id, title, body, data):
+    """POST /notifications/user. A push to every active device of the user.
+    The same event_id again sends nothing."""
+    payload = {
+        "userId": str(user_id),
+        "eventId": event_id,
+        "title": title,
+        "body": body,
+        "data": data,
+    }
+    return _send("POST", "/notifications/user", payload)
+
+
 def _send(method, path, payload):
     request = urllib.request.Request(
         settings.PUSH_API_URL.rstrip("/") + path,

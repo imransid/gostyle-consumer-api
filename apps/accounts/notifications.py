@@ -20,6 +20,7 @@ is the SendGrid backend (sendgrid_backend.py): no SMTP.
 """
 
 import json
+import logging
 import urllib.error
 import urllib.request
 
@@ -27,7 +28,10 @@ from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from django.utils import timezone
 
+from . import push_api
 from .identifiers import EMAIL, PHONE
+
+logger = logging.getLogger(__name__)
 
 WHATSAPP_API_VERSION = "v23.0"
 
@@ -307,6 +311,44 @@ def send_new_sign_in_notice(account, session):
             "app's settings, and contact support straight away."
         ),
     )
+
+
+def send_new_sign_in_push(account, session):
+    """The same news as send_new_sign_in_notice, as a push to the account's
+    phones (push service, POST /notifications/user). The phone that just
+    signed in has not registered for push yet as a rule, so it is the
+    others that hear of it.
+
+    Not when the account has push off (/notifications/preferences), nor
+    while PUSH_API_KEY is unset. A push that fails is logged and swallowed:
+    the sign-in has happened, and must not fail for it.
+    """
+    if not settings.PUSH_API_KEY:
+        return
+    # Imported here: models imports this module.
+    from .models import NotificationPreference
+
+    prefs = NotificationPreference.objects.filter(account=account).first()
+    if prefs is not None and not prefs.push:
+        return
+    device = session.device_name or "an unknown device"
+    place = f" in {session.location}" if session.location else ""
+    try:
+        status_code, body = push_api.send_to_user(
+            user_id=account.pk,
+            event_id=f"new-sign-in:{session.pk}",
+            title="New sign-in to your account",
+            body=(
+                f"Your Go Style account was just signed in to on {device}{place}. "
+                "If this was not you, change your password."
+            ),
+            data={"type": "new_sign_in", "sessionId": str(session.pk)},
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("new sign-in push not sent: %s", e)
+        return
+    if status_code >= 400:
+        logger.warning("push service refused the new sign-in push (%s): %s", status_code, body)
 
 
 def send_phone_changed_notice(account):

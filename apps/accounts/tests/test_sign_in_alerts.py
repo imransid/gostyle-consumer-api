@@ -5,18 +5,25 @@ GET /me/security, and PATCH /me/security for the switch.
 """
 
 import importlib
+import uuid
 from datetime import timedelta
 from unittest.mock import patch
 
 from django.apps import apps as django_apps
 from django.core import mail
 from django.db import connection
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.accounts import services, sessions
-from apps.accounts.models import ConsumerAccount, Purpose, UserSession, Verification
+from apps.accounts import push_api, services, sessions
+from apps.accounts.models import (
+    ConsumerAccount,
+    NotificationPreference,
+    Purpose,
+    UserSession,
+    Verification,
+)
 
 from .test_two_factor import (
     EMAIL,
@@ -27,6 +34,8 @@ from .test_two_factor import (
     SecurityApiTestCase,
     SignInTestCase,
 )
+from .test_account_emails import GALAXY, NO_HEADERS
+from .test_sessions import SessionTestCase
 
 backfill = importlib.import_module(
     "apps.accounts.migrations.0027_password_changed_at_sign_in_alerts"
@@ -34,7 +43,7 @@ backfill = importlib.import_module(
 
 NEW_PASSWORD = "An0ther-Str0ng-Pass!"
 OTHER_PHONE = "+971509876543"
-OTHER_EMAIL = "someone.else@gmail.com"
+PHONE_ACCOUNT_ID = uuid.UUID("6f1c2b7e-3d4a-4c1f-8e2b-6a0d5c9b1e47")
 
 
 class FrozenClockTestCase(TestCase):
@@ -375,3 +384,93 @@ class TwoStepSignInAlertTests(SignInTestCase):
         self.call("patch", "", {"sign_in_alerts": False})
         self.signed_in()
         self.assertEqual(self.alerts(), [])
+
+
+@override_settings(OTP_SENDER="live", PUSH_API_KEY="test-key")
+class NewSignInPushTests(SessionTestCase):
+    """The alert by push too, to the account's phones (push service)."""
+
+    def setUp(self):
+        super().setUp()
+        ConsumerAccount.objects.filter(pk=self.account.pk).update(
+            email=EMAIL, email_verified_at=timezone.now()
+        )
+        patcher = patch.object(push_api, "send_to_user", return_value=(202, {"queued": 1}))
+        self.push = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def sign_in(self, device=GALAXY):
+        with self.captureOnCommitCallbacks(execute=True):
+            return self.login(device)
+
+    def test_a_new_device_is_pushed_with_its_name_and_place(self):
+        client = self.sign_in()
+        sid = str(self.sid(client))
+        self.push.assert_called_once_with(
+            user_id=self.account.pk,
+            event_id=f"new-sign-in:{sid}",
+            title="New sign-in to your account",
+            body=(
+                "Your Go Style account was just signed in to on Galaxy S23 Ultra in Dubai. "
+                "If this was not you, change your password."
+            ),
+            data={"type": "new_sign_in", "sessionId": sid},
+        )
+        self.assertEqual([m.subject for m in mail.outbox], [NEW_SIGN_IN])
+
+    def test_no_news_no_push(self):
+        self.sign_in()
+        self.sign_in()
+        self.assertEqual(self.push.call_count, 1)
+
+    def test_alerts_off_no_push_and_no_email(self):
+        ConsumerAccount.objects.filter(pk=self.account.pk).update(sign_in_alerts=False)
+        self.sign_in()
+        self.push.assert_not_called()
+        self.assertEqual(mail.outbox, [])
+
+    def test_push_off_in_the_preferences_still_emails(self):
+        NotificationPreference.objects.create(account=self.account, push=False)
+        self.sign_in()
+        self.push.assert_not_called()
+        self.assertEqual(len(mail.outbox), 1)
+
+    @override_settings(PUSH_API_KEY="")
+    def test_no_push_key_no_push(self):
+        self.sign_in()
+        self.push.assert_not_called()
+
+    def test_a_push_service_that_fails_does_not_fail_the_sign_in(self):
+        for failure in (push_api.PushApiUnavailable("down"), ConnectionResetError("reset")):
+            self.push.side_effect = failure
+            with self.subTest(failure=failure), self.assertLogs(
+                "apps.accounts.notifications", "WARNING"
+            ) as logs:
+                self.sign_in(NO_HEADERS)  # news every time
+            self.assertIn("new sign-in push not sent", logs.output[0])
+        self.assertEqual(len(mail.outbox), 2)
+
+    def test_a_refused_push_is_logged(self):
+        self.push.return_value = (401, {"message": "Unauthorized"})
+        with self.assertLogs("apps.accounts.notifications", "WARNING") as logs:
+            self.sign_in()
+        self.assertIn("refused the new sign-in push (401)", logs.output[0])
+
+
+class PushApiTests(SimpleTestCase):
+    def test_send_to_user_posts_the_push_services_body(self):
+        with patch.object(push_api, "_send", return_value=(202, {})) as send:
+            push_api.send_to_user(
+                user_id=PHONE_ACCOUNT_ID, event_id="e", title="t", body="b", data={"k": "v"}
+            )
+        send.assert_called_once_with(
+            "POST",
+            "/notifications/user",
+            {
+                "userId": str(PHONE_ACCOUNT_ID),
+                "eventId": "e",
+                "title": "t",
+                "body": "b",
+                "data": {"k": "v"},
+            },
+        )

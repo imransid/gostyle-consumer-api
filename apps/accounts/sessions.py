@@ -39,7 +39,7 @@ from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 
 from . import geoip, push_api
 from .models import ConsumerAccount, UserSession
-from .notifications import send_new_sign_in_notice
+from .notifications import send_new_sign_in_notice, send_new_sign_in_push
 
 logger = logging.getLogger(__name__)
 
@@ -274,14 +274,16 @@ def start(user, request, sign_in=True, **fields):
     the session's own beyond the request's (two_factor_passed_at).
 
     A sign-in (login or /auth/2fa/verify; register passes sign_in=False)
-    from a new device emails the account's verified address
-    (notifications.send_new_sign_in_notice), unless it has turned sign-in
-    alerts off (PATCH /me/security)."""
+    from a new device tells the account, by email to its verified address
+    and by push to its phones (notifications.send_new_sign_in_notice and
+    send_new_sign_in_push), unless it has turned sign-in alerts off
+    (PATCH /me/security)."""
     alert = sign_in and user.sign_in_alerts and _new_device(user, read_device(request))
     refresh = RefreshToken.for_user(user)
     session = _open(user, request, refresh, **fields)
     if alert:
         transaction.on_commit(lambda: send_new_sign_in_notice(user, session))
+        transaction.on_commit(lambda: send_new_sign_in_push(user, session))
     return _pair(refresh)
 
 
