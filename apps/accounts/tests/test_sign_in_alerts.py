@@ -18,7 +18,15 @@ from rest_framework.test import APIClient
 from apps.accounts import services, sessions
 from apps.accounts.models import ConsumerAccount, Purpose, UserSession, Verification
 
-from .test_two_factor import EMAIL, IPAD, PASSWORD, PHONE, UAE_TIME, SecurityApiTestCase
+from .test_two_factor import (
+    EMAIL,
+    IPAD,
+    PASSWORD,
+    PHONE,
+    UAE_TIME,
+    SecurityApiTestCase,
+    SignInTestCase,
+)
 
 backfill = importlib.import_module(
     "apps.accounts.migrations.0027_password_changed_at_sign_in_alerts"
@@ -335,3 +343,35 @@ class SecurityAuthTests(SecurityApiTestCase):
         resp = self.call("post", "/verify/send", {}, APIClient())
         self.assertEqual(resp.status_code, 401)
         self.assertEqual(resp.json()["detail"], "Authentication credentials were not provided.")
+
+
+# --- the new sign-in alert ------------------------------------------------------------
+
+NEW_SIGN_IN = "Go Style: new sign-in to your account"
+
+
+class TwoStepSignInAlertTests(SignInTestCase):
+    """A sign-in is a token pair from POST /auth/login or /auth/2fa/verify:
+    with 2-step on, the code, not the password."""
+
+    def alerts(self):
+        return [m for m in mail.outbox if m.subject == NEW_SIGN_IN]
+
+    def test_told_once_the_code_passes_not_at_the_password(self):
+        challenge = self.challenge()
+        self.assertEqual(self.alerts(), [])
+        self.assertEqual(self.finish(challenge, self.sign_in_code(challenge)).status_code, 200)
+        (msg,) = self.alerts()
+        self.assertIn("signed in to on iPad", msg.body)
+
+    def test_a_remembered_device_signing_in_again_is_not_news(self):
+        self.signed_in()
+        mail.outbox.clear()
+        resp = self.sign_in()
+        self.assertEqual(set(resp.json()), {"access", "refresh"})
+        self.assertEqual(self.alerts(), [])
+
+    def test_switched_off_nothing(self):
+        self.call("patch", "", {"sign_in_alerts": False})
+        self.signed_in()
+        self.assertEqual(self.alerts(), [])

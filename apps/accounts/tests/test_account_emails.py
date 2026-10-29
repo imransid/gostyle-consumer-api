@@ -19,7 +19,7 @@ from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.accounts import services
+from apps.accounts import services, sessions
 from apps.accounts.models import ConsumerAccount, OtpCode, Purpose
 
 from .test_auth import AuthTestCase
@@ -114,21 +114,41 @@ class NewSignInTests(SessionTestCase):
 
     def sign_in(self, device):
         with self.captureOnCommitCallbacks(execute=True):
-            self.login(device)
+            return self.login(device)
 
-    def test_the_first_session_is_not_news(self):
+    def test_registering_is_not_news(self):
+        body = {
+            "destination_type": "phone",
+            "destination": "+971509876543",
+            "full_name": "Kevin Rogers",
+            "password": PASSWORD,
+            "confirm_password": PASSWORD,
+            "gender": "male",
+        }
+        with patch.object(sessions, "send_new_sign_in_notice") as notice:
+            with self.captureOnCommitCallbacks(execute=True):
+                resp = APIClient().post("/api/v1/auth/register", body, format="json", **IPHONE)
+            self.assertEqual(resp.status_code, 201, resp.content)
+            notice.assert_not_called()
+
+            self.sign_in(IPHONE)
+            notice.assert_called_once()
+
+    def test_a_device_with_no_live_session_is_news(self):
         self.sign_in(IPHONE)
 
-        self.assertEqual(mail.outbox, [])
+        (msg,) = mail.outbox
+        self.assertIn("signed in to on iPhone 15 in Dubai.", msg.body)
 
-    def test_the_same_device_again_is_not_news(self):
+    def test_the_same_device_while_signed_in_is_not_news(self):
         self.sign_in(IPHONE)
         self.sign_in(IPHONE)
 
-        self.assertEqual(mail.outbox, [])
+        self.assertEqual(len(mail.outbox), 1)
 
     def test_a_new_device_is_named_with_its_place(self):
         self.sign_in(IPHONE)
+        mail.outbox.clear()
 
         self.sign_in(GALAXY)
 
@@ -143,31 +163,37 @@ class NewSignInTests(SessionTestCase):
         (html, _), = msg.alternatives
         self.assertIn("New sign-in to your account", html)
 
-    def test_a_device_signed_out_long_ago_is_still_known(self):
-        self.sign_in(IPHONE)
+    def test_a_device_signed_out_is_new_again(self):
         self.sign_in(GALAXY)
-        self.account.sessions.update(ended_at=timezone.now() - timedelta(days=90))
-        mail.outbox.clear()
+        self.account.sessions.update(ended_at=timezone.now())
 
         self.sign_in(GALAXY)
 
-        self.assertEqual(mail.outbox, [])
+        self.assertEqual(len(mail.outbox), 2)
 
-    def test_a_browser_is_known_by_its_name(self):
-        self.sign_in(IPHONE)
+    def test_a_device_whose_sign_in_ran_out_is_new_again(self):
+        from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
+
+        self.sign_in(GALAXY)
+        OutstandingToken.objects.update(expires_at=timezone.now() - timedelta(seconds=1))
+
+        self.sign_in(GALAXY)
+
+        self.assertEqual(len(mail.outbox), 2)
+
+    def test_a_browser_is_news_every_time(self):
         self.sign_in(CHROME)
         self.sign_in(CHROME)
 
-        self.assertEqual(len(mail.outbox), 1)
-        self.assertIn("on Chrome on macOS in Abu Dhabi.", mail.outbox[0].body)
+        self.assertEqual(len(mail.outbox), 2)
+        self.assertIn("on Chrome on macOS in Abu Dhabi.", mail.outbox[1].body)
 
-    def test_a_client_with_no_headers_is_news_once(self):
-        self.sign_in(IPHONE)
+    def test_a_client_with_no_device_id_is_news_every_time(self):
         self.sign_in(NO_HEADERS)
         self.sign_in(NO_HEADERS)
 
-        self.assertEqual(len(mail.outbox), 1)
-        self.assertIn("signed in to on an unknown device", mail.outbox[0].body)
+        self.assertEqual(len(mail.outbox), 2)
+        self.assertIn("signed in to on an unknown device", mail.outbox[1].body)
 
     def test_an_unverified_email_is_not_written_to(self):
         ConsumerAccount.objects.filter(pk=self.account.pk).update(email_verified_at=None)
@@ -178,7 +204,6 @@ class NewSignInTests(SessionTestCase):
         self.assertEqual(mail.outbox, [])
 
     def test_a_wrong_password_sends_nothing(self):
-        self.sign_in(IPHONE)
         body = {"destination_type": "phone", "destination": self.account.phone, "password": "x"}
 
         with self.captureOnCommitCallbacks(execute=True):
@@ -186,11 +211,26 @@ class NewSignInTests(SessionTestCase):
 
         self.assertEqual(mail.outbox, [])
 
+    def test_a_token_refresh_is_not_a_sign_in(self):
+        client = self.older_client()  # its refresh opens a session
+
+        with self.captureOnCommitCallbacks(execute=True):
+            resp = APIClient().post(
+                "/api/v1/auth/token/refresh",
+                {"refresh": client.tokens["refresh"]},
+                format="json",
+                **GALAXY,
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(self.account.sessions.count(), 1)
+        self.assertEqual(mail.outbox, [])
+
     def test_sign_in_alerts_turned_off_send_nothing(self):
-        self.sign_in(IPHONE)
         ConsumerAccount.objects.filter(pk=self.account.pk).update(sign_in_alerts=False)
 
         self.sign_in(GALAXY)
+        self.sign_in(CHROME)
 
         self.assertEqual(mail.outbox, [])
 
