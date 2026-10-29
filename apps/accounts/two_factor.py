@@ -16,11 +16,13 @@ views only read the request and answer.
   * the authenticator: its secret, AES-GCM at rest, and its TOTP codes (5).
   * notices: an email when 2-step goes on or off, or an authenticator is
     added or removed, naming the device and place it was done from (4, 5.3;
-    the one on adding is ours).
+    the one on adding is ours), and when sign-in alerts are turned off.
   * limits: one send per 30 seconds per purpose, and 5 wrong codes per 15
     minutes per account across every call (5.4).
   * the sign-in challenge: what login answers instead of tokens, and the
     code that finishes it (6).
+  * the sign-in alerts switch, PATCH /me/security (docs/SIGN_IN_ALERTS_API.md).
+    The alert it turns on and off is sessions.start's.
 
 An error that belongs to no field answers in the shape of
 auth-error-response.md section 4: its own code at the top, and the same
@@ -47,7 +49,12 @@ from django.db.models import F
 from django.utils import timezone
 from django.utils.crypto import constant_time_compare, salted_hmac
 from rest_framework import status
-from rest_framework.exceptions import APIException, ErrorDetail, ValidationError
+from rest_framework.exceptions import (
+    APIException,
+    AuthenticationFailed,
+    ErrorDetail,
+    ValidationError,
+)
 
 from . import services, sessions
 from .identifiers import EMAIL, PHONE
@@ -90,6 +97,10 @@ ISSUER = "Go Style"
 SIGN_IN_SUBJECT = "Your Go Style sign-in code"
 SECURITY_SUBJECT = "Your Go Style security code"
 
+# Not a 2-step purpose: a notice's name for PATCH /me/security turning
+# sign-in alerts off.
+SIGN_IN_ALERTS_OFF = "sign_in_alerts_off"
+
 # Each change's notice: its subject, and what happened.
 _NOTICES = {
     TwoFactorPurpose.TWO_STEP_ON: (
@@ -109,6 +120,12 @@ _NOTICES = {
     TwoFactorPurpose.AUTHENTICATOR_REMOVE: (
         "Go Style: authenticator app removed",
         "The authenticator app was removed from your Go Style account",
+    ),
+    # Turning them back on sends nothing: an intruder hides by turning
+    # them off.
+    SIGN_IN_ALERTS_OFF: (
+        "Go Style: sign-in alerts turned off",
+        "Sign-in alerts were turned off for your Go Style account",
     ),
 }
 TOKEN_PREFIX = "vt_"
@@ -176,6 +193,15 @@ class ChallengeExpired(_RequestError):
     status_code = status.HTTP_401_UNAUTHORIZED
     default_detail = "Your sign-in timed out. Please sign in again."
     default_code = top_level_code = "challenge_expired"
+
+
+class NotSignedIn(AuthenticationFailed):
+    """401 on GET and PATCH /me/security for no token or an invalid one, in
+    the words of docs/SIGN_IN_ALERTS_API.md. The other 2-step routes keep
+    the 401s they shipped with."""
+
+    default_detail = "Please sign in again."
+    default_code = "not_authenticated"
 
 
 class AuthenticatorUnavailable(_RequestError):
@@ -387,13 +413,26 @@ def set_enabled(user, sid, enabled):
     return bool(changed)
 
 
+def set_sign_in_alerts(user, on):
+    """PATCH /me/security: turn the new sign-in alert on or off. No Verify
+    it's you: it is a notice, like the notification preferences. Returns
+    whether it changed."""
+    changed = (
+        ConsumerAccount.all_objects.filter(pk=user.pk)
+        .exclude(sign_in_alerts=on)
+        .update(sign_in_alerts=on)
+    )
+    user.sign_in_alerts = on
+    return bool(changed)
+
+
 # --- notices --------------------------------------------------------------------
 
 
 def notify(user, sid, change):
     """Email the account that `change` (two_step_on, two_step_off,
-    authenticator_add or authenticator_remove) was just made, from the
-    device and place of the
+    authenticator_add, authenticator_remove or sign_in_alerts_off) was just
+    made, from the device and place of the
     session `sid`: "2-step verification was turned off for your Go Style
     account on iPhone 15 in Dubai." Sent once the change is committed.
 

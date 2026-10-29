@@ -102,6 +102,13 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
     two_factor_enabled = models.BooleanField(default=False, db_default=False)
     two_factor_changed_at = models.DateTimeField(null=True, blank=True)
 
+    # Sign-in & Security (docs/SIGN_IN_ALERTS_API.md). When the password was
+    # last set: at register, on a change and on a reset. Null without one.
+    password_changed_at = models.DateTimeField(null=True, blank=True)
+    # "Alert me about new sign-ins" (sessions.start). On until the customer
+    # turns it off. db_default too, so a row written by older code is on.
+    sign_in_alerts = models.BooleanField(default=True, db_default=True)
+
     USERNAME_FIELD = "phone"
     REQUIRED_FIELDS = []
 
@@ -151,6 +158,7 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
         self.location = ""
         self.two_factor_enabled = False
         self.two_factor_changed_at = None
+        self.password_changed_at = None  # no password any more
         self.save()
 
         # 4. End every session. Without this a refresh token (30 days) reaches

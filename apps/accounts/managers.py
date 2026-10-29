@@ -1,4 +1,5 @@
 from django.contrib.auth.base_user import BaseUserManager
+from django.utils import timezone
 
 
 class ConsumerAccountManager(BaseUserManager):
@@ -18,6 +19,8 @@ class ConsumerAccountManager(BaseUserManager):
         extra.setdefault("is_active", True)
         user = self.model(phone=phone, **extra)
         user.set_password(password)
+        if user.has_usable_password():
+            user.password_changed_at = timezone.now()
         user.save(using=self._db)
         return user
 

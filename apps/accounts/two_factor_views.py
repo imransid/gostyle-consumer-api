@@ -3,6 +3,7 @@ Sign-in & Security: 2-step verification and the authenticator app
 (docs/TWO_FACTOR_API.md):
 
     GET    /api/v1/me/security                         the switch and the methods
+    PATCH  /api/v1/me/security                         sign-in alerts on or off
     POST   /api/v1/me/security/verify/send             send a Verify it's you code
     POST   /api/v1/me/security/verify                  check it: a verification token
     PATCH  /api/v1/me/security/two-factor              turn 2-step on or off
@@ -24,11 +25,13 @@ apps/accounts/two_factor.py.
 """
 
 import re
+from collections.abc import Mapping
 
 from django.db import transaction
 from django.http import Http404
 from drf_spectacular.utils import OpenApiResponse, extend_schema, inline_serializer
 from rest_framework import serializers, status
+from rest_framework.exceptions import AuthenticationFailed, ErrorDetail
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -140,6 +143,48 @@ class AuthenticatorChangeSerializer(_TokenSerializer):
     )
 
 
+class _StrictBoolean(serializers.BooleanField):
+    """true or false, and nothing that only looks like one ("true", 1 or
+    null), which BooleanField would take."""
+
+    default_error_messages = {"invalid": "Must be a boolean."}
+
+    def validate_empty_values(self, data):
+        if data is None:
+            self.fail("invalid")
+        return super().validate_empty_values(data)
+
+    def to_internal_value(self, data):
+        if not isinstance(data, bool):
+            self.fail("invalid")
+        return data
+
+
+READ_ONLY = "This can’t be changed here."
+
+
+class SecurityChangeSerializer(serializers.Serializer):
+    sign_in_alerts = _StrictBoolean(help_text="The only field this call changes.")
+
+    def to_internal_value(self, data):
+        # Any other field is a 422 on that field, not ignored: a client that
+        # sends two_factor_enabled here must never think it turned 2-step
+        # verification off. That takes PATCH /me/security/two-factor and a
+        # verification token.
+        others = {
+            name: [ErrorDetail(READ_ONLY, code="read_only")]
+            for name in (data if isinstance(data, Mapping) else ())
+            if name not in self.fields
+        }
+        try:
+            value = super().to_internal_value(data)
+        except serializers.ValidationError as e:
+            raise serializers.ValidationError({**e.detail, **others})
+        if others:
+            raise serializers.ValidationError(others)
+        return value
+
+
 # --- answers, for Swagger ------------------------------------------------------------
 
 
@@ -172,6 +217,13 @@ _SECURITY = inline_serializer(
                     },
                 ),
             },
+        ),
+        "password_changed_at": serializers.CharField(
+            allow_null=True,
+            help_text="2026-06-14T10:22:05+04:00. Null for an account with no password.",
+        ),
+        "sign_in_alerts": serializers.BooleanField(
+            help_text="Alert me about new sign-ins. On for every account until turned off."
         ),
     },
 )
@@ -223,34 +275,86 @@ class _SecurityView(APIView):
         return sessions.current_id(self.request)
 
 
+def _security(user):
+    """What GET /me/security answers, and PATCH too."""
+    hints = two_factor.contact_hints(user)
+    authenticator = two_factor.active_authenticator(user)
+    return {
+        "two_factor_enabled": user.two_factor_enabled,
+        "methods": {
+            method: {"available": method in hints, "hint": hints.get(method)}
+            for method in ("email", "phone")
+        }
+        | {
+            "authenticator": {
+                "available": authenticator is not None,
+                "added_at": _uae(authenticator and authenticator.confirmed_at),
+            }
+        },
+        # With a password but no time (a row older code wrote during a
+        # deploy): when it was created, as the backfill has it.
+        "password_changed_at": (
+            _uae(user.password_changed_at or user.created_at)
+            if user.has_usable_password()
+            else None
+        ),
+        "sign_in_alerts": user.sign_in_alerts,
+    }
+
+
 class SecurityView(_SecurityView):
+    """No token, or an invalid one, is 401 not_authenticated "Please sign in
+    again." here (docs/SIGN_IN_ALERTS_API.md). session_revoked stays as it
+    is."""
+
+    def perform_authentication(self, request):
+        try:
+            request.user
+        except sessions.SessionRevoked:
+            raise
+        except AuthenticationFailed as e:
+            raise two_factor.NotSignedIn() from e
+
+    def permission_denied(self, request, message=None, code=None):
+        if request.authenticators and not request.successful_authenticator:
+            raise two_factor.NotSignedIn()
+        super().permission_denied(request, message=message, code=code)
+
     @extend_schema(
         description=(
             "The 2-step switch, and the ways this account can verify: its "
             "verified email and phone (masked), and a confirmed authenticator "
-            "app."
+            "app. Also when the password was last set, and the new sign-in "
+            "alerts switch."
         ),
         responses={200: _SECURITY, **_ERRORS},
     )
     def get(self, request):
-        user = request.user
-        hints = two_factor.contact_hints(user)
-        authenticator = two_factor.active_authenticator(user)
-        return Response(
-            {
-                "two_factor_enabled": user.two_factor_enabled,
-                "methods": {
-                    method: {"available": method in hints, "hint": hints.get(method)}
-                    for method in ("email", "phone")
-                }
-                | {
-                    "authenticator": {
-                        "available": authenticator is not None,
-                        "added_at": _uae(authenticator and authenticator.confirmed_at),
-                    }
-                },
-            }
-        )
+        return Response(_security(request.user))
+
+    @extend_schema(
+        request=SecurityChangeSerializer,
+        description=(
+            "Turns the new sign-in alerts on or off, and answers the whole of "
+            "GET. No Verify it's you. Any other field is 422 `read_only` and "
+            "nothing is saved. Turning them off emails the account; the value "
+            "it already has is a 200 and sends nothing."
+        ),
+        responses={
+            200: _SECURITY,
+            **_ERRORS,
+            422: OpenApiResponse(
+                description="`sign_in_alerts` `required` or `invalid`, or any "
+                "other field `read_only`."
+            ),
+        },
+    )
+    def patch(self, request):
+        on = self.body(SecurityChangeSerializer)["sign_in_alerts"]
+        with transaction.atomic():
+            if two_factor.set_sign_in_alerts(request.user, on) and not on:
+                two_factor.notify(request.user, self.sid, two_factor.SIGN_IN_ALERTS_OFF)
+        return Response(_security(request.user))
 
 
 class VerifySendView(_SecurityView):

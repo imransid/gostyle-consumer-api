@@ -39,7 +39,7 @@ from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 
 from . import geoip, push_api
 from .models import ConsumerAccount, UserSession
-from .notifications import send_new_sign_in_notice
+from .notifications import send_new_sign_in_notice, send_new_sign_in_push
 
 logger = logging.getLogger(__name__)
 
@@ -269,34 +269,32 @@ def _hash(raw_token):
 # --- open ---------------------------------------------------------------------
 
 
-def start(user, request, **fields):
+def start(user, request, sign_in=True, **fields):
     """Open a session for a sign-in and return its token pair. `fields` are
     the session's own beyond the request's (two_factor_passed_at).
 
-    A sign-in from a device the account has never used emails its verified
-    address (notifications.send_new_sign_in_notice). The account's first
-    session, at registration, is not news to anyone."""
-    earlier = UserSession.objects.filter(user=user)
-    first = not earlier.exists()
-    known = _known_device(earlier, _device_for_new_session(request))
+    A sign-in (login or /auth/2fa/verify; register passes sign_in=False)
+    from a new device tells the account, by email to its verified address
+    and by push to its phones (notifications.send_new_sign_in_notice and
+    send_new_sign_in_push), unless it has turned sign-in alerts off
+    (PATCH /me/security)."""
+    alert = sign_in and user.sign_in_alerts and _new_device(user, read_device(request))
     refresh = RefreshToken.for_user(user)
     session = _open(user, request, refresh, **fields)
-    if not (first or known):
+    if alert:
         transaction.on_commit(lambda: send_new_sign_in_notice(user, session))
+        transaction.on_commit(lambda: send_new_sign_in_push(user, session))
     return _pair(refresh)
 
 
-def _known_device(earlier, device):
-    """Whether one of the `earlier` sessions, live or ended, was this
-    device: the same device id when the app sent one, otherwise the same
-    name and platform ("Chrome on macOS" on web). A client that sends
-    neither matches an earlier one that sent neither, so a sign-in from an
-    app that has no headers is news once, not every time."""
-    if device.get("device_id"):
-        return earlier.filter(device_id=device["device_id"]).exists()
-    return earlier.filter(
-        device_name=device.get("device_name"), platform=device.get("platform")
-    ).exists()
+def _new_device(user, device):
+    """A device with no live session on the account for its X-Device-Id,
+    or one that sends none, a web browser among them
+    (docs/SIGN_IN_ALERTS_API.md section 5). A device that signed out, or was
+    signed out, is new again: whoever signs in on it next may not be its
+    owner."""
+    device_id = device.get("device_id")
+    return not device_id or all(s.device_id != device_id for s in live(user))
 
 
 def _pair(refresh):

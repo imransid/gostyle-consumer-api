@@ -122,12 +122,13 @@ def lookup_account(caller, destination, destination_type):
     )
 
 
-def tokens_for(user, request=None, **session_fields):
+def tokens_for(user, request=None, sign_in=True, **session_fields):
     """A new token pair. Given the sign-in's request, it opens a session for
     that device too (sessions.start) while DEVICE_SESSIONS_V1 is on, with
-    `session_fields` on it (two_factor_passed_at)."""
+    `session_fields` on it (two_factor_passed_at). sign_in=False (register)
+    is no news for the new sign-in alert."""
     if request is not None and sessions.enabled():
-        return sessions.start(user, request, **session_fields)
+        return sessions.start(user, request, sign_in=sign_in, **session_fields)
     refresh = RefreshToken.for_user(user)
     return {"access": str(refresh.access_token), "refresh": str(refresh)}
 
@@ -289,12 +290,13 @@ def register(destination, destination_type, full_name, password, gender="", requ
             gender=gender,
             accepted_terms_at=now,
             is_active=True,
+            password_changed_at=now,
         )
         setattr(account, field, destination)
         account.set_password(password)
         account.save()
 
-    tokens = tokens_for(account, request)
+    tokens = tokens_for(account, request, sign_in=False)
     return {
         "detail": "Registration successful. Please verify your account to continue.",
         **tokens,
@@ -317,7 +319,8 @@ def change_password(user, old_password, new_password):
         raise ValidationError({"detail": "Invalid credentials."})
 
     user.set_password(new_password)
-    user.save(update_fields=["password"])
+    user.password_changed_at = timezone.now()
+    user.save(update_fields=["password", "password_changed_at"])
     transaction.on_commit(lambda: send_password_changed_notice(user))
 
 
@@ -438,7 +441,8 @@ def reset_password(reset_token, new_password):
         verification.save(update_fields=["consumed_at"])
 
         account.set_password(new_password)
-        account.save(update_fields=["password"])
+        account.password_changed_at = now
+        account.save(update_fields=["password", "password_changed_at"])
 
         _blacklist_all_refresh_tokens(account)
 
