@@ -186,6 +186,14 @@ class NewSignInTests(SessionTestCase):
 
         self.assertEqual(mail.outbox, [])
 
+    def test_sign_in_alerts_turned_off_send_nothing(self):
+        self.sign_in(IPHONE)
+        ConsumerAccount.objects.filter(pk=self.account.pk).update(sign_in_alerts=False)
+
+        self.sign_in(GALAXY)
+
+        self.assertEqual(mail.outbox, [])
+
     @override_settings(DEVICE_SESSIONS_V1=False)
     def test_without_sessions_there_is_nothing_to_compare(self):
         self.sign_in(IPHONE)

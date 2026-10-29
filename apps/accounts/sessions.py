@@ -274,14 +274,16 @@ def start(user, request, **fields):
     the session's own beyond the request's (two_factor_passed_at).
 
     A sign-in from a device the account has never used emails its verified
-    address (notifications.send_new_sign_in_notice). The account's first
+    address (notifications.send_new_sign_in_notice), unless the account has
+    turned sign-in alerts off (PATCH /me/security). The account's first
     session, at registration, is not news to anyone."""
-    earlier = UserSession.objects.filter(user=user)
-    first = not earlier.exists()
-    known = _known_device(earlier, _device_for_new_session(request))
+    alert = False
+    if user.sign_in_alerts:
+        earlier = UserSession.objects.filter(user=user)
+        alert = earlier.exists() and not _known_device(earlier, _device_for_new_session(request))
     refresh = RefreshToken.for_user(user)
     session = _open(user, request, refresh, **fields)
-    if not (first or known):
+    if alert:
         transaction.on_commit(lambda: send_new_sign_in_notice(user, session))
     return _pair(refresh)
 
