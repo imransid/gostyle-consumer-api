@@ -546,3 +546,9 @@ WHATSAPP_PHONE_NUMBER_ID = env("WHATSAPP_PHONE_NUMBER_ID", default="")
 WHATSAPP_ACCESS_TOKEN = env("WHATSAPP_ACCESS_TOKEN", default="")
 WHATSAPP_TEMPLATE_NAME = env("WHATSAPP_TEMPLATE_NAME", default="")
 WHATSAPP_TEMPLATE_LANGUAGE = env("WHATSAPP_TEMPLATE_LANGUAGE", default="en_US")
+
+# GeoIP: MaxMind GeoLite2-City (free) or GeoIP2-City database, for resolving
+# client IPs to city names on GET /me/sessions.  Download from
+# https://dev.maxmind.com/geoip/geolite2-free-geolocation-data and refresh
+# monthly.  When the file is missing the location column stays empty.
+GEOIP_DATABASE = env("GEOIP_DATABASE", default=str(BASE_DIR / "geoip" / "GeoLite2-City.mmdb"))

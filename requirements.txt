@@ -40,4 +40,5 @@ urllib3==2.8.0
 django-storages==1.14.6
 filetype==1.2.0
 
-
+geoip2>=4.8.0
+maxminddb>=2.6.0

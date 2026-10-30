@@ -1,0 +1,618 @@
+{
+    "name": "Kevin Construction - Email costs to Notion",
+    "nodes": [
+      {
+        "parameters": {
+          "pollTimes": { "item": [{ "mode": "everyMinute" }] },
+          "simple": false,
+          "filters": { "q": "to:emailofimran1992+costs@gmail.com" },
+          "options": { "downloadAttachments": true, "dataPropertyAttachmentsPrefixName": "attachment_" }
+        },
+        "id": "a1000000-0000-4000-8000-000000000001",
+        "name": "Gmail Trigger",
+        "type": "n8n-nodes-base.gmailTrigger",
+        "typeVersion": 1.2,
+        "position": [0, 300]
+      },
+      {
+        "parameters": {
+          "jsCode": "// Edit these values if your IDs or emails change\nconst cfg = {\n  notionVersion: '2022-06-28',\n  db: {\n    projects: '3664681e-9822-4557-8f3e-d41b0e15cf86',\n    suppliers: '2992f6f9-cc5b-4169-81d0-69443999b37e',\n    costs: 'f2bdef68-057a-4bc3-aebc-6a8cbf6fdf94',\n    summary: 'd4bf2bc5-7b7f-42fa-964d-22cc3a917f84',\n    log: 'c868af3f-f354-4b1b-9546-9fcba68f04d1'\n  },\n  geminiModel: 'gemini-3.8-flash',\n  officeEmail: 'emailofimran1992+denise@gmail.com',\n  fallbackPmEmail: 'emailofimran1992+steve@gmail.com',\n  defaultCurrency: 'USD',\n  confidenceThreshold: 0.75,\n  freeMailDomains: ['gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'yahoo.com', 'icloud.com', 'me.com', 'aol.com', 'proton.me'],\n  internalDomains: []\n};\nreturn $input.all().map((item, i) => ({ json: { ...item.json, cfg }, binary: item.binary, pairedItem: { item: i } }));"
+        },
+        "id": "a1000000-0000-4000-8000-000000000002",
+        "name": "Config",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [220, 300]
+      },
+      {
+        "parameters": {
+          "jsCode": "const NL = String.fromCharCode(10);\nconst GEN = { temperature: 0, responseMimeType: 'application/json', responseSchema: { type: 'OBJECT', properties: { is_cost_document: { type: 'BOOLEAN' }, document_type: { type: 'STRING', enum: ['Invoice', 'Receipt', 'Credit Note', 'Statement / Other'] }, supplier_name: { type: 'STRING', nullable: true }, document_reference: { type: 'STRING', nullable: true }, document_date: { type: 'STRING', nullable: true }, due_date: { type: 'STRING', nullable: true }, total_amount: { type: 'NUMBER', nullable: true }, currency: { type: 'STRING', nullable: true }, payment_status: { type: 'STRING', enum: ['Paid', 'Unpaid', 'Unknown'] }, paid_date: { type: 'STRING', nullable: true }, project_hint: { type: 'STRING', nullable: true }, confidence: { type: 'NUMBER' }, notes: { type: 'STRING', nullable: true } }, required: ['is_cost_document', 'document_type', 'payment_status', 'confidence'] } };\nconst fnv = (s) => { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16).padStart(8, '0'); };\nconst prompt = (m) => [\n  'You read emails sent to a home builder and the invoice or receipt attached to them.',\n  'Return ONLY JSON that matches the schema. Never guess: use null when a value is not visible.',\n  'Rules:',\n  '- total_amount: the final total payable including tax, as a plain number.',\n  '- currency: ISO 4217 code. If only a $ sign is shown and the supplier is in the USA, use USD.',\n  '- Dates as YYYY-MM-DD. due_date only if shown, or computable from invoice date + stated terms.',\n  '- payment_status: Paid if it is a till/card receipt, marked PAID, balance due is 0, or the email says it has been paid; Unpaid if money is still owed; otherwise Unknown. paid_date if stated.',\n  '- document_type: Credit Note when it reduces what we owe.',\n  '- project_hint: any job name, client surname, site address, PO number or project code (e.g. PRJ-2) on the document or in the email.',\n  '- is_cost_document: false for delivery notices, quotes, statements of account or chit-chat.',\n  '- confidence 0-1: how sure you are that supplier, reference, date and total are ALL correct.',\n  '',\n  'EMAIL FROM: ' + m.fromEmail,\n  'EMAIL SUBJECT: ' + m.emailSubject,\n  'EMAIL BODY:',\n  m.emailText\n].join(NL);\nconst out = [];\nconst items = $input.all();\nfor (let i = 0; i < items.length; i++) {\n  const e = items[i].json;\n  const bin = items[i].binary || {};\n  const fromEmail = ((e.from && e.from.value && e.from.value[0] && e.from.value[0].address) || '').toLowerCase();\n  const meta = { cfg: e.cfg, gmailId: e.id, emailSubject: e.subject || '', emailText: String(e.text || '').slice(0, 4000), emailDate: e.date || new Date().toISOString(), fromEmail, sourceEmailUrl: 'https://mail.google.com/mail/u/0/#all/' + e.id };\n  const keys = Object.keys(bin).filter(k => { const mt = String(bin[k].mimeType || '').toLowerCase(); return mt === 'application/pdf' || mt.startsWith('image/'); });\n  if (keys.length === 0) {\n    out.push({ json: { ...meta, hasAttachment: false, fileName: '', mimeType: '', fingerprint: 'body-' + fnv(meta.emailSubject + meta.emailText), geminiBody: { contents: [{ role: 'user', parts: [{ text: prompt(meta) }] }], generationConfig: GEN } }, pairedItem: { item: i } });\n    continue;\n  }\n  for (const k of keys) {\n    const buf = await this.helpers.getBinaryDataBuffer(i, k);\n    const b64 = buf.toString('base64');\n    out.push({ json: { ...meta, hasAttachment: true, fileName: bin[k].fileName || (k + '.pdf'), mimeType: bin[k].mimeType, fingerprint: fnv(b64) + '-' + buf.length, geminiBody: { contents: [{ role: 'user', parts: [{ text: prompt(meta) }, { inline_data: { mime_type: bin[k].mimeType, data: b64 } }] }], generationConfig: GEN } }, binary: { document: bin[k] }, pairedItem: { item: i } });\n  }\n}\nreturn out;"
+        },
+        "id": "a1000000-0000-4000-8000-000000000003",
+        "name": "Split attachments",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [440, 300]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://generativelanguage.googleapis.com/v1beta/models/{{ $json.cfg.geminiModel }}:generateContent",
+          "authentication": "genericCredentialType",
+          "genericAuthType": "httpHeaderAuth",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.geminiBody) }}",
+          "options": { "timeout": 90000 }
+        },
+        "id": "a1000000-0000-4000-8000-000000000004",
+        "name": "AI extract (Gemini)",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [660, 300],
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 3000,
+        "onError": "continueRegularOutput"
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForEachItem",
+          "jsCode": "const src = $('Split attachments').item;\nconst s = src.json;\nconst reasons = [];\nlet ai = {};\nlet aiError = null;\ntry {\n  if ($json.error) throw new Error(typeof $json.error === 'string' ? $json.error : JSON.stringify($json.error).slice(0, 300));\n  const parts = ($json.candidates && $json.candidates[0] && $json.candidates[0].content && $json.candidates[0].content.parts) || [];\n  ai = JSON.parse(parts.map(p => p.text || '').join(''));\n} catch (err) { aiError = 'AI extraction failed: ' + err.message; ai = {}; }\nconst isDate = v => typeof v === 'string' && v.length === 10 && !isNaN(Date.parse(v));\nconst docDate = isDate(ai.document_date) ? ai.document_date : null;\nconst dueDate = isDate(ai.due_date) ? ai.due_date : null;\nconst paidDate = isDate(ai.paid_date) ? ai.paid_date : null;\nlet amount = null;\nif (ai.total_amount !== null && ai.total_amount !== undefined && ai.total_amount !== '') { const n = Number(String(ai.total_amount).replace(/[^0-9.-]/g, '')); amount = isFinite(n) ? Math.round(n * 100) / 100 : null; }\nconst docTypes = ['Invoice', 'Receipt', 'Credit Note', 'Statement / Other'];\nconst docType = docTypes.includes(ai.document_type) ? ai.document_type : 'Statement / Other';\nif (docType === 'Credit Note' && amount !== null && amount > 0) amount = -amount;\nlet currency = String(ai.currency || '').toUpperCase().trim();\nif (!currency) { currency = s.cfg.defaultCurrency; if (!aiError) reasons.push('Currency not stated'); }\nelse if (!['USD', 'CAD', 'EUR', 'GBP', 'AUD'].includes(currency)) currency = 'Other';\nlet paymentStatus = ['Paid', 'Unpaid', 'Unknown'].includes(ai.payment_status) ? ai.payment_status : 'Unknown';\nif (docType === 'Receipt' && paymentStatus === 'Unknown') paymentStatus = 'Paid';\nconst confidence = typeof ai.confidence === 'number' ? Math.max(0, Math.min(1, ai.confidence)) : 0;\nconst isCost = aiError ? true : ai.is_cost_document !== false;\nif (aiError || confidence < s.cfg.confidenceThreshold) reasons.push('Low AI confidence');\nif (isCost && amount === null) reasons.push('Amount unclear');\nconst monthFrom = docDate || String(s.emailDate).slice(0, 10);\nconst costMonth = isDate(monthFrom) ? monthFrom.slice(0, 7) : new Date().toISOString().slice(0, 7);\nconst ref = ai.document_reference ? String(ai.document_reference).trim() : '';\nconst normRef = ref.toLowerCase().replace(/[^a-z0-9]/g, '');\nconst { geminiBody, ...meta } = s;\nreturn { json: { ...meta, ai, aiError, isCost, docType, supplierNameAI: ai.supplier_name || '', ref, normRef, docDate, dueDate, paidDate, amount, currency, paymentStatus, confidence, costMonth, reviewReasons: reasons }, binary: src.binary };"
+        },
+        "id": "a1000000-0000-4000-8000-000000000005",
+        "name": "Parse AI output",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [880, 300]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+            "conditions": [
+              { "id": "c1", "leftValue": "={{ $json.hasAttachment }}", "rightValue": "", "operator": { "type": "boolean", "operation": "true", "singleValue": true } }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "id": "a1000000-0000-4000-8000-000000000006",
+        "name": "Has attachment?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [1100, 300]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://api.notion.com/v1/file_uploads",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "notionApi",
+          "sendHeaders": true,
+          "headerParameters": { "parameters": [{ "name": "Notion-Version", "value": "2022-06-28" }] },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ filename: $json.fileName, content_type: $json.mimeType }) }}",
+          "options": {}
+        },
+        "id": "a1000000-0000-4000-8000-000000000007",
+        "name": "Notion: create file upload",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [1320, 160],
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 1500,
+        "onError": "continueRegularOutput"
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForEachItem",
+          "jsCode": "const p = $('Parse AI output').item;\nreturn { json: { ...p.json, fileUploadId: $json.id || null, fileUploadError: $json.error ? String($json.error.message || JSON.stringify($json.error)).slice(0, 200) : null }, binary: p.binary };"
+        },
+        "id": "a1000000-0000-4000-8000-000000000008",
+        "name": "Re-attach file",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [1540, 160]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://api.notion.com/v1/file_uploads/{{ $json.fileUploadId }}/send",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "notionApi",
+          "sendHeaders": true,
+          "headerParameters": { "parameters": [{ "name": "Notion-Version", "value": "2022-06-28" }] },
+          "sendBody": true,
+          "contentType": "multipart-form-data",
+          "bodyParameters": { "parameters": [{ "parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "document" }] },
+          "options": {}
+        },
+        "id": "a1000000-0000-4000-8000-000000000009",
+        "name": "Notion: send file",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [1760, 160],
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 1500,
+        "onError": "continueRegularOutput"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://api.notion.com/v1/databases/{{ $('Parse AI output').item.json.cfg.db.projects }}/query",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "notionApi",
+          "sendHeaders": true,
+          "headerParameters": { "parameters": [{ "name": "Notion-Version", "value": "2022-06-28" }] },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ filter: { property: 'Phase', select: { does_not_equal: 'Complete' } }, page_size: 100 }) }}",
+          "options": {}
+        },
+        "id": "a1000000-0000-4000-8000-000000000010",
+        "name": "Notion: query projects",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [1980, 300],
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 1500,
+        "onError": "continueRegularOutput"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://api.notion.com/v1/databases/{{ $('Parse AI output').item.json.cfg.db.suppliers }}/query",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "notionApi",
+          "sendHeaders": true,
+          "headerParameters": { "parameters": [{ "name": "Notion-Version", "value": "2022-06-28" }] },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ page_size: 100 }) }}",
+          "options": {}
+        },
+        "id": "a1000000-0000-4000-8000-000000000011",
+        "name": "Notion: query suppliers",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [2200, 300],
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 1500,
+        "onError": "continueRegularOutput"
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForEachItem",
+          "jsCode": "const d = $('Parse AI output').item.json;\nconst cfg = d.cfg;\nconst projects = $('Notion: query projects').item.json.results || [];\nconst suppliers = $json.results || [];\nconst plain = arr => (arr || []).map(t => t.plain_text || '').join('');\nconst prop = (page, name) => (page.properties && page.properties[name]) || {};\nconst STOP = ['llc', 'inc', 'ltd', 'co', 'corp', 'company', 'the', 'and'];\nconst norm = v => String(v || '').toLowerCase().split(/[^a-z0-9]+/).filter(w => w && !STOP.includes(w)).join('');\nconst reasons = [...d.reviewReasons];\nlet fileUploadId = null;\nif (d.hasAttachment) { try { const sent = $('Notion: send file').item.json; if (sent && sent.status === 'uploaded') fileUploadId = sent.id; } catch (e) {} }\n// project: 1) PRJ code, 2) keywords or site address\nconst hay = [d.emailSubject, d.emailText, d.ai.project_hint, d.fileName].join(' ').toLowerCase();\nlet project = null;\nlet projectHow = 'not found';\nconst m = hay.match(/prj[^0-9a-z]{0,3}0*([0-9]+)/);\nif (m) { project = projects.find(p => prop(p, 'Project Code').unique_id && prop(p, 'Project Code').unique_id.number === Number(m[1])) || null; if (project) projectHow = 'project code PRJ-' + m[1]; }\nif (!project) {\n  const hits = projects.filter(p => {\n    const kws = plain(prop(p, 'Match Keywords').rich_text).split(/[,;]/).map(x => x.trim().toLowerCase()).filter(x => x.length >= 4);\n    const addr = plain(prop(p, 'Site Address').rich_text).toLowerCase();\n    return kws.some(k => hay.includes(k)) || (addr.length >= 6 && hay.includes(addr));\n  });\n  if (hits.length === 1) { project = hits[0]; projectHow = 'keyword match'; }\n  else if (hits.length > 1) projectHow = 'ambiguous: ' + hits.map(h => plain(prop(h, 'Project').title)).join(' / ');\n}\nif (!project && d.isCost) reasons.push('Project not identified');\nconst pmEmails = project ? ((prop(project, 'PM Email').rollup && prop(project, 'PM Email').rollup.array) || []).map(x => x.email).filter(Boolean) : [];\n// supplier: 1) name on document, 2) sender email domain\nconst senderDomain = (d.fromEmail.split('@')[1] || '').toLowerCase();\nconst aiName = norm(d.supplierNameAI);\nlet supplier = null;\nlet supplierHow = 'not found';\nif (aiName.length >= 3) { supplier = suppliers.find(s => { const n = norm(plain(prop(s, 'Name').title)); return n && (n === aiName || n.includes(aiName) || aiName.includes(n)); }) || null; if (supplier) supplierHow = 'name'; }\nif (!supplier && senderDomain && !cfg.freeMailDomains.includes(senderDomain) && !cfg.internalDomains.includes(senderDomain)) { supplier = suppliers.find(s => plain(prop(s, 'Email Domain').rich_text).trim().toLowerCase() === senderDomain) || null; if (supplier) supplierHow = 'email domain'; }\nconst supplierName = supplier ? plain(prop(supplier, 'Name').title) : (d.supplierNameAI || senderDomain || 'Unknown supplier');\nif (!supplier && d.isCost) reasons.push('New / unknown supplier');\nreturn { json: { ...d, fileUploadId, projectId: project ? project.id : null, projectName: project ? plain(prop(project, 'Project').title) : '', projectHow, pmEmail: pmEmails[0] || '', supplierId: supplier ? supplier.id : '', supplierName, supplierHow, senderDomain, reviewReasons: [...new Set(reasons)] } };"
+        },
+        "id": "a1000000-0000-4000-8000-000000000012",
+        "name": "Match project & supplier",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [2420, 300]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+            "conditions": [
+              { "id": "c2", "leftValue": "={{ !!$json.supplierId || !$json.isCost }}", "rightValue": "", "operator": { "type": "boolean", "operation": "true", "singleValue": true } }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "id": "a1000000-0000-4000-8000-000000000013",
+        "name": "Supplier known?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [2640, 300]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://api.notion.com/v1/pages",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "notionApi",
+          "sendHeaders": true,
+          "headerParameters": { "parameters": [{ "name": "Notion-Version", "value": "2022-06-28" }] },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ parent: { database_id: $json.cfg.db.suppliers }, properties: { 'Name': { title: [{ text: { content: $json.supplierName } }] }, 'Type': { select: { name: 'Supplier' } }, 'Email': { email: ($json.senderDomain && !$json.cfg.freeMailDomains.includes($json.senderDomain)) ? $json.fromEmail : null }, 'Email Domain': { rich_text: ($json.senderDomain && !$json.cfg.freeMailDomains.includes($json.senderDomain)) ? [{ text: { content: $json.senderDomain } }] : [] }, 'Verified': { checkbox: false } } }) }}",
+          "options": {}
+        },
+        "id": "a1000000-0000-4000-8000-000000000014",
+        "name": "Notion: create supplier",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [2860, 460],
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 1500,
+        "onError": "continueRegularOutput"
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForEachItem",
+          "jsCode": "const STOP = ['llc', 'inc', 'ltd', 'co', 'corp', 'company', 'the', 'and'];\nconst norm = v => String(v || '').toLowerCase().split(/[^a-z0-9]+/).filter(w => w && !STOP.includes(w)).join('');\nlet d;\nif ($json.object === 'page' && $json.parent) {\n  d = { ...$('Match project & supplier').item.json, supplierId: $json.id, supplierHow: 'created new supplier (unverified)' };\n} else if ($json.error) {\n  d = { ...$('Match project & supplier').item.json, supplierId: '', supplierHow: 'supplier create failed: ' + String($json.error.message || JSON.stringify($json.error)).slice(0, 150) };\n} else {\n  d = { ...$json };\n}\nconst refPart = d.normRef || ((d.docDate || 'nodate') + '-' + (d.amount === null ? 'noamt' : d.amount));\nd.dedupeKey = norm(d.supplierName) + '|' + refPart;\nreturn { json: d };"
+        },
+        "id": "a1000000-0000-4000-8000-000000000015",
+        "name": "Supplier resolved",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [3080, 300]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://api.notion.com/v1/databases/{{ $json.cfg.db.costs }}/query",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "notionApi",
+          "sendHeaders": true,
+          "headerParameters": { "parameters": [{ "name": "Notion-Version", "value": "2022-06-28" }] },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ filter: { or: [ { property: 'Dedupe Key', rich_text: { equals: $json.dedupeKey } }, { property: 'File Fingerprint', rich_text: { equals: $json.fingerprint || 'none' } } ] }, page_size: 10 }) }}",
+          "options": {}
+        },
+        "id": "a1000000-0000-4000-8000-000000000016",
+        "name": "Notion: find existing cost",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [3300, 300],
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 1500
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForEachItem",
+          "jsCode": "const d = $('Supplier resolved').item.json;\nconst cfg = d.cfg;\nconst plain = arr => (arr || []).map(t => t.plain_text || '').join('');\nconst rt = v => ({ rich_text: v ? [{ text: { content: String(v).slice(0, 1900) } }] : [] });\nconst dt = v => ({ date: v ? { start: v } : null });\nconst today = new Date().toISOString().slice(0, 10);\nconst live = ($json.results || []).filter(p => { const st = p.properties['Review Status'] && p.properties['Review Status'].status; return !(st && st.name === 'Rejected / Duplicate'); });\nconst existing = live.find(p => plain(p.properties['Dedupe Key'].rich_text) === d.dedupeKey) || live[0] || null;\nlet reasons = [...d.reviewReasons];\nlet action, resultLabel, payload = null, pageId = null;\nlet finalAmount = d.amount, finalPaymentStatus = d.paymentStatus, finalReviewStatus = reasons.length ? 'Needs Review' : 'Recorded';\nlet bucket = { supplierId: d.supplierId, supplierName: d.supplierName, costMonth: d.costMonth, currency: d.currency };\nif (!d.isCost && !existing) {\n  action = 'skip'; resultLabel = 'Skipped - not a cost';\n} else if (!existing) {\n  action = 'create'; resultLabel = reasons.length ? 'Needs review' : 'Created';\n  const props = {\n    'Cost': { title: [{ text: { content: (d.supplierName + ' - ' + (d.ref || 'no ref')).slice(0, 200) } }] },\n    'Project': { relation: d.projectId ? [{ id: d.projectId }] : [] },\n    'Supplier': { relation: d.supplierId ? [{ id: d.supplierId }] : [] },\n    'Supplier Name (as written)': rt(d.supplierNameAI),\n    'Document Type': { select: { name: d.docType } },\n    'Document Ref': rt(d.ref),\n    'Document Date': dt(d.docDate),\n    'Due Date': dt(d.dueDate),\n    'Amount': { number: d.amount },\n    'Currency': { select: { name: d.currency } },\n    'Payment Status': { select: { name: d.paymentStatus } },\n    'Paid Date': dt(d.paymentStatus === 'Paid' ? (d.paidDate || d.docDate || today) : null),\n    'Cost Month': rt(d.costMonth),\n    'Review Status': { status: { name: finalReviewStatus } },\n    'Review Reasons': { multi_select: reasons.map(name => ({ name })) },\n    'Submitted By': { email: d.fromEmail || null },\n    'Email Subject': rt(d.emailSubject),\n    'Email Message ID': rt(d.gmailId),\n    'Dedupe Key': rt(d.dedupeKey),\n    'File Fingerprint': rt(d.fingerprint),\n    'Submission Count': { number: 1 },\n    'AI Confidence': { number: d.confidence },\n    'Source Email': { url: d.sourceEmailUrl },\n    'Notes': rt(['Project: ' + d.projectHow, 'Supplier: ' + d.supplierHow, d.aiError, d.ai.notes].filter(Boolean).join(' | '))\n  };\n  if (d.fileUploadId) props['Document'] = { files: [{ type: 'file_upload', file_upload: { id: d.fileUploadId }, name: String(d.fileName || 'document').slice(0, 100) }] };\n  payload = { parent: { database_id: cfg.db.costs }, properties: props };\n} else {\n  pageId = existing.id;\n  const ep = existing.properties;\n  const oldAmount = ep['Amount'].number;\n  const oldPay = ep['Payment Status'].select ? ep['Payment Status'].select.name : 'Unknown';\n  const oldReview = ep['Review Status'].status ? ep['Review Status'].status.name : 'Recorded';\n  const count = (ep['Submission Count'].number || 1) + 1;\n  const oldNotes = plain(ep['Notes'].rich_text);\n  const amountChanged = d.amount !== null && oldAmount !== null && Math.abs(d.amount - oldAmount) >= 0.01;\n  const nowPaid = d.paymentStatus === 'Paid' && oldPay !== 'Paid';\n  bucket = { supplierId: (ep['Supplier'].relation[0] && ep['Supplier'].relation[0].id) || d.supplierId, supplierName: d.supplierName, costMonth: plain(ep['Cost Month'].rich_text) || d.costMonth, currency: (ep['Currency'].select && ep['Currency'].select.name) || d.currency };\n  if (!d.projectId) { d.projectName = '(project as on existing record)'; d.projectHow = 'existing record'; }\n  finalAmount = oldAmount; finalPaymentStatus = oldPay; finalReviewStatus = oldReview;\n  if (amountChanged) {\n    action = 'update'; resultLabel = 'Updated - amount changed';\n    reasons = [...new Set([...(ep['Review Reasons'].multi_select || []).map(o => o.name), ...reasons, 'Amount changed on resubmission'])];\n    finalAmount = d.amount; finalReviewStatus = 'Needs Review';\n    const props = { 'Amount': { number: d.amount }, 'Review Status': { status: { name: 'Needs Review' } }, 'Review Reasons': { multi_select: reasons.map(name => ({ name })) }, 'Submission Count': { number: count }, 'Email Message ID': rt(d.gmailId), 'Notes': rt([oldNotes, today + ': amount changed ' + oldAmount + ' -> ' + d.amount + ' (from ' + d.fromEmail + ')'].filter(Boolean).join(' | ')) };\n    if (d.dueDate) props['Due Date'] = dt(d.dueDate);\n    if (nowPaid) { props['Payment Status'] = { select: { name: 'Paid' } }; props['Paid Date'] = dt(d.paidDate || today); finalPaymentStatus = 'Paid'; }\n    payload = { properties: props };\n  } else if (nowPaid) {\n    action = 'update'; resultLabel = 'Updated - payment status'; finalPaymentStatus = 'Paid'; reasons = [];\n    payload = { properties: { 'Payment Status': { select: { name: 'Paid' } }, 'Paid Date': dt(d.paidDate || today), 'Submission Count': { number: count }, 'Email Message ID': rt(d.gmailId), 'Notes': rt([oldNotes, today + ': marked Paid (email from ' + d.fromEmail + ')'].filter(Boolean).join(' | ')) } };\n  } else {\n    action = 'duplicate'; resultLabel = 'Duplicate ignored'; reasons = [];\n    payload = { properties: { 'Submission Count': { number: count } } };\n  }\n}\nreturn { json: { ...d, action, resultLabel, pageId, payload, existingUrl: existing ? existing.url : '', finalAmount, finalPaymentStatus, finalReviewStatus, bucket, reviewReasons: reasons } };"
+        },
+        "id": "a1000000-0000-4000-8000-000000000017",
+        "name": "Decide action",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [3520, 300]
+      },
+      {
+        "parameters": {
+          "mode": "expression",
+          "numberOutputs": 4,
+          "output": "={{ ({ create: 0, update: 1, duplicate: 2, skip: 3 })[$json.action] }}"
+        },
+        "id": "a1000000-0000-4000-8000-000000000018",
+        "name": "Route by action",
+        "type": "n8n-nodes-base.switch",
+        "typeVersion": 3,
+        "position": [3740, 300]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://api.notion.com/v1/pages",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "notionApi",
+          "sendHeaders": true,
+          "headerParameters": { "parameters": [{ "name": "Notion-Version", "value": "2022-06-28" }] },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.payload) }}",
+          "options": {}
+        },
+        "id": "a1000000-0000-4000-8000-000000000019",
+        "name": "Notion: create cost",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [3960, 100],
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 1500,
+        "onError": "continueRegularOutput"
+      },
+      {
+        "parameters": {
+          "method": "PATCH",
+          "url": "=https://api.notion.com/v1/pages/{{ $json.pageId }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "notionApi",
+          "sendHeaders": true,
+          "headerParameters": { "parameters": [{ "name": "Notion-Version", "value": "2022-06-28" }] },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.payload) }}",
+          "options": {}
+        },
+        "id": "a1000000-0000-4000-8000-000000000020",
+        "name": "Notion: update cost",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [3960, 280],
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 1500,
+        "onError": "continueRegularOutput"
+      },
+      {
+        "parameters": {
+          "method": "PATCH",
+          "url": "=https://api.notion.com/v1/pages/{{ $json.pageId }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "notionApi",
+          "sendHeaders": true,
+          "headerParameters": { "parameters": [{ "name": "Notion-Version", "value": "2022-06-28" }] },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.payload) }}",
+          "options": {}
+        },
+        "id": "a1000000-0000-4000-8000-000000000021",
+        "name": "Notion: bump duplicate",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [3960, 460],
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 1500,
+        "onError": "continueRegularOutput"
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForEachItem",
+          "jsCode": "const d = $('Decide action').item.json;\nconst w = $json;\nconst writeError = w.error ? String(w.error.message || JSON.stringify(w.error)).slice(0, 300) : null;\nconst costPageId = (!writeError && w.id) ? w.id : d.pageId;\nconst costPageUrl = (!writeError && w.url) ? w.url : d.existingUrl;\nconst b = d.bucket;\nreturn { json: { ...d, costPageId, costPageUrl, writeError, summaryKey: b.supplierId + '|' + b.costMonth + '|' + b.currency } };"
+        },
+        "id": "a1000000-0000-4000-8000-000000000022",
+        "name": "Summary bucket",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [4180, 180]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://api.notion.com/v1/databases/{{ $json.cfg.db.costs }}/query",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "notionApi",
+          "sendHeaders": true,
+          "headerParameters": { "parameters": [{ "name": "Notion-Version", "value": "2022-06-28" }] },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ filter: { and: [ { property: 'Supplier', relation: { contains: $json.bucket.supplierId || '00000000-0000-0000-0000-000000000000' } }, { property: 'Cost Month', rich_text: { equals: $json.bucket.costMonth } }, { property: 'Currency', select: { equals: $json.bucket.currency } } ] }, page_size: 100 }) }}",
+          "options": {}
+        },
+        "id": "a1000000-0000-4000-8000-000000000023",
+        "name": "Notion: costs in bucket",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [4400, 180],
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 1500,
+        "onError": "continueRegularOutput"
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForEachItem",
+          "jsCode": "const d = $('Summary bucket').item.json;\nconst seen = new Set();\nconst ids = [];\nlet paid = 0;\nlet unpaid = 0;\nconst add = (id, review, pay, amt) => { if (!id || seen.has(id)) return; seen.add(id); if (review === 'Rejected / Duplicate') return; ids.push(id); if (pay === 'Paid') paid += amt; else unpaid += amt; };\n// count the record just written first, with its new values (guards against Notion query lag)\nif (!d.writeError) add(d.costPageId, d.finalReviewStatus, d.finalPaymentStatus, Number(d.finalAmount) || 0);\nfor (const p of ($json.results || [])) {\n  const pr = p.properties;\n  add(p.id, pr['Review Status'].status ? pr['Review Status'].status.name : '', pr['Payment Status'].select ? pr['Payment Status'].select.name : '', Number(pr['Amount'].number) || 0);\n}\nconst r2 = v => Math.round(v * 100) / 100;\nreturn { json: { ...d, totalPaid: r2(paid), totalUnpaid: r2(unpaid), costCount: ids.length, costIds: ids, bucketQueryError: $json.error ? 'bucket query failed' : null } };"
+        },
+        "id": "a1000000-0000-4000-8000-000000000024",
+        "name": "Sum bucket",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [4620, 180]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://api.notion.com/v1/databases/{{ $json.cfg.db.summary }}/query",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "notionApi",
+          "sendHeaders": true,
+          "headerParameters": { "parameters": [{ "name": "Notion-Version", "value": "2022-06-28" }] },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ filter: { property: 'Summary Key', rich_text: { equals: $json.summaryKey } }, page_size: 1 }) }}",
+          "options": {}
+        },
+        "id": "a1000000-0000-4000-8000-000000000025",
+        "name": "Notion: find summary",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [4840, 180],
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 1500
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForEachItem",
+          "jsCode": "const s = $('Sum bucket').item.json;\nconst b = s.bucket;\nconst found = ($json.results || [])[0] || null;\nconst props = { 'Total Paid': { number: s.totalPaid }, 'Total Unpaid': { number: s.totalUnpaid }, 'Cost Count': { number: s.costCount }, 'Last Recalculated': { date: { start: new Date().toISOString() } }, 'Costs': { relation: s.costIds.slice(0, 100).map(id => ({ id })) } };\nif (found) return { json: { ...s, summaryExists: true, summaryId: found.id, summaryUrl: found.url, summaryBody: { properties: props } } };\nprops['Summary'] = { title: [{ text: { content: b.supplierName + ' - ' + b.costMonth + ' - ' + b.currency } }] };\nprops['Summary Key'] = { rich_text: [{ text: { content: s.summaryKey } }] };\nprops['Supplier'] = { relation: b.supplierId ? [{ id: b.supplierId }] : [] };\nprops['Month'] = { rich_text: [{ text: { content: b.costMonth } }] };\nprops['Month Start'] = { date: { start: b.costMonth + '-01' } };\nprops['Currency'] = { select: { name: b.currency } };\nreturn { json: { ...s, summaryExists: false, summaryId: null, summaryBody: { parent: { database_id: s.cfg.db.summary }, properties: props } } };"
+        },
+        "id": "a1000000-0000-4000-8000-000000000026",
+        "name": "Prepare summary upsert",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [5060, 180]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+            "conditions": [
+              { "id": "c3", "leftValue": "={{ $json.summaryExists }}", "rightValue": "", "operator": { "type": "boolean", "operation": "true", "singleValue": true } }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "id": "a1000000-0000-4000-8000-000000000027",
+        "name": "Summary exists?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [5280, 180]
+      },
+      {
+        "parameters": {
+          "method": "PATCH",
+          "url": "=https://api.notion.com/v1/pages/{{ $json.summaryId }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "notionApi",
+          "sendHeaders": true,
+          "headerParameters": { "parameters": [{ "name": "Notion-Version", "value": "2022-06-28" }] },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.summaryBody) }}",
+          "options": {}
+        },
+        "id": "a1000000-0000-4000-8000-000000000028",
+        "name": "Notion: update summary",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [5500, 80],
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 1500,
+        "onError": "continueRegularOutput"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://api.notion.com/v1/pages",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "notionApi",
+          "sendHeaders": true,
+          "headerParameters": { "parameters": [{ "name": "Notion-Version", "value": "2022-06-28" }] },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.summaryBody) }}",
+          "options": {}
+        },
+        "id": "a1000000-0000-4000-8000-000000000029",
+        "name": "Notion: create summary",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [5500, 280],
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 1500,
+        "onError": "continueRegularOutput"
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForEachItem",
+          "jsCode": "const s = $('Prepare summary upsert').item.json;\nconst NL = String.fromCharCode(10);\nconst reasons = s.reviewReasons || [];\nconst needsReview = reasons.length > 0 || !!s.writeError;\nconst to = [...new Set([needsReview ? s.cfg.officeEmail : null, s.pmEmail || s.cfg.fallbackPmEmail].filter(Boolean))].join(',');\nconst money = v => (v === null || v === undefined || v === '') ? 'n/a' : Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });\nconst subject = (needsReview ? '[ACTION NEEDED] ' : '') + 'Cost ' + s.resultLabel.toLowerCase() + ': ' + s.supplierName + ' ' + (s.ref || '') + ' - ' + s.bucket.currency + ' ' + money(s.finalAmount) + ' - ' + (s.projectName || 'project not identified');\nconst lines = [\n  'Result: ' + s.resultLabel,\n  'Project: ' + (s.projectName || 'NOT IDENTIFIED') + ' (' + s.projectHow + ')',\n  'Supplier: ' + s.supplierName + ' (' + s.supplierHow + ')',\n  'Document: ' + s.docType + ' ' + (s.ref || '(no ref)') + ', dated ' + (s.docDate || 'n/a'),\n  'Amount: ' + s.bucket.currency + ' ' + money(s.finalAmount) + ' | Payment: ' + s.finalPaymentStatus + (s.dueDate ? ' | Due ' + s.dueDate : ''),\n  reasons.length ? 'NEEDS REVIEW: ' + reasons.join(', ') : 'No review needed.',\n  s.writeError ? 'WRITE ERROR: ' + s.writeError : null,\n  $json.error ? 'Summary update failed - re-run the execution.' : null,\n  'Supplier month ' + s.bucket.costMonth + ' (' + s.bucket.currency + '): paid ' + money(s.totalPaid) + ' | unpaid ' + money(s.totalUnpaid) + ' | ' + s.costCount + ' documents',\n  'Open in Notion: ' + (s.costPageUrl || 'n/a'),\n  'Original email: ' + s.sourceEmailUrl\n].filter(x => x !== null);\nreturn { json: { ...s, to, subject, body: lines.join(NL) } };"
+        },
+        "id": "a1000000-0000-4000-8000-000000000030",
+        "name": "Build notification",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [5720, 180]
+      },
+      {
+        "parameters": {
+          "operation": "send",
+          "sendTo": "={{ $json.to }}",
+          "subject": "={{ $json.subject }}",
+          "emailType": "text",
+          "message": "={{ $json.body }}",
+          "options": { "appendAttribution": false }
+        },
+        "id": "a1000000-0000-4000-8000-000000000031",
+        "name": "Gmail: notify",
+        "type": "n8n-nodes-base.gmail",
+        "typeVersion": 2.1,
+        "position": [5940, 180],
+        "onError": "continueRegularOutput"
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForEachItem",
+          "jsCode": "const d = $('Decide action').item.json;\nlet notified = '';\nlet costId = d.pageId || null;\nlet writeError = null;\nlet summaryLine = '';\ntry { notified = $('Build notification').item.json.to || ''; } catch (e) {}\ntry { const sb = $('Summary bucket').item.json; costId = sb.costPageId || costId; writeError = sb.writeError; } catch (e) {}\ntry { const s = $('Sum bucket').item.json; summaryLine = 'summary ' + s.bucket.costMonth + ' ' + s.bucket.currency + ': paid ' + s.totalPaid + ', unpaid ' + s.totalUnpaid + ' (' + s.costCount + ' docs)'; } catch (e) {}\nif (d.action === 'duplicate' && $json.error) writeError = 'submission count update failed';\nconst rt = v => ({ rich_text: v ? [{ text: { content: String(v).slice(0, 1900) } }] : [] });\nconst result = writeError ? 'Error' : d.resultLabel;\nconst details = [d.resultLabel, 'project: ' + d.projectHow, 'supplier: ' + d.supplierHow, 'key: ' + d.dedupeKey, (d.reviewReasons || []).length ? 'review: ' + d.reviewReasons.join(', ') : '', summaryLine, writeError || '', d.aiError || ''].filter(Boolean).join(' | ');\nconst props = {\n  'Event': { title: [{ text: { content: (result + ' - ' + d.supplierName + ' ' + (d.ref || '')).slice(0, 200) } }] },\n  'Processed At': { date: { start: new Date().toISOString() } },\n  'Result': { select: { name: result } },\n  'Cost': { relation: costId ? [{ id: costId }] : [] },\n  'From': { email: d.fromEmail || null },\n  'Email Subject': rt(d.emailSubject),\n  'Email Message ID': rt(d.gmailId),\n  'Details': rt(details),\n  'Notified': rt(notified)\n};\nreturn { json: { logBody: { parent: { database_id: d.cfg.db.log }, properties: props } } };"
+        },
+        "id": "a1000000-0000-4000-8000-000000000032",
+        "name": "Build log entry",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [6160, 400]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://api.notion.com/v1/pages",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "notionApi",
+          "sendHeaders": true,
+          "headerParameters": { "parameters": [{ "name": "Notion-Version", "value": "2022-06-28" }] },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.logBody) }}",
+          "options": {}
+        },
+        "id": "a1000000-0000-4000-8000-000000000033",
+        "name": "Notion: write log",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [6380, 400],
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 1500,
+        "onError": "continueRegularOutput"
+      }
+    ],
+    "connections": {
+      "Gmail Trigger": { "main": [[{ "node": "Config", "type": "main", "index": 0 }]] },
+      "Config": { "main": [[{ "node": "Split attachments", "type": "main", "index": 0 }]] },
+      "Split attachments": { "main": [[{ "node": "AI extract (Gemini)", "type": "main", "index": 0 }]] },
+      "AI extract (Gemini)": { "main": [[{ "node": "Parse AI output", "type": "main", "index": 0 }]] },
+      "Parse AI output": { "main": [[{ "node": "Has attachment?", "type": "main", "index": 0 }]] },
+      "Has attachment?": { "main": [
+        [{ "node": "Notion: create file upload", "type": "main", "index": 0 }],
+        [{ "node": "Notion: query projects", "type": "main", "index": 0 }]
+      ] },
+      "Notion: create file upload": { "main": [[{ "node": "Re-attach file", "type": "main", "index": 0 }]] },
+      "Re-attach file": { "main": [[{ "node": "Notion: send file", "type": "main", "index": 0 }]] },
+      "Notion: send file": { "main": [[{ "node": "Notion: query projects", "type": "main", "index": 0 }]] },
+      "Notion: query projects": { "main": [[{ "node": "Notion: query suppliers", "type": "main", "index": 0 }]] },
+      "Notion: query suppliers": { "main": [[{ "node": "Match project & supplier", "type": "main", "index": 0 }]] },
+      "Match project & supplier": { "main": [[{ "node": "Supplier known?", "type": "main", "index": 0 }]] },
+      "Supplier known?": { "main": [
+        [{ "node": "Supplier resolved", "type": "main", "index": 0 }],
+        [{ "node": "Notion: create supplier", "type": "main", "index": 0 }]
+      ] },
+      "Notion: create supplier": { "main": [[{ "node": "Supplier resolved", "type": "main", "index": 0 }]] },
+      "Supplier resolved": { "main": [[{ "node": "Notion: find existing cost", "type": "main", "index": 0 }]] },
+      "Notion: find existing cost": { "main": [[{ "node": "Decide action", "type": "main", "index": 0 }]] },
+      "Decide action": { "main": [[{ "node": "Route by action", "type": "main", "index": 0 }]] },
+      "Route by action": { "main": [
+        [{ "node": "Notion: create cost", "type": "main", "index": 0 }],
+        [{ "node": "Notion: update cost", "type": "main", "index": 0 }],
+        [{ "node": "Notion: bump duplicate", "type": "main", "index": 0 }],
+        [{ "node": "Build log entry", "type": "main", "index": 0 }]
+      ] },
+      "Notion: create cost": { "main": [[{ "node": "Summary bucket", "type": "main", "index": 0 }]] },
+      "Notion: update cost": { "main": [[{ "node": "Summary bucket", "type": "main", "index": 0 }]] },
+      "Notion: bump duplicate": { "main": [[{ "node": "Build log entry", "type": "main", "index": 0 }]] },
+      "Summary bucket": { "main": [[{ "node": "Notion: costs in bucket", "type": "main", "index": 0 }]] },
+      "Notion: costs in bucket": { "main": [[{ "node": "Sum bucket", "type": "main", "index": 0 }]] },
+      "Sum bucket": { "main": [[{ "node": "Notion: find summary", "type": "main", "index": 0 }]] },
+      "Notion: find summary": { "main": [[{ "node": "Prepare summary upsert", "type": "main", "index": 0 }]] },
+      "Prepare summary upsert": { "main": [[{ "node": "Summary exists?", "type": "main", "index": 0 }]] },
+      "Summary exists?": { "main": [
+        [{ "node": "Notion: update summary", "type": "main", "index": 0 }],
+        [{ "node": "Notion: create summary", "type": "main", "index": 0 }]
+      ] },
+      "Notion: update summary": { "main": [[{ "node": "Build notification", "type": "main", "index": 0 }]] },
+      "Notion: create summary": { "main": [[{ "node": "Build notification", "type": "main", "index": 0 }]] },
+      "Build notification": { "main": [[{ "node": "Gmail: notify", "type": "main", "index": 0 }]] },
+      "Gmail: notify": { "main": [[{ "node": "Build log entry", "type": "main", "index": 0 }]] },
+      "Build log entry": { "main": [[{ "node": "Notion: write log", "type": "main", "index": 0 }]] }
+    },
+    "settings": { "executionOrder": "v1" },
+    "pinData": {}
+  }

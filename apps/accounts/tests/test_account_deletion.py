@@ -28,6 +28,7 @@ from apps.accounts.models import (
     Favourite,
     FavouriteStylist,
     NotificationPreference,
+    Session,
 )
 from apps.accounts.tests.test_auth import PASSWORD, AuthTestCase
 
@@ -235,12 +236,13 @@ class PurgeCommandTests(DeletionTestCase):
         Favourite.objects.create(account=self.account, storefront_id=uuid.uuid4())
         FavouriteStylist.objects.create(account=self.account, staff_id=uuid.uuid4())
         NotificationPreference.for_account(self.account)
+        Session.objects.create(account=self.account, device_name="Test Device")
         self.request_deletion()
         self.make_due(self.account)
 
         self.purge()
 
-        for model in (Device, Favourite, FavouriteStylist, NotificationPreference):
+        for model in (Device, Favourite, FavouriteStylist, NotificationPreference, Session):
             with self.subTest(model=model.__name__):
                 self.assertFalse(model.objects.filter(account=self.account).exists())
 

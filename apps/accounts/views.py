@@ -244,6 +244,13 @@ class RegisterView(APIView):
             password=data["password"],
             gender=data["gender"],
         )
+
+        from .session_views import create_session
+
+        account = services.find_account(data["destination"], data["destination_type"])
+        if account:
+            create_session(request, account)
+
         return Response(result, status=status.HTTP_201_CREATED)
 
 
@@ -267,6 +274,9 @@ class LoginView(APIView):
         if not services.contact_verified(account, destination_type):
             raise ValidationError({"detail": "Please verify your account before logging in."})
 
+        from .session_views import create_session
+
+        create_session(request, account)
         return Response(services.tokens_for(account), status=status.HTTP_200_OK)
 
 

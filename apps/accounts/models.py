@@ -150,6 +150,7 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
 
         # 5. Clean related data
         self.devices.all().delete()
+        self.sessions.all().delete()
         self.favourites.all().delete()
         self.favourite_stylists.all().delete()
         NotificationPreference.objects.filter(account=self).delete()
@@ -308,6 +309,49 @@ class Device(models.Model):
 
     def __str__(self):
         return f"{self.platform} device for {self.account_id}"
+
+
+class Session(models.Model):
+    """A login session: one row per sign-in (or register), shown on
+    GET /api/v1/me/sessions so the customer can see where they are signed in.
+
+    Tied 1-to-1 with simplejwt's OutstandingToken: when the refresh token is
+    blacklisted (logout, password reset, purge) the session stays for history
+    but is_active turns false.
+
+    The location comes from a GeoIP lookup of the IP address at sign-in (and
+    is refreshed on token refresh when the IP changes).
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    account = models.ForeignKey(
+        ConsumerAccount,
+        related_name="sessions",
+        on_delete=models.CASCADE,
+    )
+
+    # The IP the request arrived from (X-Real-IP from nginx, or REMOTE_ADDR).
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    # Raw User-Agent header, for building the device name.
+    user_agent = models.TextField(blank=True, default="")
+    # A human-friendly label built from user_agent, e.g. "iPhone 15".
+    device_name = models.CharField(max_length=255, blank=True, default="")
+    # City (or country) from a GeoIP lookup, e.g. "Dubai". None/null if not found.
+    location = models.CharField(max_length=255, null=True, blank=True, default=None)
+    # Full location from GeoIP, e.g. "Dubai, United Arab Emirates". None/null if not found.
+    full_location = models.CharField(max_length=255, null=True, blank=True, default=None)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    # auto_now_add only — we bump it manually via save(update_fields=["last_seen_at"])
+    # on token refresh, so it must NOT use auto_now (which ignores update_fields).
+    last_seen_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = "session"
+        ordering = ["-last_seen_at"]
+
+    def __str__(self):
+        return f"{self.device_name or 'Unknown device'} — {self.account_id}"
 
 
 class Favourite(models.Model):
