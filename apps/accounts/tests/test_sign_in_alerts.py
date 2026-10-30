@@ -229,7 +229,7 @@ class SecurityChangeTests(SecurityApiTestCase):
         return ConsumerAccount.objects.get(pk=self.account.pk).sign_in_alerts
 
     def test_turning_them_off_answers_the_whole_get(self):
-        UserSession.objects.update(location="Dubai")
+        UserSession.objects.update(location="Dubai, UAE")
         resp = self.patch_security({"sign_in_alerts": False})
         self.assertEqual(resp.status_code, 200, resp.content)
         body = resp.json()
@@ -238,14 +238,15 @@ class SecurityChangeTests(SecurityApiTestCase):
         self.assertFalse(self.alerts())
 
     def test_turning_them_off_emails_the_account_once(self):
-        UserSession.objects.update(location="Dubai")
+        UserSession.objects.update(location="Dubai, UAE")
         self.patch_security({"sign_in_alerts": False})
         self.patch_security({"sign_in_alerts": False})
         (msg,) = mail.outbox
         self.assertEqual((msg.to, msg.subject), ([EMAIL], "Go Style: sign-in alerts turned off"))
         self.assertTrue(
             msg.body.startswith(
-                "Sign-in alerts were turned off for your Go Style account on iPhone 15 in Dubai."
+                "Sign-in alerts were turned off for your Go Style account"
+                " on iPhone 15 in Dubai, UAE."
                 "\n\nIf this was not you, reset your password and contact support straight away."
             ),
             msg.body,
@@ -416,7 +417,7 @@ class NewSignInPushTests(SessionTestCase):
             event_id=f"new-sign-in:{sid}",
             title="New sign-in to your account",
             body=(
-                "Your Go Style account was just signed in to on Galaxy S23 Ultra in Dubai. "
+                "Your Go Style account was just signed in to on Galaxy S23 Ultra in Dubai, UAE. "
                 "If this was not you, change your password."
             ),
             data={"type": "new_sign_in", "sessionId": sid},
@@ -538,12 +539,12 @@ class SignInAlertsDocTests(SecurityApiTestCase):
     def test_the_emails_and_the_push_are_on_the_page(self):
         subject, what = two_factor._NOTICES[two_factor.SIGN_IN_ALERTS_OFF]
         self.assertIn(
-            f"| {subject} | {what} on iPhone 15 in Dubai. If this was not you, reset your "
+            f"| {subject} | {what} on iPhone 15 in Dubai, UAE. If this was not you, reset your "
             "password and contact support straight away. |",
             self.text,
         )
 
-        session = UserSession(device_name="iPhone 15", location="Dubai")
+        session = UserSession(device_name="iPhone 15", location="Dubai, UAE")
         send_new_sign_in_notice(self.account, session)
         (msg,) = mail.outbox
         self.assertIn(f'Subject "{msg.subject}"', self.text)

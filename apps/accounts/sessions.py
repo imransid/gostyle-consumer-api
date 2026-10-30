@@ -58,8 +58,10 @@ _IP_KEY = "consumer-session-ip:{}"
 IP_TTL = timedelta(days=1)
 # The IP of the session's last place lookup, so a refresh or a last_seen_at
 # update looks the place up again only when the IP has changed since. Lost,
-# it costs one lookup (microseconds) that finds the same place.
-_GEO_KEY = "consumer-session-geo:{}"
+# it costs one lookup (microseconds) that finds the same place. "v2" since
+# locations read "Dubai, UAE": a new name, so every session looks its place
+# up again at its next refresh or last_seen_at update, in the new words.
+_GEO_KEY = "consumer-session-geo:v2:{}"
 GEO_TTL = timedelta(days=30)
 
 # Signed-out sessions whose devices the push service could not be told to

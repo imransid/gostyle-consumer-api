@@ -14,15 +14,16 @@ For: whoever deploys customer-api. The app side is docs/DEVICE_SESSIONS_API.md.
   devices. The column is added when the service starts. Until it is
   deployed, customer-api's `sessionId` is dropped unread there and Sign Out
   cannot delete push tokens, so deploy it before turning the switch on.
-- A new Python package, `maxminddb` (requirements.txt), so the image must be
-  rebuilt.
+- A new Python package, `maxminddb` (requirements.txt): the open-source
+  reader for the city file's format. No account or service comes with it.
+  The image must be rebuilt.
 - Switch `DEVICE_SESSIONS_V1`, off by default. Off, the three new routes are
   404 and login, register, refresh, logout and the password reset are exactly
   what they were. It must be set on BOTH services: `gostyle-consumer_api`
   (the routes and the check) and `gostyle-consumer_grpc` (VerifyConsumer
   refuses a signed-out device's token).
-- Setting `GEOIP_CITY_DB`: the path of the GeoLite2 City file inside the api
-  container. Empty, every session's `location` is `null` and nothing fails.
+- Setting `GEOIP_CITY_DB`: the path of the city file (DB-IP City Lite, free)
+  inside the api container. Empty, every session's `location` is `null` and nothing fails.
 - Setting `PROXY_SECRET`: the value host nginx sends as `X-Proxy-Secret`. The
   app reads the client's IP from `X-Forwarded-For` only when the request
   carries it, so a request sent straight to port 3850 cannot choose its own
@@ -82,41 +83,37 @@ On the host, as root:
    and add `PROXY_SECRET=<the value>` to `/root/gostyle-customer/stack.env`,
    or a stack deploy drops it.
 
-## 3. The GeoIP file (for "iPhone 15 · Dubai")
+## 3. The city file (for "iPhone 15 · Dubai, UAE")
 
-Free, from MaxMind. Once:
+DB-IP's "IP to City Lite": free, no account, no key, nothing that can ever
+charge. Its licence is CC BY 4.0: the app shows a small "IP geolocation by
+DB-IP" credit (docs/DEVICE_SESSIONS_API.md section 3). On the node that
+runs the api, as root:
 
-1. Sign up for GeoLite2 at maxmind.com, then create a license key
-   (Account, Manage License Keys).
-2. Install `geoipupdate` on every node that can run the api service
-   (Ubuntu: `sudo add-apt-repository ppa:maxmind/ppa && sudo apt install geoipupdate`).
-3. Write `/etc/GeoIP.conf`:
-
-   ```
-   AccountID <your account id>
-   LicenseKey <your license key>
-   EditionIDs GeoLite2-City
-   DatabaseDirectory /var/lib/GeoIP
-   ```
-
-4. Download it: `sudo geoipupdate`, then check
-   `ls -l /var/lib/GeoIP/GeoLite2-City.mmdb`.
-5. Keep it fresh, monthly, as the brief says (MaxMind publishes weekly):
+1. Download it. `scripts/update-geoip.sh` fetches this month's file (or
+   last month's, until this month's is out) to
+   `/var/lib/GeoIP/dbip-city-lite.mmdb`, and swaps it in whole:
 
    ```sh
-   echo '17 4 1 * * root /usr/bin/geoipupdate' | sudo tee /etc/cron.d/geoipupdate
+   cd ~/gostyle-customer && git pull && ./scripts/update-geoip.sh
+   ```
+
+2. Keep it fresh: DB-IP publishes a new file each month. On the 3rd:
+
+   ```sh
+   echo '17 4 3 * * root /root/gostyle-customer/scripts/update-geoip.sh >> /var/log/gostyle-geoip.log 2>&1' > /etc/cron.d/gostyle-geoip
    ```
 
    The api notices the new file by itself; no restart.
 
-Then give it to the api, read-only:
+3. Give it to the api, read-only:
 
-```sh
-docker service update \
-  --mount-add type=bind,source=/var/lib/GeoIP,target=/geoip,readonly \
-  --env-add GEOIP_CITY_DB=/geoip/GeoLite2-City.mmdb \
-  gostyle-consumer_api
-```
+   ```sh
+   docker service update \
+     --mount-add type=bind,source=/var/lib/GeoIP,target=/geoip,readonly \
+     --env-add GEOIP_CITY_DB=/geoip/dbip-city-lite.mmdb \
+     gostyle-consumer_api
+   ```
 
 Like the switches, `--mount-add` lives on the service only: a
 `docker stack deploy` drops it. To keep it, add to the `api` service in
@@ -128,7 +125,7 @@ deploy fails):
       - /var/lib/GeoIP:/geoip:ro
 ```
 
-and `GEOIP_CITY_DB=/geoip/GeoLite2-City.mmdb` to stack.env.
+and `GEOIP_CITY_DB=/geoip/dbip-city-lite.mmdb` to stack.env.
 
 ## 4. Turn it on
 
@@ -176,6 +173,39 @@ In the database:
 SELECT device_name, location, last_seen_at, ended_at
 FROM consumer.user_sessions ORDER BY created_at DESC LIMIT 10;
 ```
+
+## When location is null
+
+One command, inside the running api container, says why:
+
+```sh
+docker exec $(docker ps -q -f name=gostyle-consumer_api | head -1) python manage.py session_locations
+```
+
+It prints `NUM_PROXIES`, whether `PROXY_SECRET` is set, which GeoIP file
+it reads and how old it is, and how many live sessions have a public IP, a
+private one or none. It changes nothing. What it points at:
+
+- **`GEOIP_CITY_DB: not set`, or `cannot be read`**: step 3. The file must
+  be on the node and mounted (`ls -l /var/lib/GeoIP/`).
+- **`PROXY_SECRET: not set`, or sessions with a private IP** (10.x): the app
+  only sees Docker's own address, which has no place. Step 2: the nginx
+  snippet, the site's `include` of it, and the same value in
+  `PROXY_SECRET`.
+- **`The GeoIP file is old`**: the monthly `scripts/update-geoip.sh` cron
+  (step 3). `/var/log/gostyle-geoip.log` says what it did.
+
+Once both are right, every live session gets its place by itself at its
+next refresh or `last_seen_at` update (5 minutes of use). To do it now, for
+every live session:
+
+```sh
+docker exec $(docker ps -q -f name=gostyle-consumer_api | head -1) python manage.py session_locations --apply
+```
+
+Since 2026-10-30 a place reads "Dubai, UAE" (city and short country code,
+docs/DEVICE_SESSIONS_API.md section 3). A session saved as "Dubai" before
+that is redone in the new words the same way.
 
 ## Rollback
 

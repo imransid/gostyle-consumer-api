@@ -138,7 +138,7 @@ class NewSignInTests(SessionTestCase):
         self.sign_in(IPHONE)
 
         (msg,) = mail.outbox
-        self.assertIn("signed in to on iPhone 15 in Dubai.", msg.body)
+        self.assertIn("signed in to on iPhone 15 in Dubai, UAE.", msg.body)
 
     def test_the_same_device_while_signed_in_is_not_news(self):
         self.sign_in(IPHONE)
@@ -156,7 +156,8 @@ class NewSignInTests(SessionTestCase):
         self.assertEqual((msg.to, msg.subject), ([TEST_EMAIL], "Go Style: new sign-in to your account"))
         self.assertTrue(
             msg.body.startswith(
-                "Your Go Style account was just signed in to on Galaxy S23 Ultra in Dubai."
+                "Your Go Style account was just signed in to"
+                " on Galaxy S23 Ultra in Dubai, UAE."
             ),
             msg.body,
         )
@@ -186,7 +187,7 @@ class NewSignInTests(SessionTestCase):
         self.sign_in(CHROME)
 
         self.assertEqual(len(mail.outbox), 2)
-        self.assertIn("on Chrome on macOS in Abu Dhabi.", mail.outbox[1].body)
+        self.assertIn("on Chrome on macOS in Abu Dhabi, UAE.", mail.outbox[1].body)
 
     def test_a_client_with_no_device_id_is_news_every_time(self):
         self.sign_in(NO_HEADERS)

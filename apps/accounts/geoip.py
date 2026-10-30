@@ -1,11 +1,14 @@
 """
-The place an IP address is in, for a session's `location` ("Dubai").
+The place an IP address is in, for a session's `location`: the city and a
+short country code ("Dubai, UAE", "Dhaka, BD").
 
-Read from a local MaxMind database (GeoLite2 City or GeoIP2 City) with
-MaxMind's own reader, so no request leaves the server and a lookup takes
-microseconds. The file is GEOIP_CITY_DB; with none, every lookup is KEEP and
-locations stay as they are (null for a new session). docs/DEVICE_SESSIONS_SERVER.md
-says how to put the file on the server and refresh it.
+Read from a local file: DB-IP's free "IP to City Lite" (no account, no key,
+nothing that can charge; CC BY 4.0, so the app credits DB-IP), opened with
+`maxminddb`, the open-source reader for its .mmdb format. No request leaves
+the server and a lookup takes microseconds. The file is GEOIP_CITY_DB; with
+none, every lookup is KEEP and locations stay as they are (null for a new
+session). scripts/update-geoip.sh downloads it, monthly;
+docs/DEVICE_SESSIONS_SERVER.md says how to set it up.
 
 City level only, on purpose: the list needs a place name, and that is all an
 IP address can honestly tell. The coordinates the file also holds are never
@@ -16,6 +19,7 @@ and a VPN shows the VPN's city.
 import ipaddress
 import logging
 import os
+import re
 import threading
 
 import maxminddb
@@ -26,24 +30,34 @@ logger = logging.getLogger(__name__)
 # "Nothing to look up": the caller leaves the stored location as it was.
 KEEP = object()
 
+# The country after the city is its ISO 3166 two-letter code, except these,
+# which people know by another short name (Rafa, 2026-10-30).
+_SHORT_NAMES = {"US": "USA", "GB": "UK", "AE": "UAE"}
+
+# DB-IP names part of a city in brackets: "Dhaka (Gulshan)" is Dhaka.
+_DISTRICT = re.compile(r"\s*\(.*\)\s*$")
+
+# In the UAE DB-IP's city is often a district ("Bur Dubai", "Motor City",
+# "Jebel Ali"), while its first subdivision, the emirate, is always the
+# place people mean: Dubai, Abu Dhabi, Sharjah. One emirate comes spelled
+# two ways.
+_EMIRATE_NAMES = {"Raʼs al Khaymah": "Ras Al Khaimah"}
+
 _lock = threading.Lock()
 _reader = None
 _opened = None  # (path, mtime) of the file _reader has open
 
 
 def location(ip):
-    """The English city name for a public IP, else the country name, else None.
+    """Where a public IP is: "Dhaka, BD" (the English city name and the
+    country's short code), else the city alone, else the country's English
+    name ("United Arab Emirates"), else None.
 
     KEEP for a private or reserved address (local testing, it gives no place),
     and whenever the database is not there or cannot be read.
     """
-    try:
-        address = ipaddress.ip_address(ip)
-    except ValueError:
-        return KEEP
-    if address.version == 6 and address.ipv4_mapped:
-        address = address.ipv4_mapped
-    if not address.is_global:
+    address = public_address(ip)
+    if address is None:
         return KEEP
 
     reader = _current_reader()
@@ -55,12 +69,44 @@ def location(ip):
         logger.warning("geoip lookup failed for an address: %s", e)
         return KEEP
 
+    return _describe(record)
+
+
+def public_address(ip):
+    """`ip` as an address when it is a public one, the only kind with a place
+    (an IPv4 inside IPv6 counts as the IPv4), else None: private, reserved,
+    or not an address at all."""
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    if address.version == 6 and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    return address if address.is_global else None
+
+
+def database():
+    """The open database's metadata (database_type, build_epoch), or None
+    when there is none to read."""
+    reader = _current_reader()
+    return reader.metadata() if reader is not None else None
+
+
+def _describe(record):
+    """location()'s words for one database record (a dict, or None)."""
     record = record or {}
-    for part in ("city", "country"):
-        name = record.get(part, {}).get("names", {}).get("en")
-        if name:
-            return name
-    return None
+    city = record.get("city", {}).get("names", {}).get("en")
+    # A few networks have only the country they are registered in.
+    country = record.get("country") or record.get("registered_country") or {}
+    code = country.get("iso_code")
+    if code == "AE":
+        subdivisions = record.get("subdivisions") or [{}]
+        emirate = subdivisions[0].get("names", {}).get("en")
+        city = _EMIRATE_NAMES.get(emirate, emirate) or city
+    if city:
+        city = _DISTRICT.sub("", city) or city
+        return f"{city}, {_SHORT_NAMES.get(code, code)}" if code else city
+    return country.get("names", {}).get("en")
 
 
 def _current_reader():

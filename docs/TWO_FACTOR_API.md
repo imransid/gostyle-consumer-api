@@ -417,11 +417,11 @@ place of the phone that made it:
 
 | After | Subject | First line |
 | --- | --- | --- |
-| Turning 2-step on | Go Style: 2-step verification turned on | 2-step verification was turned on for your Go Style account on iPhone 15 in Dubai. |
-| Turning it off | Go Style: 2-step verification turned off | 2-step verification was turned off for your Go Style account on iPhone 15 in Dubai. |
-| Adding an authenticator | Go Style: authenticator app added | An authenticator app was added to your Go Style account on iPhone 15 in Dubai. |
-| Removing it | Go Style: authenticator app removed | The authenticator app was removed from your Go Style account on iPhone 15 in Dubai. |
-| Turning sign-in alerts off (docs/SIGN_IN_ALERTS_API.md) | Go Style: sign-in alerts turned off | Sign-in alerts were turned off for your Go Style account on iPhone 15 in Dubai. |
+| Turning 2-step on | Go Style: 2-step verification turned on | 2-step verification was turned on for your Go Style account on iPhone 15 in Dubai, UAE. |
+| Turning it off | Go Style: 2-step verification turned off | 2-step verification was turned off for your Go Style account on iPhone 15 in Dubai, UAE. |
+| Adding an authenticator | Go Style: authenticator app added | An authenticator app was added to your Go Style account on iPhone 15 in Dubai, UAE. |
+| Removing it | Go Style: authenticator app removed | The authenticator app was removed from your Go Style account on iPhone 15 in Dubai, UAE. |
+| Turning sign-in alerts off (docs/SIGN_IN_ALERTS_API.md) | Go Style: sign-in alerts turned off | Sign-in alerts were turned off for your Go Style account on iPhone 15 in Dubai, UAE. |
 
 Then: "If this was not you, reset your password and contact support
 straight away."
