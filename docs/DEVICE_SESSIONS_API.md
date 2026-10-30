@@ -100,17 +100,23 @@ Exactly the ones in your brief, on every request, the refresh call too.
 ### Location
 
 `location` is the server's, from the IP address each request comes from,
-looked up in a GeoIP database on the server. The app sends nothing for it
-and never needs location permission for this screen.
+looked up in a city database on the server (DB-IP City Lite, free). The app
+sends nothing for it and never needs location permission for this screen.
+
+**Please show a small credit on this screen**, under the list: "IP
+geolocation by DB-IP", linking to https://db-ip.com. The free database's
+licence (CC BY 4.0) asks for it.
 
 - The client's real IP: behind our proxy, the right-most address it added to
   `X-Forwarded-For`, and only for a request that really came through it.
 - **The city in English and a short country code**: `Dubai, UAE`,
   `Dhaka, BD`, `New York, USA`, `London, UK` (changed 2026-10-30, it was
   the city alone). The code is the two-letter ISO one, except `USA`, `UK`
-  and `UAE`. The city alone when the database knows no country for it, the
-  country's name (`United Arab Emirates`) when it has no city, and `null`
-  when it has neither: show the device name alone. Show it as it comes.
+  and `UAE`. In the UAE the city is the emirate (`Dubai`, `Abu Dhabi`,
+  `Sharjah`), never a district such as Motor City. The city alone when the
+  database knows no country for it, the country's name
+  (`United Arab Emirates`) when it has no city, and `null` when it has
+  neither: show the device name alone. Show it as it comes.
 - Looked up when the session starts, and again on a refresh or a
   `last_seen_at` update when the IP has changed since the last lookup. A
   phone on the same network causes no lookups.

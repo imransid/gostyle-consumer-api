@@ -96,6 +96,28 @@ PLACES = {
         "registered_country": {"iso_code": "EG", "names": {"en": "Egypt"}},
     },
     "185.93.1.7": {"city": {"names": {"en": "Fujairah"}}},
+    # As DB-IP City Lite has them: a district in brackets, and in the UAE a
+    # district as the city with the emirate as the subdivision.
+    "202.4.96.1": {
+        "city": {"names": {"en": "Dhaka (Gulshan)"}},
+        "country": {"iso_code": "BD", "names": {"en": "Bangladesh"}},
+        "subdivisions": [{"names": {"en": "Dhaka Division"}}],
+    },
+    "94.201.0.9": {
+        "city": {"names": {"en": "Motor City"}},
+        "country": EMIRATES,
+        "subdivisions": [{"names": {"en": "Dubai"}}],
+    },
+    "94.202.0.9": {
+        "city": {"names": {"en": "Al Ain"}},
+        "country": EMIRATES,
+        "subdivisions": [{"names": {"en": "Abu Dhabi"}}],
+    },
+    "94.203.0.9": {
+        "city": {"names": {"en": "Al Nakheel"}},
+        "country": EMIRATES,
+        "subdivisions": [{"names": {"en": "Raʼs al Khaymah"}}],
+    },
 }
 
 # simplejwt's own 401 for a token it cannot use, as this API sends it.
@@ -117,7 +139,7 @@ class FakeReader:
 
     def metadata(self):
         return SimpleNamespace(
-            database_type="GeoLite2-City", build_epoch=int(self.built.timestamp())
+            database_type="DBIP-City-Lite", build_epoch=int(self.built.timestamp())
         )
 
 
@@ -419,6 +441,14 @@ class LocationTests(SimpleTestCase):
         self.assertEqual(geoip.location("81.2.69.142"), "London, UK")
         self.assertEqual(geoip.location("94.200.14.31"), "Dubai, UAE")
 
+    def test_a_district_in_brackets_is_its_city(self):
+        self.assertEqual(geoip.location("202.4.96.1"), "Dhaka, BD")
+
+    def test_in_the_uae_the_emirate_is_the_city(self):
+        self.assertEqual(geoip.location("94.201.0.9"), "Dubai, UAE")
+        self.assertEqual(geoip.location("94.202.0.9"), "Abu Dhabi, UAE")
+        self.assertEqual(geoip.location("94.203.0.9"), "Ras Al Khaimah, UAE")
+
     def test_the_registered_country_when_there_is_no_other(self):
         self.assertEqual(geoip.location("41.33.0.1"), "Cairo, EG")
 
@@ -435,11 +465,11 @@ class NoGeoDatabaseTests(SimpleTestCase):
     def test_no_database_keeps_the_location(self):
         with override_settings(GEOIP_CITY_DB=""):
             self.assertIs(geoip.location("94.200.14.31"), geoip.KEEP)
-        with override_settings(GEOIP_CITY_DB="/nonexistent/GeoLite2-City.mmdb"):
+        with override_settings(GEOIP_CITY_DB="/nonexistent/dbip-city-lite.mmdb"):
             self.assertIs(geoip.location("94.200.14.31"), geoip.KEEP)
 
 
-@override_settings(PROXY_SECRET="s3cret", GEOIP_CITY_DB="/geoip/GeoLite2-City.mmdb")
+@override_settings(PROXY_SECRET="s3cret", GEOIP_CITY_DB="/geoip/dbip-city-lite.mmdb")
 class SessionLocationsCommandTests(SessionTestCase):
     """python manage.py session_locations: why there is no place, and
     --apply for the live sessions."""
@@ -459,7 +489,7 @@ class SessionLocationsCommandTests(SessionTestCase):
         self.sessions_at("94.200.14.31", "103.4.145.2")
         out = self.run_command()
         self.assertIn("PROXY_SECRET: set", out)
-        self.assertIn("GEOIP_CITY_DB: /geoip/GeoLite2-City.mmdb (GeoLite2-City, built ", out)
+        self.assertIn("GEOIP_CITY_DB: /geoip/dbip-city-lite.mmdb (DBIP-City-Lite, built ", out)
         self.assertIn("2 with a public IP (2 with a place), 0 with a private IP, 0 with none", out)
         self.assertIn("Would change (run with --apply): 2 location(s).", out)
         self.assertEqual(set(UserSession.objects.values_list("location", flat=True)), {"Dubai"})

@@ -30,7 +30,7 @@ from rest_framework.settings import api_settings as drf_settings
 from apps.accounts import geoip
 from apps.accounts.models import UserSession
 
-# MaxMind publishes weekly; older than this, the file is not being refreshed.
+# DB-IP publishes monthly; older than this, the file is not being refreshed.
 STALE = timedelta(days=45)
 
 
@@ -109,7 +109,7 @@ class Command(BaseCommand):
         built = datetime.fromtimestamp(meta.build_epoch, tz=dt_timezone.utc)
         self.stdout.write(f"GEOIP_CITY_DB: {path} ({meta.database_type}, built {built:%Y-%m-%d})")
         if timezone.now() - built > STALE:
-            self.warn("The GeoIP file is old: is the monthly geoipupdate cron running?")
+            self.warn("The GeoIP file is old: is the monthly scripts/update-geoip.sh cron running?")
         return True
 
     def warn(self, message):

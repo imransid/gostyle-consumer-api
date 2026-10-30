@@ -2,11 +2,13 @@
 The place an IP address is in, for a session's `location`: the city and a
 short country code ("Dubai, UAE", "Dhaka, BD").
 
-Read from a local MaxMind database (GeoLite2 City or GeoIP2 City) with
-MaxMind's own reader, so no request leaves the server and a lookup takes
-microseconds. The file is GEOIP_CITY_DB; with none, every lookup is KEEP and
-locations stay as they are (null for a new session). docs/DEVICE_SESSIONS_SERVER.md
-says how to put the file on the server and refresh it.
+Read from a local file: DB-IP's free "IP to City Lite" (no account, no key,
+nothing that can charge; CC BY 4.0, so the app credits DB-IP), opened with
+`maxminddb`, the open-source reader for its .mmdb format. No request leaves
+the server and a lookup takes microseconds. The file is GEOIP_CITY_DB; with
+none, every lookup is KEEP and locations stay as they are (null for a new
+session). scripts/update-geoip.sh downloads it, monthly;
+docs/DEVICE_SESSIONS_SERVER.md says how to set it up.
 
 City level only, on purpose: the list needs a place name, and that is all an
 IP address can honestly tell. The coordinates the file also holds are never
@@ -17,6 +19,7 @@ and a VPN shows the VPN's city.
 import ipaddress
 import logging
 import os
+import re
 import threading
 
 import maxminddb
@@ -30,6 +33,15 @@ KEEP = object()
 # The country after the city is its ISO 3166 two-letter code, except these,
 # which people know by another short name (Rafa, 2026-10-30).
 _SHORT_NAMES = {"US": "USA", "GB": "UK", "AE": "UAE"}
+
+# DB-IP names part of a city in brackets: "Dhaka (Gulshan)" is Dhaka.
+_DISTRICT = re.compile(r"\s*\(.*\)\s*$")
+
+# In the UAE DB-IP's city is often a district ("Bur Dubai", "Motor City",
+# "Jebel Ali"), while its first subdivision, the emirate, is always the
+# place people mean: Dubai, Abu Dhabi, Sharjah. One emirate comes spelled
+# two ways.
+_EMIRATE_NAMES = {"Raʼs al Khaymah": "Ras Al Khaimah"}
 
 _lock = threading.Lock()
 _reader = None
@@ -87,7 +99,12 @@ def _describe(record):
     # A few networks have only the country they are registered in.
     country = record.get("country") or record.get("registered_country") or {}
     code = country.get("iso_code")
+    if code == "AE":
+        subdivisions = record.get("subdivisions") or [{}]
+        emirate = subdivisions[0].get("names", {}).get("en")
+        city = _EMIRATE_NAMES.get(emirate, emirate) or city
     if city:
+        city = _DISTRICT.sub("", city) or city
         return f"{city}, {_SHORT_NAMES.get(code, code)}" if code else city
     return country.get("names", {}).get("en")
 

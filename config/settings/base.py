@@ -433,9 +433,9 @@ TWO_FACTOR_ENCRYPTION_KEY = env("TWO_FACTOR_ENCRYPTION_KEY", default="")
 # every session's IP is the socket address, which has no place.
 PROXY_SECRET = env("PROXY_SECRET", default="")
 
-# The MaxMind GeoLite2 City (or GeoIP2 City) .mmdb file a session's
-# location is read from (apps/accounts/geoip.py). Empty, or a file that is
-# not there: location stays null and nothing fails.
+# The DB-IP City Lite .mmdb file a session's location is read from
+# (apps/accounts/geoip.py; scripts/update-geoip.sh downloads it, free). Empty,
+# or a file that is not there: location stays null and nothing fails.
 # docs/DEVICE_SESSIONS_SERVER.md says how to install and refresh it.
 GEOIP_CITY_DB = env("GEOIP_CITY_DB", default="")
 CACHES = {
