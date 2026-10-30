@@ -434,7 +434,7 @@ def notify(user, sid, change):
     authenticator_add, authenticator_remove or sign_in_alerts_off) was just
     made, from the device and place of the
     session `sid`: "2-step verification was turned off for your Go Style
-    account on iPhone 15 in Dubai." Sent once the change is committed.
+    account on iPhone 15 in Dubai, UAE." Sent once the change is committed.
 
     Only to a verified email. A phone-only account gets no notice: WhatsApp
     needs an approved template for one, as for the contact change notice.

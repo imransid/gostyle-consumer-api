@@ -105,9 +105,12 @@ and never needs location permission for this screen.
 
 - The client's real IP: behind our proxy, the right-most address it added to
   `X-Forwarded-For`, and only for a request that really came through it.
-- The city name in English (`Dubai`). When the database has no city for the
-  address, the country (`United Arab Emirates`). When it has neither,
-  `null`, and you show the device name alone.
+- **The city in English and a short country code**: `Dubai, UAE`,
+  `Dhaka, BD`, `New York, USA`, `London, UK` (changed 2026-10-30, it was
+  the city alone). The code is the two-letter ISO one, except `USA`, `UK`
+  and `UAE`. The city alone when the database knows no country for it, the
+  country's name (`United Arab Emirates`) when it has no city, and `null`
+  when it has neither: show the device name alone. Show it as it comes.
 - Looked up when the session starts, and again on a refresh or a
   `last_seen_at` update when the IP has changed since the last lookup. A
   phone on the same network causes no lookups.
@@ -115,7 +118,7 @@ and never needs location permission for this screen.
   was. IPv6 works like IPv4.
 - City only. We never store the coordinates.
 - **Sometimes wrong**: carriers route through a few gateways, so a phone in
-  Sharjah may read Dubai, and a VPN shows the VPN's city.
+  Sharjah may read Dubai, UAE, and a VPN shows the VPN's city.
 
 ---
 
@@ -142,7 +145,7 @@ Authorization: Bearer <access_token>
       "os_version": "18.1",
       "app_version": "1.0.0",
       "ip_address": "94.200.14.31",
-      "location": "Dubai",
+      "location": "Dubai, UAE",
       "is_current": true,
       "created_at": "2026-10-20T09:12:44+04:00",
       "last_seen_at": "2026-10-27T11:58:03+04:00"
@@ -155,7 +158,7 @@ Authorization: Bearer <access_token>
       "os_version": "17.6",
       "app_version": "1.0.0",
       "ip_address": "94.200.18.7",
-      "location": "Dubai",
+      "location": "Dubai, UAE",
       "is_current": false,
       "created_at": "2026-10-02T18:40:10+04:00",
       "last_seen_at": "2026-10-24T21:15:37+04:00"
@@ -168,7 +171,7 @@ Authorization: Bearer <access_token>
       "os_version": null,
       "app_version": null,
       "ip_address": "86.98.44.120",
-      "location": "Abu Dhabi",
+      "location": "Abu Dhabi, UAE",
       "is_current": false,
       "created_at": "2026-10-08T12:03:51+04:00",
       "last_seen_at": "2026-10-13T16:22:09+04:00"
@@ -189,7 +192,7 @@ The page shape is the one `/bookings` uses. Everything comes in one page:
 | `os_version`   | string \| null  | From `X-OS-Version`.                                        |
 | `app_version`  | string \| null  | From `X-App-Version`. `null` for a browser.                 |
 | `ip_address`   | string \| null  | The last request's IP. Not shown today, kept for support.   |
-| `location`     | string \| null  | City, else country, else `null` (section 3).                |
+| `location`     | string \| null  | "City, CC", else city, else country, else `null` (section 3). |
 | `is_current`   | boolean         | `true` for exactly one session: the bearer token's own.     |
 | `created_at`   | ISO 8601        | When this device signed in. UAE time, `+04:00`.             |
 | `last_seen_at` | ISO 8601        | The last refresh or request, to the nearest 5 minutes. UAE time, `+04:00`. |
@@ -201,7 +204,7 @@ How the app reads a row, as in your brief:
 
 | Shown as        | From                                                                 |
 | --------------- | -------------------------------------------------------------------- |
-| Title           | `device_name · location` ("iPad · Dubai"); the name alone without a location |
+| Title           | `device_name · location` ("iPad · Dubai, UAE"); the name alone without a location |
 | Line under it   | "This device · active now" when `is_current`, else "Last active 3 days ago" from `last_seen_at` |
 | Icon            | phone for `phone`, tablet for `tablet`, browser for anything else    |
 | Sign Out        | every row except the current one                                     |

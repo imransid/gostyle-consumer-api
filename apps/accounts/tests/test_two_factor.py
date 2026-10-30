@@ -596,21 +596,21 @@ class NoticeTests(TwoFactorTestCase):
             two_factor.notify(self.account, sid, change)
 
     def test_names_the_device_and_place_it_was_done_from(self):
-        self.notify(self.session(device_name="iPhone 15", location="Dubai").pk)
+        self.notify(self.session(device_name="iPhone 15", location="Dubai, UAE").pk)
         (msg,) = mail.outbox
         self.assertEqual(msg.to, [EMAIL])
         self.assertEqual(msg.subject, "Go Style: 2-step verification turned off")
         self.assertEqual(
             msg.body,
             "2-step verification was turned off for your Go Style account"
-            " on iPhone 15 in Dubai.\n\n"
+            " on iPhone 15 in Dubai, UAE.\n\n"
             "If this was not you, reset your password and contact support straight away."
             "\n\nAutomated message from GoStyle. Replies to this address are not read.",
         )
         html, mimetype = msg.alternatives[0]
         self.assertEqual(mimetype, "text/html")
         self.assertIn("2-step verification turned off", html)  # the headline
-        self.assertIn("on iPhone 15 in Dubai.", html)
+        self.assertIn("on iPhone 15 in Dubai, UAE.", html)
 
     def test_each_change_says_what_it_was(self):
         sid = self.session(device_name="iPhone 15").pk
@@ -1072,7 +1072,7 @@ class TwoFactorSwitchApiTests(SecurityApiTestCase):
         return self.call("patch", "/two-factor", body, client)
 
     def test_turning_it_on(self):
-        UserSession.objects.update(location="Dubai")
+        UserSession.objects.update(location="Dubai, UAE")
         resp = self.switch(True, self.token(ON))
         self.assertEqual((resp.status_code, resp.json()), (200, {"two_factor_enabled": True}))
         self.account.refresh_from_db()
@@ -1083,7 +1083,7 @@ class TwoFactorSwitchApiTests(SecurityApiTestCase):
         self.assertEqual(session.two_factor_passed_at, self.now)
         (notice,) = mail.outbox
         self.assertEqual(notice.subject, "Go Style: 2-step verification turned on")
-        self.assertIn("for your Go Style account on iPhone 15 in Dubai.", notice.body)
+        self.assertIn("for your Go Style account on iPhone 15 in Dubai, UAE.", notice.body)
 
     def test_turning_it_off_leaves_the_authenticator(self):
         self.add_authenticator()
@@ -1122,7 +1122,7 @@ class TwoFactorSwitchApiTests(SecurityApiTestCase):
 
 class AuthenticatorApiTests(SecurityApiTestCase):
     def test_adding_one(self):
-        UserSession.objects.update(location="Dubai")
+        UserSession.objects.update(location="Dubai, UAE")
         token = self.token(ADD)
         resp = self.call("post", "/authenticator", {"verification_token": token, "purpose": ADD})
         self.assertEqual(resp.status_code, 201, resp.content)
@@ -1141,7 +1141,7 @@ class AuthenticatorApiTests(SecurityApiTestCase):
         self.assertEqual(notice.subject, "Go Style: authenticator app added")
         self.assertEqual(
             notice.body.split("\n")[0],
-            "An authenticator app was added to your Go Style account on iPhone 15 in Dubai.",
+            "An authenticator app was added to your Go Style account on iPhone 15 in Dubai, UAE.",
         )
 
     def test_starting_needs_a_token_for_adding(self):
@@ -1579,6 +1579,6 @@ class TwoFactorDocTests(SignInTestCase):
     def test_every_email_is_on_the_page(self):
         for subject, what in two_factor._NOTICES.values():
             with self.subTest(subject=subject):
-                self.assertIn(f"| {subject} | {what} on iPhone 15 in Dubai. |", self.text)
+                self.assertIn(f"| {subject} | {what} on iPhone 15 in Dubai, UAE. |", self.text)
         for subject in (two_factor.SECURITY_SUBJECT, two_factor.SIGN_IN_SUBJECT):
             self.assertIn(f'"{subject}"', self.text)

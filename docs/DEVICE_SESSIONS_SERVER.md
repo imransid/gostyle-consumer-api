@@ -82,7 +82,7 @@ On the host, as root:
    and add `PROXY_SECRET=<the value>` to `/root/gostyle-customer/stack.env`,
    or a stack deploy drops it.
 
-## 3. The GeoIP file (for "iPhone 15 · Dubai")
+## 3. The GeoIP file (for "iPhone 15 · Dubai, UAE")
 
 Free, from MaxMind. Once:
 
@@ -176,6 +176,38 @@ In the database:
 SELECT device_name, location, last_seen_at, ended_at
 FROM consumer.user_sessions ORDER BY created_at DESC LIMIT 10;
 ```
+
+## When location is null
+
+One command, inside the running api container, says why:
+
+```sh
+docker exec $(docker ps -q -f name=gostyle-consumer_api | head -1) python manage.py session_locations
+```
+
+It prints `NUM_PROXIES`, whether `PROXY_SECRET` is set, which GeoIP file
+it reads and how old it is, and how many live sessions have a public IP, a
+private one or none. It changes nothing. What it points at:
+
+- **`GEOIP_CITY_DB: not set`, or `cannot be read`**: step 3. The file must
+  be on the node and mounted (`ls -l /var/lib/GeoIP/`).
+- **`PROXY_SECRET: not set`, or sessions with a private IP** (10.x): the app
+  only sees Docker's own address, which has no place. Step 2: the nginx
+  snippet, the site's `include` of it, and the same value in
+  `PROXY_SECRET`.
+- **`The GeoIP file is old`**: the monthly `geoipupdate` cron (step 3).
+
+Once both are right, every live session gets its place by itself at its
+next refresh or `last_seen_at` update (5 minutes of use). To do it now, for
+every live session:
+
+```sh
+docker exec $(docker ps -q -f name=gostyle-consumer_api | head -1) python manage.py session_locations --apply
+```
+
+Since 2026-10-30 a place reads "Dubai, UAE" (city and short country code,
+docs/DEVICE_SESSIONS_API.md section 3). A session saved as "Dubai" before
+that is redone in the new words the same way.
 
 ## Rollback
 

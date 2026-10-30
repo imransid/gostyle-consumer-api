@@ -170,7 +170,7 @@ the 2-step emails:
 
 | Subject | Text |
 | --- | --- |
-| Go Style: sign-in alerts turned off | Sign-in alerts were turned off for your Go Style account on iPhone 15 in Dubai. If this was not you, reset your password and contact support straight away. |
+| Go Style: sign-in alerts turned off | Sign-in alerts were turned off for your Go Style account on iPhone 15 in Dubai, UAE. If this was not you, reset your password and contact support straight away. |
 
 The device and the place are the ones of the phone that turned them off, as
 the Sessions list names them. Turning alerts back on, or "off" when they
@@ -199,8 +199,8 @@ Sessions list does:
 
 | Way | To | What |
 | --- | --- | --- |
-| Email | The account's verified email | Subject "Go Style: new sign-in to your account". Text: "Your Go Style account was just signed in to on iPhone 15 in Dubai. If this was you, there is nothing to do. If not, change your password, sign that device out from Where you're signed in in the app's settings, and contact support straight away." |
-| Push | Every phone of the account registered for push | Title "New sign-in to your account". Body "Your Go Style account was just signed in to on iPhone 15 in Dubai. If this was not you, change your password." Data `type`: `new_sign_in`, `sessionId`: the new session's `id`, as in `GET /me/sessions`. |
+| Email | The account's verified email | Subject "Go Style: new sign-in to your account". Text: "Your Go Style account was just signed in to on iPhone 15 in Dubai, UAE. If this was you, there is nothing to do. If not, change your password, sign that device out from Where you're signed in in the app's settings, and contact support straight away." |
+| Push | Every phone of the account registered for push | Title "New sign-in to your account". Body "Your Go Style account was just signed in to on iPhone 15 in Dubai, UAE. If this was not you, change your password." Data `type`: `new_sign_in`, `sessionId`: the new session's `id`, as in `GET /me/sessions`. |
 
 - **With `sign_in_alerts` off, nothing is sent.**
 - No push when push is off in the notification preferences
@@ -208,7 +208,7 @@ Sessions list does:
 - The phone that just signed in has not registered for push yet as a rule,
   so it is the others that get the push. A phone still registered from an
   earlier sign-in may get it too.
-- No device name: "an unknown device". No place: the words "in Dubai" are
+- No device name: "an unknown device". No place: the words "in Dubai, UAE" are
   left out.
 - On tapping the push, Where you're signed in is the natural screen:
   `sessionId` is the row to show.

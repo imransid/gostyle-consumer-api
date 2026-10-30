@@ -11,10 +11,13 @@ import json
 import re
 from datetime import datetime, timedelta
 from datetime import timezone as dt_timezone
+from io import StringIO
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.conf import settings
 from django.core.cache import cache
+from django.core.management import call_command
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -65,16 +68,34 @@ CHROME = {
     "REMOTE_ADDR": "86.98.44.120",
 }
 
+EMIRATES = {"iso_code": "AE", "names": {"en": "United Arab Emirates"}}
 PLACES = {
     "94.200.14.31": {
         "city": {"names": {"en": "Dubai"}},
-        "country": {"names": {"en": "United Arab Emirates"}},
+        "country": EMIRATES,
         "location": {"latitude": 25.0657, "longitude": 55.17128},
     },
-    "94.200.18.7": {"city": {"names": {"en": "Dubai"}}},
-    "86.98.44.120": {"city": {"names": {"en": "Abu Dhabi"}}},
-    "5.195.0.1": {"country": {"names": {"en": "United Arab Emirates"}}},
-    "2001:8f8:1::1": {"city": {"names": {"en": "Sharjah"}}},
+    "94.200.18.7": {"city": {"names": {"en": "Dubai"}}, "country": EMIRATES},
+    "86.98.44.120": {"city": {"names": {"en": "Abu Dhabi"}}, "country": EMIRATES},
+    "5.195.0.1": {"country": EMIRATES},
+    "2001:8f8:1::1": {"city": {"names": {"en": "Sharjah"}}, "country": EMIRATES},
+    "103.4.145.2": {
+        "city": {"names": {"en": "Dhaka"}},
+        "country": {"iso_code": "BD", "names": {"en": "Bangladesh"}},
+    },
+    "23.20.0.1": {
+        "city": {"names": {"en": "New York"}},
+        "country": {"iso_code": "US", "names": {"en": "United States"}},
+    },
+    "81.2.69.142": {
+        "city": {"names": {"en": "London"}},
+        "country": {"iso_code": "GB", "names": {"en": "United Kingdom"}},
+    },
+    "41.33.0.1": {
+        "city": {"names": {"en": "Cairo"}},
+        "registered_country": {"iso_code": "EG", "names": {"en": "Egypt"}},
+    },
+    "185.93.1.7": {"city": {"names": {"en": "Fujairah"}}},
 }
 
 # simplejwt's own 401 for a token it cannot use, as this API sends it.
@@ -86,12 +107,18 @@ def sha256(text):
 
 
 class FakeReader:
-    def __init__(self):
+    def __init__(self, built=None):
         self.asked = []
+        self.built = built or timezone.now()
 
     def get(self, ip):
         self.asked.append(ip)
         return PLACES.get(ip)
+
+    def metadata(self):
+        return SimpleNamespace(
+            database_type="GeoLite2-City", build_epoch=int(self.built.timestamp())
+        )
 
 
 @override_settings(DEVICE_SESSIONS_V1=True)
@@ -199,7 +226,7 @@ class OpenTests(SessionTestCase):
             ("9F1C2B7E-3D4A-4C1F-8E2B-6A0D5C9B1E47", "iPhone 15", "phone", "ios"),
         )
         self.assertEqual((s.os_version, s.app_version, s.app_build), ("18.1", "1.0.0", "42"))
-        self.assertEqual((s.ip_address, s.location), ("94.200.14.31", "Dubai"))
+        self.assertEqual((s.ip_address, s.location), ("94.200.14.31", "Dubai, UAE"))
         self.assertEqual(s.refresh_token_hash, sha256(phone.tokens["refresh"]))
         self.assertIsNone(s.ended_at)
         # The outstanding token is the very string the app holds.
@@ -218,7 +245,8 @@ class OpenTests(SessionTestCase):
         self.assertEqual(resp.status_code, 201, resp.content)
         s = UserSession.objects.get(pk=AccessToken(resp.json()["access"])["sid"])
         self.assertEqual(
-            (s.device_name, s.platform, s.location), ("Galaxy S23 Ultra", "android", "Abu Dhabi")
+            (s.device_name, s.platform, s.location),
+            ("Galaxy S23 Ultra", "android", "Abu Dhabi, UAE"),
         )
 
     def test_a_new_sign_in_on_the_same_device_ends_the_old_one(self):
@@ -284,7 +312,7 @@ class TokenWithoutSessionTests(SessionTestCase):
         sid = AccessToken(tokens["access"])["sid"]
         self.assertEqual(RefreshToken(tokens["refresh"])["sid"], sid)
         s = UserSession.objects.get(pk=sid)
-        self.assertEqual((s.device_name, s.location), ("iPad", "Dubai"))
+        self.assertEqual((s.device_name, s.location), ("iPad", "Dubai, UAE"))
         self.assertEqual(s.refresh_token_hash, sha256(tokens["refresh"]))
 
         client = APIClient()
@@ -380,14 +408,23 @@ class LocationTests(SimpleTestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_city_then_country_then_none(self):
-        self.assertEqual(geoip.location("94.200.14.31"), "Dubai")
+    def test_city_and_country_code_then_city_then_country_then_none(self):
+        self.assertEqual(geoip.location("103.4.145.2"), "Dhaka, BD")
+        self.assertEqual(geoip.location("185.93.1.7"), "Fujairah")
         self.assertEqual(geoip.location("5.195.0.1"), "United Arab Emirates")
         self.assertIsNone(geoip.location("8.8.8.8"))
 
+    def test_usa_uk_and_uae_by_the_names_people_know(self):
+        self.assertEqual(geoip.location("23.20.0.1"), "New York, USA")
+        self.assertEqual(geoip.location("81.2.69.142"), "London, UK")
+        self.assertEqual(geoip.location("94.200.14.31"), "Dubai, UAE")
+
+    def test_the_registered_country_when_there_is_no_other(self):
+        self.assertEqual(geoip.location("41.33.0.1"), "Cairo, EG")
+
     def test_ipv6_and_mapped_ipv4(self):
-        self.assertEqual(geoip.location("2001:8f8:1::1"), "Sharjah")
-        self.assertEqual(geoip.location("::ffff:94.200.14.31"), "Dubai")
+        self.assertEqual(geoip.location("2001:8f8:1::1"), "Sharjah, UAE")
+        self.assertEqual(geoip.location("::ffff:94.200.14.31"), "Dubai, UAE")
 
     def test_private_and_reserved_addresses_are_not_looked_up(self):
         for ip in ("10.1.2.3", "192.168.1.9", "127.0.0.1", "::1", "fc00::1", "100.64.0.1", "junk"):
@@ -400,6 +437,74 @@ class NoGeoDatabaseTests(SimpleTestCase):
             self.assertIs(geoip.location("94.200.14.31"), geoip.KEEP)
         with override_settings(GEOIP_CITY_DB="/nonexistent/GeoLite2-City.mmdb"):
             self.assertIs(geoip.location("94.200.14.31"), geoip.KEEP)
+
+
+@override_settings(PROXY_SECRET="s3cret", GEOIP_CITY_DB="/geoip/GeoLite2-City.mmdb")
+class SessionLocationsCommandTests(SessionTestCase):
+    """python manage.py session_locations: why there is no place, and
+    --apply for the live sessions."""
+
+    def run_command(self, *args):
+        out = StringIO()
+        call_command("session_locations", *args, stdout=out)
+        return out.getvalue()
+
+    def sessions_at(self, *ips):
+        for ip in ips:
+            UserSession.objects.create(
+                user=self.account, refresh_token_hash=ip, ip_address=ip, location="Dubai"
+            )
+
+    def test_says_what_is_set_and_changes_nothing_by_default(self):
+        self.sessions_at("94.200.14.31", "103.4.145.2")
+        out = self.run_command()
+        self.assertIn("PROXY_SECRET: set", out)
+        self.assertIn("GEOIP_CITY_DB: /geoip/GeoLite2-City.mmdb (GeoLite2-City, built ", out)
+        self.assertIn("2 with a public IP (2 with a place), 0 with a private IP, 0 with none", out)
+        self.assertIn("Would change (run with --apply): 2 location(s).", out)
+        self.assertEqual(set(UserSession.objects.values_list("location", flat=True)), {"Dubai"})
+
+    def test_apply_writes_todays_words_to_live_sessions_only(self):
+        self.sessions_at("94.200.14.31", "103.4.145.2", "8.8.8.8", "10.0.0.7")
+        UserSession.objects.create(
+            user=self.account,
+            refresh_token_hash="ended",
+            ip_address="23.20.0.1",
+            location="New York",
+            ended_at=timezone.now(),
+        )
+        out = self.run_command("--apply")
+        self.assertIn("Changed: 3 location(s).", out)
+        self.assertEqual(
+            dict(UserSession.objects.values_list("ip_address", "location")),
+            {
+                "94.200.14.31": "Dubai, UAE",
+                "103.4.145.2": "Dhaka, BD",
+                "8.8.8.8": None,  # no place for it
+                "10.0.0.7": "Dubai",  # private: kept
+                "23.20.0.1": "New York",  # ended: not listed, left alone
+            },
+        )
+
+    def test_a_private_ip_points_at_the_proxy_secret(self):
+        self.sessions_at("10.0.0.7")
+        out = self.run_command()
+        self.assertIn("1 with a private IP", out)
+        self.assertIn("the app is not getting the client's real IP", out)
+
+    @override_settings(PROXY_SECRET="", GEOIP_CITY_DB="")
+    def test_nothing_set_says_so_and_looks_nothing_up(self):
+        with patch.object(geoip, "_current_reader", return_value=None):
+            self.sessions_at("94.200.14.31")
+            out = self.run_command("--apply")
+        self.assertIn("PROXY_SECRET: not set", out)
+        self.assertIn("GEOIP_CITY_DB: not set. No session gets a place", out)
+        self.assertNotIn("Changed", out)
+        self.assertEqual(UserSession.objects.get().location, "Dubai")
+
+    def test_an_old_file_is_pointed_out(self):
+        self.reader.built = timezone.now() - timedelta(days=60)
+        self.assertIn("The GeoIP file is old", self.run_command())
 
 
 class ListTests(SessionTestCase):
@@ -638,7 +743,7 @@ class RefreshTests(SessionTestCase):
 
         after = UserSession.objects.get(pk=before.pk)
         self.assertEqual((after.app_version, after.app_build), ("1.1.0", "45"))
-        self.assertEqual((after.ip_address, after.location), ("86.98.44.120", "Abu Dhabi"))
+        self.assertEqual((after.ip_address, after.location), ("86.98.44.120", "Abu Dhabi, UAE"))
         self.assertEqual(after.refresh_token_hash, sha256(tokens["refresh"]))
         self.assertGreater(after.last_seen_at, timezone.now() - timedelta(minutes=1))
         self.assertEqual(UserSession.objects.count(), 1)
@@ -722,6 +827,18 @@ class LastSeenTests(SessionTestCase):
         cache.delete(sessions._CACHE_KEY.format(sid))
         UserSession.objects.filter(pk=sid).update(last_seen_at=timezone.now() - timedelta(minutes=6))
 
+    def test_a_place_in_the_old_words_is_redone_on_the_same_ip(self):
+        phone = self.login()
+        sid = self.sid(phone)
+        # As a session from before "Dubai, UAE": its place and its lookup
+        # remembered under the old cache name.
+        UserSession.objects.filter(pk=sid).update(location="Dubai")
+        cache.delete(sessions._GEO_KEY.format(sid))
+        cache.set(f"consumer-session-geo:{sid}", "94.200.14.31")
+        self.five_minutes_later(sid)
+        phone.get("/api/v1/auth/me")
+        self.assertEqual(UserSession.objects.get(pk=sid).location, "Dubai, UAE")
+
     def test_ip_address_is_the_last_requests_ip(self):
         phone = self.login()
         phone.get("/api/v1/auth/me")  # caches "live"
@@ -739,12 +856,14 @@ class LastSeenTests(SessionTestCase):
         self.reconnect(phone, REMOTE_ADDR="86.98.44.120")
         phone.get("/api/v1/auth/me")
         s = UserSession.objects.get(pk=sid)
-        self.assertEqual((s.ip_address, s.location, self.reader.asked), ("86.98.44.120", "Dubai", []))
+        self.assertEqual(
+            (s.ip_address, s.location, self.reader.asked), ("86.98.44.120", "Dubai, UAE", [])
+        )
 
         self.five_minutes_later(sid)
         phone.get("/api/v1/auth/me")
         self.assertEqual(self.reader.asked, ["86.98.44.120"])
-        self.assertEqual(UserSession.objects.get(pk=sid).location, "Abu Dhabi")
+        self.assertEqual(UserSession.objects.get(pk=sid).location, "Abu Dhabi, UAE")
 
         # The same network again: no lookup.
         self.five_minutes_later(sid)
@@ -758,7 +877,7 @@ class LastSeenTests(SessionTestCase):
         self.five_minutes_later(sid)
         phone.get("/api/v1/auth/me")
         s = UserSession.objects.get(pk=sid)
-        self.assertEqual((s.ip_address, s.location), ("192.168.1.20", "Dubai"))
+        self.assertEqual((s.ip_address, s.location), ("192.168.1.20", "Dubai, UAE"))
 
         # Back on the first network: the IP of the last lookup, so none.
         self.reader.asked.clear()

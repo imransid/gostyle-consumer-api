@@ -35,7 +35,7 @@ NOTICE_TEMPLATES = {
         "Go Style: 2-step verification turned off",
         "2-step verification turned off",
         "2-step verification was turned off for your Go Style account on "
-        "iPhone 15 in Dubai.\n\n"
+        "iPhone 15 in Dubai, UAE.\n\n"
         "If this was not you, reset your password and contact support straight away.",
     ),
     "notice_deletion_scheduled": (
@@ -66,7 +66,7 @@ NOTICE_TEMPLATES = {
     "notice_new_sign_in": (
         "Go Style: new sign-in to your account",
         "New sign-in to your account",
-        "Your Go Style account was just signed in to on Galaxy S23 Ultra in Dubai.\n\n"
+        "Your Go Style account was just signed in to on Galaxy S23 Ultra in Dubai, UAE.\n\n"
         "If this was you, there is nothing to do. If not, change your "
         "password, sign that device out from Where you're signed in in the "
         "app's settings, and contact support straight away.",
