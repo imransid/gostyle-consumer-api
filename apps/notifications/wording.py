@@ -111,6 +111,18 @@ def _booking(params):
 def _confirmed(params):
     code, at, when, data, _card = _booking(params)
     on = f" on {when}" if when else ""
+    # One item for a whole routine or party (booking-api keys it so).
+    if params.get("series_id"):
+        visits = params.get("visits") or ""
+        many = f"{visits} visits, " if visits.isdigit() and int(visits) > 1 else ""
+        starting = f"starting {when}" if when else "starting soon"
+        data["seriesId"] = params["series_id"]
+        return Words(
+            "Routine confirmed", f"Your routine{at} is confirmed: {many}{starting}.", data
+        )
+    if params.get("group_id"):
+        data["groupId"] = params["group_id"]
+        return Words("Booking confirmed", f"Your group booking{at}{on} is confirmed.", data)
     return Words("Booking confirmed", f"Your booking {code}{at}{on} is confirmed.", data)
 
 
@@ -138,7 +150,27 @@ def _reminder(params):
     )
 
 
+def _check_in(params):
+    """A desk's answer to "I am here". booking-api writes these words itself
+    (they can name a member of the customer's party, whom only it can
+    find), so they arrive as `title` and `body`."""
+    title = (params.get("title") or "").strip()
+    body = (params.get("body") or "").strip()
+    if not title or not body:
+        raise CannotWrite("a check-in answer needs its title and body")
+    code, _at, _when, data, _card = _booking(params)
+    # The keys the check-in push carried before the center, which the app
+    # in customers' hands reads.
+    data.update(
+        {"code": code, "requestId": params.get("request_id"), "groupId": params.get("group_id")}
+    )
+    return Words(title, body, data)
+
+
 _WRITERS = {
+    "check_in.approved": _check_in,
+    "check_in.rejected": _check_in,
+    "check_in.expired": _check_in,
     "booking.confirmed": _confirmed,
     "booking.rescheduled": _rescheduled,
     "booking.cancelled": _cancelled,

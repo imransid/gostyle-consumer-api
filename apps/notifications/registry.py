@@ -53,9 +53,17 @@ KINDS = {
     "booking.confirmed": Kind(Category.ORDERS, (PUSH, EMAIL), "booking_confirmation"),
     "booking.rescheduled": Kind(Category.ORDERS, (PUSH, EMAIL), "booking_changes"),
     "booking.cancelled": Kind(Category.ORDERS, (PUSH, EMAIL), "booking_changes"),
-    "check_in.approved": Kind(Category.ORDERS, (PUSH,), None),
-    "check_in.rejected": Kind(Category.ORDERS, (PUSH,), None),
-    "check_in.expired": Kind(Category.ORDERS, (PUSH,), None),
+    # push_type: the type the check-in push had before the center, which
+    # the app in customers' hands reads.
+    "check_in.approved": Kind(
+        Category.ORDERS, (PUSH,), None, push_type="check_in_request.approved"
+    ),
+    "check_in.rejected": Kind(
+        Category.ORDERS, (PUSH,), None, push_type="check_in_request.rejected"
+    ),
+    "check_in.expired": Kind(
+        Category.ORDERS, (PUSH,), None, push_type="check_in_request.expired"
+    ),
     "booking.reminder": Kind(Category.UPDATES, (PUSH, EMAIL), "appointment_reminder"),
     # Money.
     "payment.completed": Kind(Category.PAYMENTS, (PUSH, EMAIL), None),

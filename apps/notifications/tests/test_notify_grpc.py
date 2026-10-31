@@ -243,3 +243,107 @@ class ReminderWordsTests(TestCase):
                 _context(),
             )
         self.assertEqual(caught.exception.code, grpc.StatusCode.INVALID_ARGUMENT)
+
+
+@override_settings(INTERNAL_GRPC_KEY="k-123", PUSH_API_KEY="")
+class CheckInWordsTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(phone="+971500000903", password="x")
+
+    def notify(self, answer="approved", **params):
+        fields = {
+            "consumer_id": str(self.user.pk),
+            "type": f"check_in.{answer}",
+            "dedupe_key": f"check_in:req-1:{answer}",
+            "params": {
+                "booking_id": BOOKING,
+                "booking_code": "GS-1483",
+                "branch_id": BRANCH,
+                "start_at": "2026-11-02T07:30:00.000Z",
+                "request_id": "req-1",
+                "title": "You are checked in",
+                "body": "Welcome! Booking GS-1483.",
+                **params,
+            },
+            "target_type": "booking",
+            "target_id": BOOKING,
+            "source": "booking-api",
+        }
+        with mock.patch("apps.grpc_gen.servicer.close_old_connections"), mock.patch(
+            "apps.notifications.wording.salon_cards_for_refs", return_value={BRANCH: DEMO}
+        ):
+            return CustomerNotificationsServicer().Notify(pb.NotifyRequest(**fields), _context())
+
+    def test_kept_in_booking_apis_words_in_the_orders_tab(self):
+        reply = self.notify()
+        row = Notification.objects.get(pk=reply.notification_id)
+        self.assertEqual((row.title, row.body), ("You are checked in", "Welcome! Booking GS-1483."))
+        self.assertEqual(row.category, "orders")
+        self.assertEqual(row.data["requestId"], "req-1")
+        self.assertEqual(row.data["code"], "GS-1483")
+        self.assertEqual(list(row.deliveries.values_list("channel", flat=True)), ["push"])
+
+    def test_the_push_keeps_the_type_and_keys_the_app_already_reads(self):
+        from apps.notifications.senders import push_data
+
+        reply = self.notify(group_id="g-1")
+        data = push_data(Notification.objects.get(pk=reply.notification_id))
+        self.assertEqual(data["type"], "check_in_request.approved")
+        for key in ("bookingId", "code", "requestId", "groupId"):
+            self.assertIn(key, data)
+
+    def test_not_silenced_by_booking_changes(self):
+        NotificationPreference.objects.create(account=self.user, booking_changes=False)
+        reply = self.notify("rejected", title="Please speak to the desk", body="The salon could not confirm your arrival. Booking GS-1483.")
+        self.assertTrue(Notification.objects.get(pk=reply.notification_id).deliveries.exists())
+
+    def test_without_its_words_it_is_refused(self):
+        with self.assertRaises(_Aborted) as caught:
+            self.notify(title="")
+        self.assertEqual(caught.exception.code, grpc.StatusCode.INVALID_ARGUMENT)
+
+
+@override_settings(INTERNAL_GRPC_KEY="k-123", PUSH_API_KEY="")
+class RoutineAndPartyWordsTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(phone="+971500000904", password="x")
+
+    def confirm(self, key, **params):
+        fields = {
+            "consumer_id": str(self.user.pk),
+            "type": "booking.confirmed",
+            "dedupe_key": key,
+            "params": {
+                "booking_id": BOOKING,
+                "booking_code": "GS-1490",
+                "branch_id": BRANCH,
+                "start_at": "2026-11-02T07:00:00.000Z",
+                **params,
+            },
+            "target_type": "booking",
+            "target_id": BOOKING,
+            "source": "booking-api",
+        }
+        with mock.patch("apps.grpc_gen.servicer.close_old_connections"), mock.patch(
+            "apps.notifications.wording.salon_cards_for_refs", return_value={BRANCH: DEMO}
+        ):
+            reply = CustomerNotificationsServicer().Notify(pb.NotifyRequest(**fields), _context())
+        return reply, Notification.objects.get(pk=reply.notification_id)
+
+    def test_a_routine_is_one_item_with_its_first_visit_and_count(self):
+        _, row = self.confirm("booking.confirmed:series:ser-1", series_id="ser-1", visits="4")
+        self.assertEqual(row.title, "Routine confirmed")
+        self.assertEqual(
+            row.body,
+            "Your routine at Demo Salon & Spa is confirmed: 4 visits, starting Mon 2 Nov at 11:00 AM.",
+        )
+        self.assertEqual(row.data["seriesId"], "ser-1")
+        again, _ = self.confirm("booking.confirmed:series:ser-1", series_id="ser-1", visits="4")
+        self.assertEqual(again.outcome, Reply.DUPLICATE)
+
+    def test_a_party_is_one_item(self):
+        _, row = self.confirm("booking.confirmed:group:g-1", group_id="g-1")
+        self.assertEqual(
+            row.body, "Your group booking at Demo Salon & Spa on Mon 2 Nov at 11:00 AM is confirmed."
+        )
+        self.assertEqual(row.data["groupId"], "g-1")
