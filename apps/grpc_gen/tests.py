@@ -111,7 +111,12 @@ class ConsumerContactTests(SimpleTestCase):
             return reply, accounts, preferences, reap
 
     def test_an_account_with_a_verified_email_and_preferences(self):
-        prefs = mock.Mock(appointment_reminder=True, push=False)
+        prefs = mock.Mock(
+            appointment_reminder=True,
+            push=False,
+            booking_confirmation=True,
+            booking_changes=True,
+        )
         reply, accounts, _, _ = self.ask(account=_account(), prefs=prefs)
 
         self.assertTrue(reply.found)
@@ -136,9 +141,34 @@ class ConsumerContactTests(SimpleTestCase):
         reply, _, preferences, _ = self.ask(account=_account(), prefs=None)
         self.assertTrue(reply.appointment_reminder)
         self.assertTrue(reply.push_enabled)
+        self.assertTrue(reply.booking_confirmation)
+        self.assertTrue(reply.booking_changes)
         # filter().first(), never for_account()/get_or_create: no row written.
         preferences.for_account.assert_not_called()
         preferences.objects.get_or_create.assert_not_called()
+
+    def test_booking_switches_are_answered_and_present_even_when_off(self):
+        prefs = mock.Mock(
+            appointment_reminder=True,
+            push=True,
+            booking_confirmation=False,
+            booking_changes=True,
+        )
+        reply, *_ = self.ask(account=_account(), prefs=prefs)
+        self.assertFalse(reply.booking_confirmation)
+        self.assertTrue(reply.booking_changes)
+        # Presence is the point of `optional`: a false that is on the wire is
+        # an answer, a missing one means an older customer-api.
+        self.assertTrue(reply.HasField("booking_confirmation"))
+        self.assertTrue(reply.HasField("booking_changes"))
+        wire = type(reply).FromString(reply.SerializeToString())
+        self.assertTrue(wire.HasField("booking_confirmation"))
+        self.assertFalse(wire.booking_confirmation)
+
+    def test_no_such_customer_leaves_the_booking_switches_unset(self):
+        reply, *_ = self.ask(account=None)
+        self.assertFalse(reply.HasField("booking_confirmation"))
+        self.assertFalse(reply.HasField("booking_changes"))
 
     def test_no_such_customer_is_an_answer_not_an_error(self):
         reply, *_ = self.ask(account=None)

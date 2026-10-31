@@ -31,4 +31,11 @@ message ConsumerContact {
   bool appointment_reminder = 7;
   // NotificationPreference.push, the master switch, default true.
   bool push_enabled = 8;
+  // NotificationPreference.booking_confirmation and .booking_changes, both
+  // default true. `optional`, unlike the two above, so a caller can tell an
+  // answered false from a customer-api too old to send them: plain proto3
+  // leaves false off the wire, and a missing switch read as "off" would
+  // silence pushes after a rollback.
+  optional bool booking_confirmation = 9;
+  optional bool booking_changes = 10;
 }
