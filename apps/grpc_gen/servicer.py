@@ -1,5 +1,6 @@
 import hmac
 import uuid
+from datetime import datetime
 
 import grpc
 from django.conf import settings
@@ -9,6 +10,8 @@ from rest_framework_simplejwt.tokens import AccessToken
 
 from apps.accounts import sessions
 from apps.accounts.models import ConsumerAccount, NotificationPreference
+from apps.notifications import registry, wording
+from apps.notifications.service import notify
 
 from . import (
     auth_pb2,
@@ -208,6 +211,12 @@ class CustomerNotificationsServicer(customer_notifications_pb2_grpc.CustomerNoti
     every customer with a visit coming up, whether they want a reminder and
     how long before. It keeps no copy, so a change in the app counts from
     its next tick.
+
+    Notify: booking-api hands over one thing that happened to a customer
+    (a booking confirmed, moved, cancelled). It is kept in their
+    Notification Center and its alerts are queued by their switches
+    (apps/notifications/service.notify); the worker sends them. Safe to
+    repeat: booking-api retries until it hears back.
     """
 
     def GetReminderLeads(self, request, context):
@@ -259,3 +268,72 @@ class CustomerNotificationsServicer(customer_notifications_pb2_grpc.CustomerNoti
                 else _PREFERENCE_DEFAULTS["reminder_lead_minutes"]
             )
         return reply
+
+    def Notify(self, request, context):
+        if not _presented_key_ok(context):
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "missing or wrong x-internal-key")
+
+        close_old_connections()
+        try:
+            return self._notify(request, context)
+        finally:
+            close_old_connections()
+
+    def _notify(self, request, context):
+        Reply = customer_notifications_pb2.NotifyReply
+        # A producer bug is INVALID_ARGUMENT: the caller gives up rather
+        # than retrying something that can never work.
+        if request.type not in registry.KINDS:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"unknown type {request.type!r}")
+        if not request.dedupe_key:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "dedupe_key is required")
+        occurred_at = _instant(request.occurred_at, "occurred_at", context)
+        deliver_by = _instant(request.deliver_by, "deliver_by", context)
+        try:
+            words = wording.words_for(request.type, dict(request.params))
+        except wording.CannotWrite as e:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
+
+        # Answered, not raised, like GetConsumerContact: an id that is not
+        # one, or no active account, is a customer we cannot tell.
+        try:
+            consumer_id = uuid.UUID(request.consumer_id)
+        except ValueError:
+            return Reply(outcome=Reply.NOT_FOUND)
+        account = ConsumerAccount.objects.filter(id=consumer_id, is_active=True).first()
+        if account is None:
+            return Reply(outcome=Reply.NOT_FOUND)
+
+        out = notify(
+            account,
+            request.type,
+            dedupe_key=request.dedupe_key,
+            title=words.title,
+            body=words.body,
+            data=words.data,
+            target_type=request.target_type or None,
+            target_id=request.target_id or None,
+            occurred_at=occurred_at,
+            deliver_by=deliver_by,
+            source=request.source or "unknown",
+        )
+        if out.notification is None:
+            return Reply(outcome=Reply.SUPPRESSED)
+        return Reply(
+            outcome=Reply.ACCEPTED if out.created else Reply.DUPLICATE,
+            notification_id=str(out.notification.pk),
+        )
+
+
+def _instant(raw, field, context):
+    """An RFC 3339 time with its offset, None when empty, else the call is
+    refused."""
+    if not raw:
+        return None
+    try:
+        at = datetime.fromisoformat(raw)
+    except ValueError:
+        at = None
+    if at is None or at.tzinfo is None:
+        context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"{field} {raw!r} is not an RFC 3339 time")
+    return at

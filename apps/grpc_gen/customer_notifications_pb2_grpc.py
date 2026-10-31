@@ -45,6 +45,11 @@ class CustomerNotificationsStub:
                 request_serializer=customer__notifications__pb2.GetReminderLeadsRequest.SerializeToString,
                 response_deserializer=customer__notifications__pb2.GetReminderLeadsReply.FromString,
                 _registered_method=True)
+        self.Notify = channel.unary_unary(
+                '/gostyle.consumer.v1.CustomerNotifications/Notify',
+                request_serializer=customer__notifications__pb2.NotifyRequest.SerializeToString,
+                response_deserializer=customer__notifications__pb2.NotifyReply.FromString,
+                _registered_method=True)
 
 
 class CustomerNotificationsServicer:
@@ -64,6 +69,15 @@ class CustomerNotificationsServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Notify(self, request, context):
+        """Hand one notification to the Notification Center: it is kept, and its
+        alerts are queued by the customer's switches. Safe to repeat: the same
+        dedupe_key for the same customer is one notification.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_CustomerNotificationsServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -71,6 +85,11 @@ def add_CustomerNotificationsServicer_to_server(servicer, server):
                     servicer.GetReminderLeads,
                     request_deserializer=customer__notifications__pb2.GetReminderLeadsRequest.FromString,
                     response_serializer=customer__notifications__pb2.GetReminderLeadsReply.SerializeToString,
+            ),
+            'Notify': grpc.unary_unary_rpc_method_handler(
+                    servicer.Notify,
+                    request_deserializer=customer__notifications__pb2.NotifyRequest.FromString,
+                    response_serializer=customer__notifications__pb2.NotifyReply.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -106,6 +125,33 @@ class CustomerNotifications:
             '/gostyle.consumer.v1.CustomerNotifications/GetReminderLeads',
             customer__notifications__pb2.GetReminderLeadsRequest.SerializeToString,
             customer__notifications__pb2.GetReminderLeadsReply.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Notify(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gostyle.consumer.v1.CustomerNotifications/Notify',
+            customer__notifications__pb2.NotifyRequest.SerializeToString,
+            customer__notifications__pb2.NotifyReply.FromString,
             options,
             channel_credentials,
             insecure,

@@ -47,7 +47,10 @@ def channels_for(kind, account, prefs):
 
 def _channel_on(channel, account, prefs):
     if channel == NotificationDelivery.Channel.PUSH:
-        return bool(settings.PUSH_API_KEY) and preference(prefs, "push")
+        # Not PUSH_API_KEY: this runs in the api and the grpc process, and
+        # only the worker, which sends, needs the key. Without it the worker
+        # skips the row (push_not_configured).
+        return preference(prefs, "push")
     if channel == NotificationDelivery.Channel.EMAIL:
         # Only a verified address: an unverified one may be a typo, and
         # somebody else's inbox.
