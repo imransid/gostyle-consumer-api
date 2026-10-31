@@ -23,6 +23,9 @@ VERIFY_PER_IP_HOURLY = 20
 # user lookup limits.
 LOOKUP_PER_ACCOUNT_DAILY = 20
 
+# Notification Center "mark all read" (apps/notifications).
+READ_ALL_PER_ACCOUNT_MINUTE = 30
+
 
 def _too_generic():
     # The wording never depends on the destination or on account existence, so
@@ -73,3 +76,9 @@ def enforce_user_lookup(account_id):
     # so an account costs a proven phone or email; an IP costs nothing to
     # change and is shared by everyone behind the same carrier NAT.
     _bump(f"lookup:acct:day:{account_id}", LOOKUP_PER_ACCOUNT_DAILY, DAY)
+
+
+def enforce_notifications_read_all(account_id):
+    # Cheap and idempotent, but a loop in the app should not be able to
+    # rewrite the same rows forever.
+    _bump(f"notif:readall:acct:min:{account_id}", READ_ALL_PER_ACCOUNT_MINUTE, 60)

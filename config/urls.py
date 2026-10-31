@@ -11,6 +11,8 @@ urlpatterns = [
     path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="docs"),
     path("api/v1/", include("apps.salons.urls")),
     path("api/v1/", include("apps.uploads.urls")),
+    # After apps.accounts, whose notifications/preferences must match first.
+    path("api/v1/", include("apps.notifications.urls")),
 ]
 
 # Local dev only: serve uploaded files from MEDIA_ROOT. static() returns

@@ -322,7 +322,37 @@ def send_new_sign_in_push(account, session):
     Not when the account has push off (/notifications/preferences), nor
     while PUSH_API_KEY is unset. A push that fails is logged and swallowed:
     the sign-in has happened, and must not fail for it.
+
+    With NOTIFICATION_CENTER_V1 on, it is kept in the Notification Center
+    instead, and the notification worker sends the push by the same rules.
     """
+    device = session.device_name or "an unknown device"
+    place = f" in {session.location}" if session.location else ""
+    title = "New sign-in to your account"
+    message = (
+        f"Your Go Style account was just signed in to on {device}{place}. "
+        "If this was not you, change your password."
+    )
+    if settings.NOTIFICATION_CENTER_V1:
+        # Imported here: apps.notifications imports this app's models,
+        # which import this module.
+        from apps.notifications.service import notify
+
+        try:
+            notify(
+                account,
+                "account.new_sign_in",
+                dedupe_key=f"new-sign-in:{session.pk}",
+                title=title,
+                body=message,
+                data={"sessionId": session.pk},
+                target_type="session",
+                target_id=session.pk,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("new sign-in notification not kept: %s", e)
+        return
+
     if not settings.PUSH_API_KEY:
         return
     # Imported here: models imports this module.
@@ -331,17 +361,12 @@ def send_new_sign_in_push(account, session):
     prefs = NotificationPreference.objects.filter(account=account).first()
     if prefs is not None and not prefs.push:
         return
-    device = session.device_name or "an unknown device"
-    place = f" in {session.location}" if session.location else ""
     try:
         status_code, body = push_api.send_to_user(
             user_id=account.pk,
             event_id=f"new-sign-in:{session.pk}",
-            title="New sign-in to your account",
-            body=(
-                f"Your Go Style account was just signed in to on {device}{place}. "
-                "If this was not you, change your password."
-            ),
+            title=title,
+            body=message,
             data={"type": "new_sign_in", "sessionId": str(session.pk)},
         )
     except Exception as e:  # noqa: BLE001

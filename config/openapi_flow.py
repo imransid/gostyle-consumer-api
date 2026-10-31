@@ -217,10 +217,17 @@ FLOW = (
     (
         "15. Notifications",
         "Choose which alerts the customer receives. Push is the master "
-        "switch: turning it off keeps the other choices as they were.",
+        "switch: turning it off keeps the other choices as they were. The "
+        "Notification Center lists what the customer was told "
+        "(NOTIFICATION_CENTER_V1).",
         (
             ("GET", "/api/v1/notifications/preferences", "Get notification preferences"),
             ("PATCH", "/api/v1/notifications/preferences", "Change some notification preferences"),
+            ("GET", "/api/v1/notifications", "My notifications, newest first (one tab, or all)"),
+            ("GET", "/api/v1/notifications/unread-count", "How many are unread, in all and per tab"),
+            ("GET", "/api/v1/notifications/{notification_id}", "One notification"),
+            ("POST", "/api/v1/notifications/{notification_id}/read", "Mark one read"),
+            ("POST", "/api/v1/notifications/read-all", "Mark all read (one tab, or all)"),
         ),
     ),
 

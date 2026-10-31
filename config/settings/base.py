@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     "apps.booking_data",
     "apps.review_data",
     "apps.push_data",
+    "apps.notifications",
 ]
 
 MIDDLEWARE = [
@@ -420,6 +421,14 @@ DEVICE_SESSIONS_V1 = env.bool("DEVICE_SESSIONS_V1", default=False)
 # OFF (either one), the new routes are 404 and login is what it was, even for
 # an account that turned 2-step on while it was ON.
 TWO_FACTOR_V1 = env.bool("TWO_FACTOR_V1", default=False)
+
+# The Notification Center (docs/NOTIFICATION_CENTER_API.md): GET
+# /notifications and its read, read-all and unread-count calls, and the
+# sign-in alert's push going through it (kept in the center, sent by the
+# notification_worker service). OFF, those routes are 404 and the sign-in
+# push goes straight to the push service, as before. Turn it on only where
+# the worker runs, or items are kept but no push goes out.
+NOTIFICATION_CENTER_V1 = env.bool("NOTIFICATION_CENTER_V1", default=False)
 
 # The key authenticator secrets are encrypted with (AES-GCM): 32 random bytes,
 # base64. docs/TWO_FACTOR_SERVER.md says how to make one. Empty or not a key:

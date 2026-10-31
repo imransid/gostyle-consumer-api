@@ -104,6 +104,8 @@ services:
       TWO_FACTOR_V1: ${TWO_FACTOR_V1:-False}
       # The authenticator secrets' key. The value lives in stack.env.
       TWO_FACTOR_ENCRYPTION_KEY: ${TWO_FACTOR_ENCRYPTION_KEY:-}
+      # The Notification Center. Turn on only while the worker service runs.
+      NOTIFICATION_CENTER_V1: ${NOTIFICATION_CENTER_V1:-False}
 
       # Sessions' location from the IP (docs/DEVICE_SESSIONS_SERVER.md).
       # Empty: location stays null.
@@ -176,6 +178,41 @@ services:
       restart_policy:
         condition: on-failure
         max_attempts: 3
+
+  # Sends the Notification Center's queued pushes (apps/notifications).
+  # Same image, different process. Safe at more than one replica: rows are
+  # claimed with SKIP LOCKED. Not published; it only calls out.
+  worker:
+    image: ${IMAGE:-gostyle-consumer-api:local}
+    command:
+      - python
+      - manage.py
+      - notification_worker
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.production
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+      DJANGO_DEBUG: "0"
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS}
+      DJANGO_LOG_LEVEL: ${DJANGO_LOG_LEVEL:-INFO}
+      DJANGO_LOG_FORMAT: ${DJANGO_LOG_FORMAT:-json}
+      DB_HOST: gostyle_postgres
+      DB_PORT: "5432"
+      DB_NAME: gostyle
+      DB_USER: consumer_app
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_SCHEMA: consumer
+      REDIS_URL: redis://redis:6379/0
+      PUSH_API_URL: ${PUSH_API_URL:-http://push-app:3351}
+      PUSH_API_KEY: ${PUSH_API_KEY:-}
+    networks:
+      - gostyle-net
+    deploy:
+      replicas: 1
+      update_config:
+        # Stop the old one first: two at once is safe, but one is enough.
+        order: stop-first
+      restart_policy:
+        condition: on-failure
 
 networks:
   gostyle-net:
