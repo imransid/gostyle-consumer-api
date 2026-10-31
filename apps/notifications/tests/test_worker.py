@@ -241,3 +241,86 @@ class SkipLockedTests(TransactionTestCase):
             thread.join(5)
 
         self.assertEqual([r.pk for r in got], [free.pk])
+
+
+from django.core import mail  # noqa: E402
+from django.core.exceptions import ImproperlyConfigured  # noqa: E402
+
+from apps.accounts.sendgrid_backend import SendGridError  # noqa: E402
+
+MAIL_SEND = "apps.notifications.senders.EmailMultiAlternatives.send"
+
+
+@override_settings(PUSH_API_KEY="push-key", NOTIFICATION_CHANNELS_V1=True)
+class EmailDeliverTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            phone="+971500000801",
+            email="sara@example.com",
+            password="x",
+        )
+        self.user.email_verified_at = timezone.now()
+        self.user.save()
+
+    def email_row(self):
+        out = notify(
+            self.user,
+            "booking.confirmed",
+            dedupe_key="k-1",
+            title="Booking confirmed",
+            body="Your booking GS-1 is confirmed.",
+        )
+        delivery = out.notification.deliveries.get(channel="email")
+        return next(r for r in worker.claim(timezone.now()) if r.pk == delivery.pk)
+
+    def test_the_branded_email_goes_to_the_verified_address(self):
+        row = self.email_row()
+
+        self.assertEqual(worker.deliver(row, timezone.now()), "sent")
+
+        self.assertEqual(len(mail.outbox), 1)
+        sent = mail.outbox[0]
+        self.assertEqual(sent.to, ["sara@example.com"])
+        self.assertEqual(sent.subject, "Booking confirmed")
+        self.assertIn("Your booking GS-1 is confirmed.", sent.body)
+        self.assertEqual(sent.alternatives[0][1], "text/html")
+        row.refresh_from_db()
+        self.assertEqual((row.status, row.provider_ref), ("sent", "sendgrid"))
+
+    def test_email_turned_off_since_is_skipped(self):
+        row = self.email_row()
+        prefs = NotificationPreference.for_account(self.user)
+        prefs.email = False
+        prefs.save()
+
+        self.assertEqual(worker.deliver(row, timezone.now()), "skipped")
+        self.assertEqual(mail.outbox, [])
+        row.refresh_from_db()
+        self.assertEqual(row.skip_reason, "opted_out")
+
+    def test_an_address_no_longer_verified_is_not_written_to(self):
+        row = self.email_row()
+        type(self.user).objects.filter(pk=self.user.pk).update(email_verified_at=None)
+        row.notification.account.refresh_from_db()
+
+        self.assertEqual(worker.deliver(row, timezone.now()), "skipped")
+        self.assertEqual(mail.outbox, [])
+
+    def test_a_refusal_fails_and_no_answer_retries(self):
+        for error, kind in (
+            (SendGridError("SendGrid HTTP 400: bad from", 400), "failed"),
+            (SendGridError("SendGrid HTTP 503: down", 503), "retry"),
+            (SendGridError("SendGrid HTTP 429: slow down", 429), "retry"),
+            (SendGridError("SendGrid unreachable: TimeoutError"), "retry"),
+        ):
+            Notification.objects.all().delete()
+            row = self.email_row()
+            with mock.patch(MAIL_SEND, side_effect=error):
+                self.assertEqual(worker.deliver(row, timezone.now()), kind, error)
+
+    def test_no_sendgrid_key_is_skipped(self):
+        row = self.email_row()
+        with mock.patch(MAIL_SEND, side_effect=ImproperlyConfigured("no key")):
+            self.assertEqual(worker.deliver(row, timezone.now()), "skipped")
+        row.refresh_from_db()
+        self.assertEqual(row.skip_reason, "email_not_configured")

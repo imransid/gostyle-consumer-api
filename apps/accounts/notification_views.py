@@ -40,6 +40,10 @@ def _error_response(errors):
             items.append(
                 {
                     "field": None if field == "non_field_errors" else field,
+                    # Added with the channel switches, so the app can tell
+                    # email_not_verified from sms_unavailable without
+                    # reading the sentence.
+                    "code": getattr(message, "code", None) or "invalid",
                     "message": str(message),
                 }
             )
@@ -61,8 +65,11 @@ def _error_response(errors):
     get=extend_schema(
         summary="Get notification preferences",
         description=(
-            "All seven preferences of the caller. The customer comes from the "
-            "bearer token. First use creates the record with the defaults."
+            "All the caller's preferences. The customer comes from the bearer "
+            "token. First use creates the record with the defaults. `email`, "
+            "`sms` and the read-only `channels_available` only while "
+            "NOTIFICATION_CHANNELS_V1 is on; `reminder_lead_minutes` (30, 60, "
+            "120 or 1440) only while REMINDER_TIMING_V1 is on."
         ),
         responses={200: NotificationPreferenceSerializer},
     ),
@@ -70,8 +77,12 @@ def _error_response(errors):
         summary="Update notification preferences",
         description=(
             "Partial update: only the fields sent change, and the complete "
-            "preferences come back. Values must be real booleans. Unknown "
-            "keys are a 400. Turning `push` off leaves the other six alone."
+            "preferences come back. Switches must be real booleans, "
+            "`reminder_lead_minutes` a number. Unknown keys are a 400. "
+            "Turning `push` off leaves the others alone. Turning `email` on "
+            "needs a verified email (`email_not_verified`); `sms` on needs a "
+            "verified phone, and answers `sms_unavailable` until there is an "
+            "SMS provider."
         ),
         request=NotificationPreferenceSerializer,
         examples=[

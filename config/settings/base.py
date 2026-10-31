@@ -430,6 +430,18 @@ TWO_FACTOR_V1 = env.bool("TWO_FACTOR_V1", default=False)
 # the worker runs, or items are kept but no push goes out.
 NOTIFICATION_CENTER_V1 = env.bool("NOTIFICATION_CENTER_V1", default=False)
 
+# The Email and SMS switches on /notifications/preferences, its
+# channels_available, and email as a Notification Center channel (sent by the
+# worker, to a verified address only). OFF, the preferences endpoint is what
+# it was (email and sms are unknown keys) and nothing is emailed from the
+# center. SMS is stored and answered, never sent: there is no provider yet.
+NOTIFICATION_CHANNELS_V1 = env.bool("NOTIFICATION_CHANNELS_V1", default=False)
+
+# reminder_lead_minutes on /notifications/preferences (30, 60, 120 or 1440).
+# OFF, it is an unknown key there. GetReminderLeads answers it either way
+# (the default, 1440, until a customer can change it).
+REMINDER_TIMING_V1 = env.bool("REMINDER_TIMING_V1", default=False)
+
 # The key authenticator secrets are encrypted with (AES-GCM): 32 random bytes,
 # base64. docs/TWO_FACTOR_SERVER.md says how to make one. Empty or not a key:
 # the authenticator calls answer 503 and log it, email and phone codes still

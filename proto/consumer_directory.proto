@@ -38,4 +38,7 @@ message ConsumerContact {
   // silence pushes after a rollback.
   optional bool booking_confirmation = 9;
   optional bool booking_changes = 10;
+  // NotificationPreference.email, the email channel switch, default true.
+  // `optional` for the same reason: missing means an older customer-api.
+  optional bool email_enabled = 11;
 }

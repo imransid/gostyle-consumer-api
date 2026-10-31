@@ -15,6 +15,8 @@ from . import (
     auth_pb2_grpc,
     consumer_directory_pb2,
     consumer_directory_pb2_grpc,
+    customer_notifications_pb2,
+    customer_notifications_pb2_grpc,
 )
 
 
@@ -94,6 +96,8 @@ _PREFERENCE_DEFAULTS = {
         "push",
         "booking_confirmation",
         "booking_changes",
+        "email",
+        "reminder_lead_minutes",
     )
 }
 
@@ -186,4 +190,72 @@ class ConsumerDirectoryServicer(consumer_directory_pb2_grpc.ConsumerDirectorySer
                 if prefs is not None
                 else _PREFERENCE_DEFAULTS["booking_changes"]
             ),
+            email_enabled=(
+                prefs.email if prefs is not None else _PREFERENCE_DEFAULTS["email"]
+            ),
         )
+
+
+# More ids than this in one call is a caller bug, refused before any query.
+MAX_REMINDER_LEADS = 1000
+
+
+class CustomerNotificationsServicer(customer_notifications_pb2_grpc.CustomerNotificationsServicer):
+    """
+    The Notification Center's calls for other services.
+
+    GetReminderLeads: booking-api's reminder ladder asks, once a tick, for
+    every customer with a visit coming up, whether they want a reminder and
+    how long before. It keeps no copy, so a change in the app counts from
+    its next tick.
+    """
+
+    def GetReminderLeads(self, request, context):
+        if not _presented_key_ok(context):
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "missing or wrong x-internal-key")
+        if len(request.consumer_ids) > MAX_REMINDER_LEADS:
+            context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                f"at most {MAX_REMINDER_LEADS} consumer_ids",
+            )
+
+        close_old_connections()
+        try:
+            return self._leads(request)
+        finally:
+            close_old_connections()
+
+    def _leads(self, request):
+        ids = set()
+        for raw in request.consumer_ids:
+            # Not an id is no customer of ours: left out, not an error.
+            try:
+                ids.add(uuid.UUID(raw))
+            except ValueError:
+                continue
+
+        accounts = ConsumerAccount.objects.filter(id__in=ids, is_active=True).values_list(
+            "id", flat=True
+        )
+        # filter(), never for_account(): a lookup must not write.
+        prefs = {
+            row.account_id: row
+            for row in NotificationPreference.objects.filter(account_id__in=ids).only(
+                "account_id", "appointment_reminder", "reminder_lead_minutes"
+            )
+        }
+        reply = customer_notifications_pb2.GetReminderLeadsReply()
+        for account_id in accounts:
+            row = prefs.get(account_id)
+            lead = reply.leads[str(account_id)]
+            lead.enabled = (
+                row.appointment_reminder
+                if row is not None
+                else _PREFERENCE_DEFAULTS["appointment_reminder"]
+            )
+            lead.lead_minutes = (
+                row.reminder_lead_minutes
+                if row is not None
+                else _PREFERENCE_DEFAULTS["reminder_lead_minutes"]
+            )
+        return reply
