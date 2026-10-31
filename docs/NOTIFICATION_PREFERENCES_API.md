@@ -27,9 +27,13 @@ Auth: `Authorization: Bearer <access_token>`.
    on answers `400 sms_unavailable`, and `channels_available.sms` is
    `false`. Grey the SMS switch out while it is `false`.
 4. **Email goes only to a verified address.** Turning `email` on needs one.
-5. **One reminder per visit, at the chosen time**, once booking-api uses it
-   (a later release; we turn `REMINDER_TIMING_V1` on only then). From then
-   on, a new time counts for every coming visit within a minute.
+5. **One reminder per visit, at the chosen time.** `REMINDER_TIMING_V1`
+   goes on together with booking-api's `MOBILE_REMINDER_CHOICE`, which sends
+   it. A new time counts for every coming visit within a minute. A booking
+   made (or moved) after its reminder time gets no reminder: its
+   confirmation (or "moved" message) just told them. Switched to an
+   earlier time after it passed: the reminder goes at once. Nothing goes in
+   the last 15 minutes before the visit.
 
 ## 1. GET
 

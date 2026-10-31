@@ -164,3 +164,82 @@ class NotifyTests(TestCase):
     def test_no_key_is_refused(self):
         self.assertEqual(self.refused(key=None), grpc.StatusCode.UNAUTHENTICATED)
         self.assertEqual(Notification.objects.count(), 0)
+
+
+@override_settings(INTERNAL_GRPC_KEY="k-123", PUSH_API_KEY="")
+class ReminderWordsTests(TestCase):
+    """booking.reminder: 'today', 'tomorrow' or the date, as the salon's
+    clock has them, from the moment it is written."""
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(phone="+971500000902", password="x")
+
+    def remind(self, start_at, now, **over):
+        fields = {
+            "consumer_id": str(self.user.pk),
+            "type": "booking.reminder",
+            "dedupe_key": f"booking.reminder:{BOOKING}:{start_at}",
+            "params": {
+                "booking_id": BOOKING,
+                "booking_code": "GS-1483",
+                "branch_id": BRANCH,
+                "start_at": start_at,
+            },
+            "target_type": "booking",
+            "target_id": BOOKING,
+            "source": "booking-api",
+        }
+        fields.update(over)
+        with mock.patch("apps.grpc_gen.servicer.close_old_connections"), mock.patch(
+            "apps.notifications.wording.salon_cards_for_refs", return_value={BRANCH: DEMO}
+        ), mock.patch("apps.notifications.wording.timezone.now", return_value=now):
+            reply = CustomerNotificationsServicer().Notify(pb.NotifyRequest(**fields), _context())
+        return Notification.objects.get(pk=reply.notification_id)
+
+    def at(self, iso):
+        return datetime.fromisoformat(iso)
+
+    def test_today(self):
+        row = self.remind("2026-11-02T07:30:00.000Z", self.at("2026-11-02T06:30:00+00:00"))
+        self.assertEqual(row.title, "Appointment reminder")
+        self.assertEqual(row.body, "Your booking GS-1483 at Demo Salon & Spa is today at 11:30 AM.")
+        self.assertEqual(row.category, "updates")
+        self.assertEqual(list(row.deliveries.values_list("channel", flat=True)), ["push"])
+
+    def test_tomorrow(self):
+        row = self.remind("2026-11-02T07:30:00.000Z", self.at("2026-11-01T07:30:00+00:00"))
+        self.assertEqual(row.body, "Your booking GS-1483 at Demo Salon & Spa is tomorrow at 11:30 AM.")
+
+    def test_further_off_says_the_date(self):
+        row = self.remind("2026-11-02T07:30:00.000Z", self.at("2026-10-30T07:30:00+00:00"))
+        self.assertEqual(
+            row.body, "Your booking GS-1483 at Demo Salon & Spa is on Mon 2 Nov at 11:30 AM."
+        )
+
+    def test_the_day_is_the_salons_not_utcs(self):
+        # 00:30 on 3 Nov in Dubai is still 2 Nov in UTC; at 23:30 Dubai the
+        # visit is tomorrow, not today.
+        row = self.remind("2026-11-02T20:30:00.000Z", self.at("2026-11-02T19:30:00+00:00"))
+        self.assertEqual(
+            row.body, "Your booking GS-1483 at Demo Salon & Spa is tomorrow at 12:30 AM."
+        )
+
+    def test_reminders_off_keeps_it_and_sends_nothing(self):
+        NotificationPreference.objects.create(account=self.user, appointment_reminder=False)
+        row = self.remind("2026-11-02T07:30:00.000Z", self.at("2026-11-02T06:30:00+00:00"))
+        self.assertFalse(row.deliveries.exists())
+
+    def test_a_reminder_without_a_start_is_refused(self):
+        with self.assertRaises(_Aborted) as caught, mock.patch(
+            "apps.grpc_gen.servicer.close_old_connections"
+        ), mock.patch("apps.notifications.wording.salon_cards_for_refs", return_value={}):
+            CustomerNotificationsServicer().Notify(
+                pb.NotifyRequest(
+                    consumer_id=str(self.user.pk),
+                    type="booking.reminder",
+                    dedupe_key="k",
+                    params={"booking_code": "GS-1"},
+                ),
+                _context(),
+            )
+        self.assertEqual(caught.exception.code, grpc.StatusCode.INVALID_ARGUMENT)

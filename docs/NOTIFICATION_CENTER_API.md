@@ -17,8 +17,9 @@ Auth: `Authorization: Bearer <access_token>` on every call.
    `MOBILE_NOTIFY_HUB` on) booking confirmed / moved / cancelled, written
    with the salon's name and the time on the salon's clock ("Your booking
    GS-1481 at Demo Salon & Spa on Mon 2 Nov at 11:00 AM is confirmed.").
-   Then, as each part ships: appointment reminders, check-in answers,
-   payments, offers. Nothing changes on your
+   With booking-api's `MOBILE_REMINDER_CHOICE` on too: the appointment
+   reminder, once per visit, at the time chosen on the preferences screen.
+   Then, as each part ships: check-in answers, payments, offers. Nothing changes on your
    side when a new kind arrives: same item shape, its own `type`.
 3. **Nothing is seeded.** A new customer, or one with no bookings, sees an
    empty list: `200` with `"results": []`, and unread `0`. Show your empty
@@ -154,7 +155,7 @@ Cheap. Call it when the app comes to the front, and when a push arrives
 | `booking.rescheduled` | orders | `booking` | a booking moved to a new time |
 | `booking.cancelled` | orders | `booking` | a booking was cancelled |
 | `check_in.approved`, `check_in.rejected`, `check_in.expired` | orders | `booking` | coming |
-| `booking.reminder` | updates | `booking` | coming |
+| `booking.reminder` | updates | `booking` | the appointment reminder, at the customer's chosen time ("Your booking GS-1483 at Demo Salon & Spa is today at 11:30 AM.") |
 | `payment.completed`, `payment.refunded` | payments | `booking` | coming |
 | `promo.offer`, `promo.new_salon`, `promo.loyalty`, `salon.new_styles` | promotions / updates | `offer` or `salon` | coming |
 
