@@ -111,6 +111,18 @@ def _booking(params):
 def _confirmed(params):
     code, at, when, data, _card = _booking(params)
     on = f" on {when}" if when else ""
+    # One item for a whole routine or party (booking-api keys it so).
+    if params.get("series_id"):
+        visits = params.get("visits") or ""
+        many = f"{visits} visits, " if visits.isdigit() and int(visits) > 1 else ""
+        starting = f"starting {when}" if when else "starting soon"
+        data["seriesId"] = params["series_id"]
+        return Words(
+            "Routine confirmed", f"Your routine{at} is confirmed: {many}{starting}.", data
+        )
+    if params.get("group_id"):
+        data["groupId"] = params["group_id"]
+        return Words("Booking confirmed", f"Your group booking{at}{on} is confirmed.", data)
     return Words("Booking confirmed", f"Your booking {code}{at}{on} is confirmed.", data)
 
 

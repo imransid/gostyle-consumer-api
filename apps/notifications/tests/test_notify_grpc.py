@@ -301,3 +301,49 @@ class CheckInWordsTests(TestCase):
         with self.assertRaises(_Aborted) as caught:
             self.notify(title="")
         self.assertEqual(caught.exception.code, grpc.StatusCode.INVALID_ARGUMENT)
+
+
+@override_settings(INTERNAL_GRPC_KEY="k-123", PUSH_API_KEY="")
+class RoutineAndPartyWordsTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(phone="+971500000904", password="x")
+
+    def confirm(self, key, **params):
+        fields = {
+            "consumer_id": str(self.user.pk),
+            "type": "booking.confirmed",
+            "dedupe_key": key,
+            "params": {
+                "booking_id": BOOKING,
+                "booking_code": "GS-1490",
+                "branch_id": BRANCH,
+                "start_at": "2026-11-02T07:00:00.000Z",
+                **params,
+            },
+            "target_type": "booking",
+            "target_id": BOOKING,
+            "source": "booking-api",
+        }
+        with mock.patch("apps.grpc_gen.servicer.close_old_connections"), mock.patch(
+            "apps.notifications.wording.salon_cards_for_refs", return_value={BRANCH: DEMO}
+        ):
+            reply = CustomerNotificationsServicer().Notify(pb.NotifyRequest(**fields), _context())
+        return reply, Notification.objects.get(pk=reply.notification_id)
+
+    def test_a_routine_is_one_item_with_its_first_visit_and_count(self):
+        _, row = self.confirm("booking.confirmed:series:ser-1", series_id="ser-1", visits="4")
+        self.assertEqual(row.title, "Routine confirmed")
+        self.assertEqual(
+            row.body,
+            "Your routine at Demo Salon & Spa is confirmed: 4 visits, starting Mon 2 Nov at 11:00 AM.",
+        )
+        self.assertEqual(row.data["seriesId"], "ser-1")
+        again, _ = self.confirm("booking.confirmed:series:ser-1", series_id="ser-1", visits="4")
+        self.assertEqual(again.outcome, Reply.DUPLICATE)
+
+    def test_a_party_is_one_item(self):
+        _, row = self.confirm("booking.confirmed:group:g-1", group_id="g-1")
+        self.assertEqual(
+            row.body, "Your group booking at Demo Salon & Spa on Mon 2 Nov at 11:00 AM is confirmed."
+        )
+        self.assertEqual(row.data["groupId"], "g-1")

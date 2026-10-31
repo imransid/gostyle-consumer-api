@@ -151,7 +151,7 @@ Cheap. Call it when the app comes to the front, and when a push arrives
 | `type` | Tab | `target.type` | When |
 | --- | --- | --- | --- |
 | `account.new_sign_in` | updates | `session` | a sign-in from a new device (Where you're signed in) |
-| `booking.confirmed` | orders | `booking` | a booking is confirmed (for one paid in the app: once the payment is recorded) |
+| `booking.confirmed` | orders | `booking` | a booking is confirmed (for one paid in the app: once the payment is recorded). ONE item for a whole routine ("Routine confirmed", `data.seriesId`) or party ("Your group booking ...", `data.groupId`), not one per visit |
 | `booking.rescheduled` | orders | `booking` | a booking moved to a new time |
 | `booking.cancelled` | orders | `booking` | a booking was cancelled |
 | `check_in.approved`, `check_in.rejected`, `check_in.expired` | orders | `booking` | the desk's answer to "I am here", in the words the check-in push always used ("You are checked in", "Sara A. is checked in"). Not silenced by "Booking changes": it answers the customer's own tap |
