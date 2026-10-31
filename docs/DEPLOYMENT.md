@@ -162,6 +162,19 @@ sudo certbot renew --dry-run                       # renewal actually works
    cd /root/gostyle-customer
    ( set -a; . ./stack.env; set +a; docker stack deploy -c docker-compose.yml gostyle-consumer )
    ```
+   **Before any stack deploy, run `bash scripts/stack-env-check.sh`** (same
+   folder). It loads `stack.env` the same way and compares every value with
+   the live services; each line it prints is a setting the deploy would
+   change. Deploy only when it prints nothing but `check done`. On
+   2026-10-31 it found `DJANGO_SECRET_KEY` and `DB_PASSWORD` in `stack.env`
+   different from live (a deploy would have signed everyone out and cut the
+   database), and `DEVICE_SESSIONS_V1` off on `_grpc` only.
+
+   Because a shell reads `stack.env`, a value with a space or any of
+   `` $ ` " ' \ & ; | < > ( ) ! `` must be in single quotes, or the shell
+   changes it: `SENDGRID_FROM_NAME='GoStyle Email'`. A single quote inside
+   is written `'\''`.
+
    So the live env file is `/root/gostyle-customer/stack.env`, not
    `/opt/gostyle-consumer/.env`, and the running image is not the one CI pushes to
    GHCR. Day to day, releases are `docker service update --force --image
@@ -175,7 +188,9 @@ sudo certbot renew --dry-run                       # renewal actually works
    quietly drops it. Secrets that must be in `stack.env` for that reason:
    `INTERNAL_GRPC_KEY` (booking-api's calls to `_grpc`), `PUSH_API_KEY`,
    `SENDGRID_API_KEY`, `BOOKING_DB_NAME` and `PUSH_DATABASE_URL` (the admin's
-   read-only views), with the switches.
+   read-only views), with the switches. A switch that lives on more than one
+   service (`DEVICE_SESSIONS_V1` and `NOTIFICATION_CHANNELS_V1` on `_api` and
+   `_grpc`) is changed on all of them together.
 
 2. **Port 3850 stays open to the world.** Swarm publishes it on `0.0.0.0`, so
    `http://<manager-ip>:3850` still serves the API unencrypted, bypassing nginx
