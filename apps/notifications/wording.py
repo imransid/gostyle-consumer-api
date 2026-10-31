@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from django.db import DatabaseError
+from django.utils import timezone
 
 from apps.salons import timezones
 from apps.salons.selectors import salon_cards_for_refs
@@ -50,19 +51,44 @@ def _salon(branch_id):
         return None
 
 
-def _when(start_at, card):
-    """'Mon 2 Nov at 11:00 AM', on the salon's clock."""
+def _zone(card):
+    return timezones.resolve(card["timezone"] if card else None, card["id"] if card else None)
+
+
+def _local_start(start_at, card):
+    """The start on the salon's clock."""
     try:
         start = datetime.fromisoformat(start_at)
     except (TypeError, ValueError):
         raise CannotWrite(f"start_at {start_at!r} is not a time") from None
     if start.tzinfo is None:
         raise CannotWrite(f"start_at {start_at!r} has no offset")
-    zone = timezones.resolve(card["timezone"] if card else None, card["id"] if card else None)
-    local = start.astimezone(zone)
+    return start.astimezone(_zone(card))
+
+
+def _clock(local):
+    """'11:00 AM'."""
     hour = local.hour % 12 or 12
     half = "AM" if local.hour < 12 else "PM"
-    return f"{local:%a} {local.day} {local:%b} at {hour}:{local:%M} {half}"
+    return f"{hour}:{local:%M} {half}"
+
+
+def _when(start_at, card):
+    """'Mon 2 Nov at 11:00 AM', on the salon's clock."""
+    local = _local_start(start_at, card)
+    return f"{local:%a} {local.day} {local:%b} at {_clock(local)}"
+
+
+def _soon(start_at, card, now=None):
+    """'today at 11:00 AM', 'tomorrow at 9:30 AM', or 'on Mon 2 Nov at
+    11:00 AM': the day as the salon's clock has it, from now."""
+    local = _local_start(start_at, card)
+    today = (now or timezone.now()).astimezone(local.tzinfo).date()
+    if local.date() == today:
+        return f"today at {_clock(local)}"
+    if (local.date() - today).days == 1:
+        return f"tomorrow at {_clock(local)}"
+    return f"on {_when(start_at, card)}"
 
 
 def _booking(params):
@@ -79,29 +105,42 @@ def _booking(params):
         "salonId": card["id"] if card else None,
     }
     at = f" at {card['name']}" if card and card.get("name") else ""
-    return code, at, when, data
+    return code, at, when, data, card
 
 
 def _confirmed(params):
-    code, at, when, data = _booking(params)
+    code, at, when, data, _card = _booking(params)
     on = f" on {when}" if when else ""
     return Words("Booking confirmed", f"Your booking {code}{at}{on} is confirmed.", data)
 
 
 def _rescheduled(params):
-    code, at, when, data = _booking(params)
+    code, at, when, data, _card = _booking(params)
     new_time = f": {when}" if when else ""
     return Words("Booking moved", f"Your booking {code}{at} has a new time{new_time}.", data)
 
 
 def _cancelled(params):
-    code, at, when, data = _booking(params)
+    code, at, when, data, _card = _booking(params)
     on = f" on {when}" if when else ""
     return Words("Booking cancelled", f"Your booking {code}{at}{on} was cancelled.", data)
+
+
+def _reminder(params):
+    code, at, _when_text, data, card = _booking(params)
+    start_at = params.get("start_at") or ""
+    if not start_at:
+        raise CannotWrite("start_at is required for a reminder")
+    return Words(
+        "Appointment reminder",
+        f"Your booking {code}{at} is {_soon(start_at, card)}.",
+        data,
+    )
 
 
 _WRITERS = {
     "booking.confirmed": _confirmed,
     "booking.rescheduled": _rescheduled,
     "booking.cancelled": _cancelled,
+    "booking.reminder": _reminder,
 }
