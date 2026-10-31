@@ -109,6 +109,14 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
     # turns it off. db_default too, so a row written by older code is on.
     sign_in_alerts = models.BooleanField(default=True, db_default=True)
 
+    # Privacy & Visibility (docs/PRIVACY_SETTINGS_API.md, PRIVACY_SETTINGS_V1).
+    # Off, salons see "Sara A." instead of "Sara Ahmed" (apps/accounts/
+    # privacy.py says where). db_default: a row written by older code has the
+    # defaults. The photo one is kept for Moments, which does not exist yet:
+    # off by default, since a photo shown in public is opted into.
+    show_name_to_salons = models.BooleanField(default=True, db_default=True)
+    show_photo_in_moments = models.BooleanField(default=False, db_default=False)
+
     USERNAME_FIELD = "phone"
     REQUIRED_FIELDS = []
 
@@ -159,6 +167,8 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
         self.two_factor_enabled = False
         self.two_factor_changed_at = None
         self.password_changed_at = None  # no password any more
+        self.show_name_to_salons = True
+        self.show_photo_in_moments = False
         self.save()
 
         # 4. End every session. Without this a refresh token (30 days) reaches

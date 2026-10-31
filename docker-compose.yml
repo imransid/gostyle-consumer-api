@@ -110,6 +110,8 @@ services:
       NOTIFICATION_CHANNELS_V1: ${NOTIFICATION_CHANNELS_V1:-False}
       # The reminder time on the preferences screen.
       REMINDER_TIMING_V1: ${REMINDER_TIMING_V1:-False}
+      # Privacy & Visibility: GET and PATCH /me/privacy.
+      PRIVACY_SETTINGS_V1: ${PRIVACY_SETTINGS_V1:-False}
 
       # Sessions' location from the IP (docs/DEVICE_SESSIONS_SERVER.md).
       # Empty: location stays null.

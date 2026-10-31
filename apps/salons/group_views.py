@@ -36,6 +36,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.models import ConsumerAccount
+from apps.accounts.privacy import name_for_salons
 
 from . import group_translate as gt
 from . import timezones
@@ -305,11 +306,13 @@ def _bookable_accounts(ids):
             continue
     if not wanted:
         return {}
+    # The name the salon may have: these become the party's lanes at
+    # booking-api, which the desk reads ("Show my name to salons").
     return {
-        str(pk): name
-        for pk, name in ConsumerAccount.objects.filter(
+        str(pk): name_for_salons(name, show)
+        for pk, name, show in ConsumerAccount.objects.filter(
             id__in=wanted, is_active=True, account_verified=True
-        ).values_list("id", "full_name")
+        ).values_list("id", "full_name", "show_name_to_salons")
     }
 
 
@@ -325,7 +328,13 @@ def _name_members(booker, members):
     names = _bookable_accounts([m["id"] for m in members if m["kind"] == REGISTERED])
     for m in members:
         if m["kind"] == SELF:
-            m["name"] = getattr(booker, "full_name", "") or m["name"]
+            m["name"] = (
+                name_for_salons(
+                    getattr(booker, "full_name", ""),
+                    getattr(booker, "show_name_to_salons", True),
+                )
+                or m["name"]
+            )
         elif m["kind"] == REGISTERED:
             if m["id"] not in names:
                 raise _refuse(

@@ -10,6 +10,7 @@ from rest_framework_simplejwt.tokens import AccessToken
 
 from apps.accounts import sessions
 from apps.accounts.models import ConsumerAccount, NotificationPreference
+from apps.accounts.privacy import name_for_salons
 from apps.notifications import registry, wording
 from apps.notifications.service import notify
 
@@ -171,7 +172,9 @@ class ConsumerDirectoryServicer(consumer_directory_pb2_grpc.ConsumerDirectorySer
             consumer_id=str(account.id),
             email=account.email or "",
             email_verified=account.email_verified_at is not None,
-            full_name=account.full_name or "",
+            # What the salon side may see: booking-api shows it at the
+            # check-in desk ("Show my name to salons", accounts/privacy.py).
+            full_name=name_for_salons(account.full_name, account.show_name_to_salons),
             language=account.language or "",
             appointment_reminder=(
                 prefs.appointment_reminder

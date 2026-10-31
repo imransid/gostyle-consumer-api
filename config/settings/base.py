@@ -442,6 +442,12 @@ NOTIFICATION_CHANNELS_V1 = env.bool("NOTIFICATION_CHANNELS_V1", default=False)
 # (the default, 1440, until a customer can change it).
 REMINDER_TIMING_V1 = env.bool("REMINDER_TIMING_V1", default=False)
 
+# Privacy & Visibility (docs/PRIVACY_SETTINGS_API.md): GET and PATCH
+# /me/privacy. OFF, both are 404, and every name goes to the salon side as
+# it always did. The name rule itself (apps/accounts/privacy.py) follows the
+# stored setting either way; while this is off, nobody can change it.
+PRIVACY_SETTINGS_V1 = env.bool("PRIVACY_SETTINGS_V1", default=False)
+
 # The key authenticator secrets are encrypted with (AES-GCM): 32 random bytes,
 # base64. docs/TWO_FACTOR_SERVER.md says how to make one. Empty or not a key:
 # the authenticator calls answer 503 and log it, email and phone codes still

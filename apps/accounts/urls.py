@@ -1,6 +1,7 @@
 from django.urls import path
 from .device_token_views import DeviceTokensView
 from .notification_views import NotificationPreferencesView
+from .privacy_views import PrivacyView
 from .session_views import SessionDetailView, SessionsView, SessionTokenRefreshView
 from .two_factor_views import (
     AuthenticatorConfirmView,
@@ -54,6 +55,7 @@ urlpatterns = [
     path("me/sessions", SessionsView.as_view(), name="sessions"),
     path("me/sessions/<str:session_id>", SessionDetailView.as_view(), name="session-detail"),
     path("me/security", SecurityView.as_view(), name="security"),
+    path("me/privacy", PrivacyView.as_view(), name="privacy"),
     path("me/security/verify/send", VerifySendView.as_view(), name="security-verify-send"),
     path("me/security/verify", VerifyView.as_view(), name="security-verify"),
     path("me/security/two-factor", TwoFactorSwitchView.as_view(), name="security-two-factor"),
