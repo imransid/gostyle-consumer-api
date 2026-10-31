@@ -13,9 +13,12 @@ Auth: `Authorization: Bearer <access_token>` on every call.
 
 1. **Behind a server switch, `NOTIFICATION_CENTER_V1`.** While it is off,
    every route on this page answers `404`. We tell you when it is on.
-2. **What fills it, and when.** From the day it is on: new sign-in alerts.
-   Then, as each part ships: booking confirmed / moved / cancelled, check-in
-   answers, appointment reminders, payments, offers. Nothing changes on your
+2. **What fills it, and when.** New sign-in alerts, and (with booking-api's
+   `MOBILE_NOTIFY_HUB` on) booking confirmed / moved / cancelled, written
+   with the salon's name and the time on the salon's clock ("Your booking
+   GS-1481 at Demo Salon & Spa on Mon 2 Nov at 11:00 AM is confirmed.").
+   Then, as each part ships: appointment reminders, check-in answers,
+   payments, offers. Nothing changes on your
    side when a new kind arrives: same item shape, its own `type`.
 3. **Nothing is seeded.** A new customer, or one with no bookings, sees an
    empty list: `200` with `"results": []`, and unread `0`. Show your empty
@@ -147,9 +150,9 @@ Cheap. Call it when the app comes to the front, and when a push arrives
 | `type` | Tab | `target.type` | When |
 | --- | --- | --- | --- |
 | `account.new_sign_in` | updates | `session` | a sign-in from a new device (Where you're signed in) |
-| `booking.confirmed` | orders | `booking` | coming |
-| `booking.rescheduled` | orders | `booking` | coming |
-| `booking.cancelled` | orders | `booking` | coming |
+| `booking.confirmed` | orders | `booking` | a booking is confirmed (for one paid in the app: once the payment is recorded) |
+| `booking.rescheduled` | orders | `booking` | a booking moved to a new time |
+| `booking.cancelled` | orders | `booking` | a booking was cancelled |
 | `check_in.approved`, `check_in.rejected`, `check_in.expired` | orders | `booking` | coming |
 | `booking.reminder` | updates | `booking` | coming |
 | `payment.completed`, `payment.refunded` | payments | `booking` | coming |
@@ -165,7 +168,7 @@ Every push that comes from the center carries, in its `data` (all strings):
 | `type` | the item's `type`, except the sign-in alert, which keeps the `new_sign_in` it always had |
 | `category` | `updates` |
 | `targetType`, `targetId` | the item's `target`, when it has one |
-| anything in the item's `data` | `sessionId` |
+| anything in the item's `data` | `sessionId`; for a booking `bookingId`, `bookingCode`, `startAt`, `salonId` |
 
 On a push: refresh section 5, and the first page of section 1 if the center
 is open. On a tap: open `target`, and call section 3 with `notificationId`.

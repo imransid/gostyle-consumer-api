@@ -164,3 +164,72 @@ All three services: `_grpc` serves the new call, `_worker` sends email.
 
 The image from the first line on all three services. The three columns
 stay; the older image does not read them.
+
+---
+
+# Phase 4: booking events into the Notification Center
+
+Two PRs, both base `main`, deployed in this order:
+
+1. customer-api `feat/notify-grpc`: gRPC `CustomerNotifications.Notify`
+   (on `_grpc`). It keeps a booking event in the customer's Notification
+   Center, writes the words with the salon's name and the time on the
+   salon's clock, and queues the push and email by their switches. Also:
+   the push channel is now queued without looking at `PUSH_API_KEY` (the
+   gRPC process has none; the worker, which sends, does). No migration.
+2. booking-api `feat/notify-hub`: switch `MOBILE_NOTIFY_HUB` (off). On,
+   booking confirmed / moved / cancelled go to customer-api instead of
+   being pushed by booking-api; "confirmed" waits for the payment of an
+   app booking. Migration `20261031120000_notification_hub_channel` (one
+   enum value, `hub`). Check-in answers and reminders are unchanged.
+
+## Steps
+
+customer-api (tag BEFORE the build: the build replaces `:local`):
+
+```sh
+docker tag gostyle-consumer-api:local gostyle-consumer-api:before-notify-grpc
+cd ~/gostyle-customer && git pull && git log --oneline -1
+docker build -t gostyle-consumer-api:local .
+docker service update --force --image gostyle-consumer-api:local gostyle-consumer_api
+docker service update --force --image gostyle-consumer-api:local gostyle-consumer_grpc
+docker service update --force --image gostyle-consumer-api:local gostyle-consumer_worker
+```
+
+booking-api (on the Mac, then the two lines `deploy.sh` prints, then the
+migration inside the running container, which has the Prisma CLI and its
+own `DATABASE_URL`):
+
+```sh
+cd ~/Documents/office/jumatech/gostyle-booking-api && git pull && ./deploy.sh
+# on the server: the docker pull and docker service update that deploy.sh printed, then
+docker exec $(docker ps -qf name=gostyle-booking_api | head -1) npx prisma migrate deploy
+```
+
+The migration only adds a value; the old image runs fine on top of it.
+
+## Turning it on
+
+Only after both are live and the migration ran:
+
+```sh
+docker service update --env-add MOBILE_NOTIFY_HUB=true gostyle-booking_api
+```
+
+Then the business web check, as after every booking-api deploy: create a
+booking, drag it, cancel it.
+
+## How to check it on live
+
+Book, move and cancel one visit with a test account. Each shows once in
+`GET /api/v1/notifications` (tab `orders`), with the salon's name and the
+Dubai time, and the phones get one push each. In booking-api's database the
+hand-over rows are `notification_delivery` with `channel = 'hub'` and
+status `sent`; their `provider_ref` is `accepted:<notification id>`.
+
+## Roll back
+
+- Switch only: `docker service update --env-rm MOBILE_NOTIFY_HUB
+  gostyle-booking_api`. booking-api pushes them itself again at once.
+- Whole release: the previous booking-api sha, and the customer-api image
+  from the first line. The enum value stays; nothing reads it.
