@@ -1,5 +1,6 @@
 """
-The channels a notification goes out on. Push only, for now.
+The channels a notification goes out on: push and email. SMS has no
+provider yet.
 
 A sender takes one claimed NotificationDelivery and answers a Result; it
 never raises for anything the channel says. The worker turns the Result into
@@ -14,9 +15,14 @@ the row's new status.
 from dataclasses import dataclass
 
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
+from django.core.mail import EmailMultiAlternatives
 
 from apps.accounts import push_api
+from apps.accounts.emails import build_notice_email
 from apps.accounts.models import NotificationPreference
+from apps.accounts.notifications import verified_email
+from apps.accounts.sendgrid_backend import SendGridError
 
 from . import registry
 
@@ -100,6 +106,49 @@ def _short(body):
     return str(body)[:300]
 
 
+def send_email(delivery):
+    """The notification as the branded notice email (emails.build_notice_email),
+    through Django's backend (SendGrid). Only to a verified address, read
+    again at send time: a customer who changed or lost it since is not
+    written to at the old one."""
+    notification = delivery.notification
+    account = notification.account
+    if not account.is_active or account.deleted_at is not None:
+        return skipped("account_gone")
+    prefs = NotificationPreference.objects.filter(account=account).first()
+    if prefs is not None and not prefs.email:
+        return skipped("opted_out")
+    to = verified_email(account)
+    if to is None:
+        return skipped("email_unverified")
+
+    mail = build_notice_email(
+        notification.title,
+        notification.title,
+        notification.body,
+        preheader=notification.body[:120],
+    )
+    msg = EmailMultiAlternatives(
+        subject=mail.subject,
+        body=mail.text,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[to],
+    )
+    msg.attach_alternative(mail.html, "text/html")
+    try:
+        msg.send(fail_silently=False)
+    except ImproperlyConfigured:
+        # No SENDGRID_API_KEY on this server.
+        return skipped("email_not_configured")
+    except SendGridError as e:
+        # Its message names a status and a reason, never an address.
+        if e.status_code is None or e.status_code == 429 or e.status_code >= 500:
+            return retry(str(e))
+        return failed(str(e))
+    return sent("sendgrid")
+
+
 SENDERS = {
     registry.PUSH: send_push,
+    registry.EMAIL: send_email,
 }

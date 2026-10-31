@@ -116,6 +116,7 @@ class ConsumerContactTests(SimpleTestCase):
             push=False,
             booking_confirmation=True,
             booking_changes=True,
+            email=True,
         )
         reply, accounts, _, _ = self.ask(account=_account(), prefs=prefs)
 
@@ -153,6 +154,7 @@ class ConsumerContactTests(SimpleTestCase):
             push=True,
             booking_confirmation=False,
             booking_changes=True,
+            email=True,
         )
         reply, *_ = self.ask(account=_account(), prefs=prefs)
         self.assertFalse(reply.booking_confirmation)
@@ -211,3 +213,92 @@ class ConsumerContactKeyTests(SimpleTestCase):
     @override_settings(INTERNAL_GRPC_KEY="")
     def test_an_unset_server_key_refuses_everyone_rather_than_no_one(self):
         self.call(key="")
+
+
+from django.test import TestCase  # noqa: E402
+
+from apps.accounts.models import NotificationPreference  # noqa: E402
+
+
+@override_settings(INTERNAL_GRPC_KEY="k-123")
+class ConsumerContactEmailSwitchTests(SimpleTestCase):
+    def ask(self, prefs):
+        with mock.patch("apps.grpc_gen.servicer.ConsumerAccount") as accounts, mock.patch(
+            "apps.grpc_gen.servicer.NotificationPreference"
+        ) as preferences, mock.patch("apps.grpc_gen.servicer.close_old_connections"):
+            accounts.objects.filter.return_value.first.return_value = _account()
+            preferences.objects.filter.return_value.first.return_value = prefs
+            return ConsumerDirectoryServicer().GetConsumerContact(
+                mock.Mock(consumer_id=CONSUMER_ID), _context("k-123")
+            )
+
+    def test_email_off_is_answered_and_present(self):
+        prefs = mock.Mock(
+            appointment_reminder=True,
+            push=True,
+            booking_confirmation=True,
+            booking_changes=True,
+            email=False,
+        )
+        reply = self.ask(prefs)
+        wire = type(reply).FromString(reply.SerializeToString())
+        self.assertTrue(wire.HasField("email_enabled"))
+        self.assertFalse(wire.email_enabled)
+
+    def test_never_opened_settings_reads_email_on(self):
+        self.assertTrue(self.ask(None).email_enabled)
+
+
+@override_settings(INTERNAL_GRPC_KEY="k-123")
+class ReminderLeadsTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+
+        users = get_user_model().objects
+        self.chose = users.create_user(phone="+971500000601", password="x")
+        self.default = users.create_user(phone="+971500000602", password="x")
+        self.off = users.create_user(phone="+971500000603", password="x")
+        self.gone = users.create_user(phone="+971500000604", password="x", is_active=False)
+        NotificationPreference.objects.create(account=self.chose, reminder_lead_minutes=30)
+        NotificationPreference.objects.create(account=self.off, appointment_reminder=False)
+
+    def ask(self, ids, key="k-123"):
+        from apps.grpc_gen import customer_notifications_pb2
+        from apps.grpc_gen.servicer import CustomerNotificationsServicer
+
+        request = customer_notifications_pb2.GetReminderLeadsRequest(consumer_ids=ids)
+        # Reaping would close the test's own connection mid-transaction.
+        with mock.patch("apps.grpc_gen.servicer.close_old_connections"):
+            return CustomerNotificationsServicer().GetReminderLeads(request, _context(key))
+
+    def test_each_customers_switch_and_time(self):
+        ids = [str(a.pk) for a in (self.chose, self.default, self.off)]
+        leads = self.ask(ids).leads
+
+        self.assertEqual((leads[ids[0]].enabled, leads[ids[0]].lead_minutes), (True, 30))
+        # Never opened the settings: the model's defaults, and no row written.
+        self.assertEqual((leads[ids[1]].enabled, leads[ids[1]].lead_minutes), (True, 1440))
+        self.assertFalse(NotificationPreference.objects.filter(account=self.default).exists())
+        self.assertEqual((leads[ids[2]].enabled, leads[ids[2]].lead_minutes), (False, 1440))
+
+    def test_unknown_inactive_and_not_ids_are_left_out(self):
+        ids = [str(self.gone.pk), str(_uuid.uuid4()), "anonymous", str(self.chose.pk)]
+        self.assertEqual(set(self.ask(ids).leads), {str(self.chose.pk)})
+
+    def test_none_asked_is_an_empty_answer(self):
+        self.assertEqual(len(self.ask([]).leads), 0)
+
+    def test_more_than_the_cap_is_refused_before_any_query(self):
+        from apps.grpc_gen.servicer import MAX_REMINDER_LEADS
+
+        with self.assertNumQueries(0), self.assertRaises(_Aborted):
+            self.ask([str(self.chose.pk)] * (MAX_REMINDER_LEADS + 1))
+
+    def test_no_key_is_refused(self):
+        with self.assertRaises(_Aborted):
+            self.ask([str(self.chose.pk)], key=None)
+
+    def test_two_queries_however_many_are_asked(self):
+        ids = [str(a.pk) for a in (self.chose, self.default, self.off)]
+        with self.assertNumQueries(2):
+            self.ask(ids)

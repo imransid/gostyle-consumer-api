@@ -106,6 +106,10 @@ services:
       TWO_FACTOR_ENCRYPTION_KEY: ${TWO_FACTOR_ENCRYPTION_KEY:-}
       # The Notification Center. Turn on only while the worker service runs.
       NOTIFICATION_CENTER_V1: ${NOTIFICATION_CENTER_V1:-False}
+      # Email and SMS switches on the preferences screen, email from the center.
+      NOTIFICATION_CHANNELS_V1: ${NOTIFICATION_CHANNELS_V1:-False}
+      # The reminder time on the preferences screen.
+      REMINDER_TIMING_V1: ${REMINDER_TIMING_V1:-False}
 
       # Sessions' location from the IP (docs/DEVICE_SESSIONS_SERVER.md).
       # Empty: location stays null.
@@ -171,6 +175,9 @@ services:
       INTERNAL_GRPC_KEY: ${INTERNAL_GRPC_KEY:-}
       # VerifyConsumer refuses a signed-out device's token. Same value as api's.
       DEVICE_SESSIONS_V1: ${DEVICE_SESSIONS_V1:-False}
+      # Whether a notification booking-api hands over is also emailed. Same
+      # value as api's.
+      NOTIFICATION_CHANNELS_V1: ${NOTIFICATION_CHANNELS_V1:-False}
     networks:
       - gostyle-net
     deploy:

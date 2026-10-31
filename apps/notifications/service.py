@@ -14,6 +14,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.accounts.models import NotificationPreference
+from apps.accounts.notifications import verified_email
 
 from . import registry
 from .models import Notification, NotificationDelivery
@@ -35,20 +36,27 @@ def preference(prefs, name):
     return NotificationPreference._meta.get_field(name).default
 
 
-def channels_for(kind, prefs):
+def channels_for(kind, account, prefs):
     """The channels this kind goes out on for this customer, by the rules in
     registry.Kind: its own event switch first, then each channel's switch,
-    then whether the channel can send at all."""
+    then whether the channel can reach them at all."""
     if kind.preference is not None and not preference(prefs, kind.preference):
         return []
-    return [channel for channel in kind.channels if _channel_on(channel, prefs)]
+    return [channel for channel in kind.channels if _channel_on(channel, account, prefs)]
 
 
-def _channel_on(channel, prefs):
+def _channel_on(channel, account, prefs):
     if channel == NotificationDelivery.Channel.PUSH:
         return bool(settings.PUSH_API_KEY) and preference(prefs, "push")
-    # Email and SMS have no sender here yet
-    # (docs/NOTIFICATIONS_SETTINGS_AUDIT.md, phase 3 and decision D8).
+    if channel == NotificationDelivery.Channel.EMAIL:
+        # Only a verified address: an unverified one may be a typo, and
+        # somebody else's inbox.
+        return (
+            settings.NOTIFICATION_CHANNELS_V1
+            and preference(prefs, "email")
+            and verified_email(account) is not None
+        )
+    # SMS has no provider yet (docs/NOTIFICATIONS_SETTINGS_AUDIT.md, D8).
     return False
 
 
@@ -117,6 +125,6 @@ def notify(
                     expires_at=deliver_by or now + kind.deliver_within,
                     created_at=now,
                 )
-                for channel in channels_for(kind, prefs)
+                for channel in channels_for(kind, account, prefs)
             )
     return Outcome(row, created)

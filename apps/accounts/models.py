@@ -453,11 +453,31 @@ class NotificationPreference(models.Model):
     # can still insert a row that does not name it.
     whatsapp_booking_updates = models.BooleanField(default=False, db_default=False)
 
+    # The channel switches beside `push`, read and written on the
+    # preferences endpoint only while NOTIFICATION_CHANNELS_V1 is on. Email
+    # starts on: reminder emails already went to verified addresses. SMS
+    # starts off, and sends nothing until there is a provider.
+    email = models.BooleanField(default=True, db_default=True)
+    sms = models.BooleanField(default=False, db_default=False)
+    # How long before a visit its reminder goes, in minutes (REMINDER_TIMING_V1).
+    # booking-api asks for it (gRPC CustomerNotifications.GetReminderLeads).
+    reminder_lead_minutes = models.PositiveSmallIntegerField(
+        choices=[(30, "30 minutes"), (60, "1 hour"), (120, "2 hours"), (1440, "1 day")],
+        default=1440,
+        db_default=1440,
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = "notification_preference"
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(reminder_lead_minutes__in=[30, 60, 120, 1440]),
+                name="notification_preference_reminder_lead_valid",
+            ),
+        ]
 
     @classmethod
     def for_account(cls, account):

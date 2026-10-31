@@ -118,9 +118,42 @@ class NotifyTests(TestCase):
         self.assertEqual(out.notification.category, "promotions")
         self.assertTrue(out.notification.deliveries.exists())
 
-    def test_email_is_not_queued_until_it_has_a_sender(self):
-        out = kept(self.user, "booking.confirmed")
-        self.assertNotIn("email", out.notification.deliveries.values_list("channel", flat=True))
+    def channels(self, out):
+        return sorted(out.notification.deliveries.values_list("channel", flat=True))
+
+    def verify_email(self):
+        self.user.email = "sara@example.com"
+        self.user.email_verified_at = timezone.now()
+        self.user.save()
+
+    @override_settings(NOTIFICATION_CHANNELS_V1=False)
+    def test_email_is_not_queued_while_its_switch_is_off(self):
+        self.verify_email()
+        self.assertEqual(self.channels(kept(self.user)), ["push"])
+
+    @override_settings(NOTIFICATION_CHANNELS_V1=True)
+    def test_email_is_queued_to_a_verified_address(self):
+        self.verify_email()
+        self.assertEqual(self.channels(kept(self.user)), ["email", "push"])
+
+    @override_settings(NOTIFICATION_CHANNELS_V1=True)
+    def test_email_is_not_queued_to_an_unverified_address(self):
+        self.user.email = "sara@example.com"
+        self.user.save()
+        self.assertEqual(self.channels(kept(self.user)), ["push"])
+
+    @override_settings(NOTIFICATION_CHANNELS_V1=True)
+    def test_email_is_not_queued_when_the_customer_turned_it_off(self):
+        self.verify_email()
+        prefs = NotificationPreference.for_account(self.user)
+        prefs.email = False
+        prefs.save()
+        self.assertEqual(self.channels(kept(self.user)), ["push"])
+
+    @override_settings(NOTIFICATION_CHANNELS_V1=True)
+    def test_a_push_only_kind_never_emails(self):
+        self.verify_email()
+        self.assertEqual(self.channels(kept(self.user, "account.new_sign_in")), ["push"])
 
     def test_deciding_never_writes_a_preferences_row(self):
         kept(self.user)

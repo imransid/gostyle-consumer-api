@@ -3,7 +3,7 @@ The Notification Center (docs/NOTIFICATION_CENTER_API.md).
 
 Notification is the customer's inbox: one row per thing that happened to
 them, kept as it was shown. NotificationDelivery is one row per channel that
-thing goes out on (push today), worked off by the notification_worker
+thing goes out on (push, email), worked off by the notification_worker
 command. Both are written together, in one transaction, by service.notify().
 """
 

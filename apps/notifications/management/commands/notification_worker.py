@@ -17,7 +17,7 @@ PURGE_EVERY = 3600
 
 class Command(BaseCommand):
     help = (
-        "Send the queued notifications (push), until stopped. Safe to run "
+        "Send the queued notifications (push, email), until stopped. Safe to run "
         "more than once at a time: rows are claimed with SKIP LOCKED."
     )
 

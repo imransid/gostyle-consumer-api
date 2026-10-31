@@ -4,8 +4,16 @@ from concurrent import futures
 import grpc
 from django.core.management.base import BaseCommand
 
-from apps.grpc_gen import auth_pb2_grpc, consumer_directory_pb2_grpc
-from apps.grpc_gen.servicer import ConsumerAuthServicer, ConsumerDirectoryServicer
+from apps.grpc_gen import (
+    auth_pb2_grpc,
+    consumer_directory_pb2_grpc,
+    customer_notifications_pb2_grpc,
+)
+from apps.grpc_gen.servicer import (
+    ConsumerAuthServicer,
+    ConsumerDirectoryServicer,
+    CustomerNotificationsServicer,
+)
 
 
 class Command(BaseCommand):
@@ -29,6 +37,10 @@ class Command(BaseCommand):
         # until INTERNAL_GRPC_KEY is set (servicer.py).
         consumer_directory_pb2_grpc.add_ConsumerDirectoryServicer_to_server(
             ConsumerDirectoryServicer(), server
+        )
+        # Reminder times for booking-api's ladder, behind the same key.
+        customer_notifications_pb2_grpc.add_CustomerNotificationsServicer_to_server(
+            CustomerNotificationsServicer(), server
         )
 
         # INSECURE is correct here: this listens only on the internal Docker
