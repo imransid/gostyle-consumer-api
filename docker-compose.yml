@@ -66,6 +66,10 @@ services:
       # Empty leaves them out. Set it to gostyle_booking only after
       # scripts/sql/booking_admin_read_access.sql has run.
       BOOKING_DB_NAME: ${BOOKING_DB_NAME:-}
+      # push-notification-service's tables in the admin, read-only
+      # (apps/push_data): postgres://admin_ro:<password>@push-db:5432/push,
+      # reached over the admin-db network below. Empty leaves them out.
+      PUSH_DATABASE_URL: ${PUSH_DATABASE_URL:-}
 
       # Short name resolves because redis is in this same stack.
       REDIS_URL: redis://redis:6379/0
@@ -88,6 +92,8 @@ services:
       # Feature switches. Off unless stack.env turns them on.
       GROUP_BOOKING_V2: ${GROUP_BOOKING_V2:-False}
       SERIES_BOOKING_V1: ${SERIES_BOOKING_V1:-False}
+      # The routine routes the app's FE contract uses (/booking/routine...).
+      ROUTINE_CONTRACT_V1: ${ROUTINE_CONTRACT_V1:-False}
       SINGLE_BOOKING_ACTIONS_V1: ${SINGLE_BOOKING_ACTIONS_V1:-False}
       SINGLE_LOOKUP_TIMEOUT: ${SINGLE_LOOKUP_TIMEOUT:-3}
       SELF_CHECK_IN_V1: ${SELF_CHECK_IN_V1:-False}
@@ -129,11 +135,19 @@ services:
       # The key lives in stack.env, never in git.
       PUSH_API_URL: ${PUSH_API_URL:-http://push-app:3351}
       PUSH_API_KEY: ${PUSH_API_KEY:-}
+    volumes:
+      # The DB-IP city file for sessions' location (GEOIP_CITY_DB,
+      # scripts/update-geoip.sh). It must exist on the node, or the deploy
+      # fails.
+      - /var/lib/GeoIP:/geoip:ro
     ports:
       # Platform API is on 3849. Sit next to it.
       - "3850:8000"
     networks:
       - gostyle-net
+      # Only for PUSH_DATABASE_URL: the push service's database is on it as
+      # push-db.
+      - admin-db
     deploy:
       replicas: 2
       update_config:
@@ -213,6 +227,11 @@ services:
       REDIS_URL: redis://redis:6379/0
       PUSH_API_URL: ${PUSH_API_URL:-http://push-app:3351}
       PUSH_API_KEY: ${PUSH_API_KEY:-}
+      # It sends the center's emails too. Same values as api's; without the
+      # key every email is skipped (email_not_configured).
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+      SENDGRID_FROM_EMAIL: ${SENDGRID_FROM_EMAIL:-noreply@gostyle.uk}
+      SENDGRID_FROM_NAME: ${SENDGRID_FROM_NAME:-GoStyle}
     networks:
       - gostyle-net
     deploy:
@@ -227,6 +246,11 @@ networks:
   gostyle-net:
     external: true
     name: gostyle_gostyle-net
+  # Made once by hand (docs/DEPLOYMENT.md); the push service's database
+  # joins it too.
+  admin-db:
+    external: true
+    name: gostyle_admin-db
 
 volumes:
   consumer_redis_data:

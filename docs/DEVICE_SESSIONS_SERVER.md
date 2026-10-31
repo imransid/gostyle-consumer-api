@@ -115,17 +115,10 @@ runs the api, as root:
      gostyle-consumer_api
    ```
 
-Like the switches, `--mount-add` lives on the service only: a
-`docker stack deploy` drops it. To keep it, add to the `api` service in
-docker-compose.yml (only once the file exists on the node, or the stack
-deploy fails):
-
-```yaml
-    volumes:
-      - /var/lib/GeoIP:/geoip:ro
-```
-
-and `GEOIP_CITY_DB=/geoip/dbip-city-lite.mmdb` to stack.env.
+`docker-compose.yml` mounts the same folder on `api`
+(`/var/lib/GeoIP:/geoip:ro`), so a `docker stack deploy` keeps it. The
+folder must exist on the node first, or the stack deploy fails. Keep
+`GEOIP_CITY_DB=/geoip/dbip-city-lite.mmdb` in stack.env.
 
 ## 4. Turn it on
 
