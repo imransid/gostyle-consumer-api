@@ -255,7 +255,7 @@ label selector. Always start from `{service="…"}`, then filter.
 | To undo | Command |
 | --- | --- |
 | The collector | `docker stack rm gostyle-observability` |
-| The API's JSON logging | `docker tag gostyle-consumer-api:pre-loki gostyle-consumer-api:local && docker stack deploy -c docker-stack.consumer.yml gostyle-consumer` |
+| The API's JSON logging | `docker tag gostyle-consumer-api:pre-loki gostyle-consumer-api:local && docker service update --force --image gostyle-consumer-api:local gostyle-consumer_api` |
 | nginx JSON logs | restore from `/root/gostyle-customer/.backup-before-loki-*/etc-nginx/` then `nginx -t && systemctl reload nginx` |
 | The firewall rule | `systemctl disable --now gostyle-loki-firewall` |
 

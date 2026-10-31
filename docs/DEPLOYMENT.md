@@ -153,17 +153,29 @@ sudo certbot renew --dry-run                       # renewal actually works
    DJANGO_CSRF_TRUSTED_ORIGINS=https://api.gostyle.uk,http://156.67.214.42:3850
    ```
    Redeploy afterwards, since Swarm only re-reads it on deploy. **Note that the
-   manager node does not currently use the `deploy.sh` flow described above:** it
-   runs `/root/gostyle-customer/docker-stack.consumer.yml` with `env_file:
-   stack.env` and a locally built `gostyle-consumer-api:local` image, deployed by
-   hand with
+   manager node does not currently use the `deploy.sh` flow described above:**
+   its stack file is this repo's `docker-compose.yml`, checked out in
+   `/root/gostyle-customer`, with a locally built `gostyle-consumer-api:local`
+   image. Its `${...}` values come from the shell, so a stack deploy loads
+   `stack.env` first:
    ```sh
-   cd /root/gostyle-customer && docker stack deploy -c docker-stack.consumer.yml gostyle-consumer
+   cd /root/gostyle-customer
+   ( set -a; . ./stack.env; set +a; docker stack deploy -c docker-compose.yml gostyle-consumer )
    ```
    So the live env file is `/root/gostyle-customer/stack.env`, not
    `/opt/gostyle-consumer/.env`, and the running image is not the one CI pushes to
-   GHCR. Reconciling those two is worth doing; until then, edit the file the
-   stack actually reads.
+   GHCR. Day to day, releases are `docker service update --force --image
+   gostyle-consumer-api:local` on `_api`, `_grpc` and `_worker`, which keeps
+   every setting the services have.
+
+   **The rule that keeps a stack deploy safe:** anything set on a live service
+   by hand (`--env-add`, `--mount-add`, `--network-add`) goes into
+   `docker-compose.yml` (the name, passed to that service) and into
+   `stack.env` (the value) the same day. Otherwise the next stack deploy
+   quietly drops it. Secrets that must be in `stack.env` for that reason:
+   `INTERNAL_GRPC_KEY` (booking-api's calls to `_grpc`), `PUSH_API_KEY`,
+   `SENDGRID_API_KEY`, `BOOKING_DB_NAME` and `PUSH_DATABASE_URL` (the admin's
+   read-only views), with the switches.
 
 2. **Port 3850 stays open to the world.** Swarm publishes it on `0.0.0.0`, so
    `http://<manager-ip>:3850` still serves the API unencrypted, bypassing nginx
