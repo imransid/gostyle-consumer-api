@@ -89,7 +89,12 @@ class ConsumerAuthServicer(auth_pb2_grpc.ConsumerAuthServicer):
 # create them -- without this call creating the row.
 _PREFERENCE_DEFAULTS = {
     name: NotificationPreference._meta.get_field(name).default
-    for name in ("appointment_reminder", "push")
+    for name in (
+        "appointment_reminder",
+        "push",
+        "booking_confirmation",
+        "booking_changes",
+    )
 }
 
 
@@ -114,7 +119,8 @@ class ConsumerDirectoryServicer(consumer_directory_pb2_grpc.ConsumerDirectorySer
 
     booking-api asks this when a booking reminder is due: the email address,
     whether it is verified, the name to greet them by, and whether they want
-    appointment reminders and push at all. booking-api stores none of it, so
+    appointment reminders, booking confirmations and changes, and push at
+    all. booking-api stores none of it, so
     a customer who changes their address or turns reminders off is honoured
     from the next reminder on.
     """
@@ -167,5 +173,17 @@ class ConsumerDirectoryServicer(consumer_directory_pb2_grpc.ConsumerDirectorySer
             ),
             push_enabled=(
                 prefs.push if prefs is not None else _PREFERENCE_DEFAULTS["push"]
+            ),
+            # Always set, so their presence on the wire tells the caller this
+            # customer-api knows them (consumer_directory.proto).
+            booking_confirmation=(
+                prefs.booking_confirmation
+                if prefs is not None
+                else _PREFERENCE_DEFAULTS["booking_confirmation"]
+            ),
+            booking_changes=(
+                prefs.booking_changes
+                if prefs is not None
+                else _PREFERENCE_DEFAULTS["booking_changes"]
             ),
         )
