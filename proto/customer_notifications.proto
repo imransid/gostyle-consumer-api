@@ -12,6 +12,49 @@ service CustomerNotifications {
   // Each customer's appointment reminder switch and chosen time, in one
   // call for a batch, for booking-api's reminder ladder.
   rpc GetReminderLeads (GetReminderLeadsRequest) returns (GetReminderLeadsReply);
+  // Hand one notification to the Notification Center: it is kept, and its
+  // alerts are queued by the customer's switches. Safe to repeat: the same
+  // dedupe_key for the same customer is one notification.
+  rpc Notify (NotifyRequest) returns (NotifyReply);
+}
+
+message NotifyRequest {
+  string consumer_id = 1;
+  // A kind the Notification Center knows (apps/notifications/registry.py),
+  // e.g. "booking.confirmed". Unknown is INVALID_ARGUMENT, never retried.
+  string type = 2;
+  // The producer's idempotency key, e.g. "booking.confirmed:<booking id>".
+  string dedupe_key = 3;
+  // RFC 3339. Empty: now.
+  string occurred_at = 4;
+  // What the words are made from: booking_id, booking_code, branch_id,
+  // start_at (RFC 3339). The center writes the title and body itself, in
+  // the salon's own time zone.
+  map<string, string> params = 5;
+  // Where tapping it goes. Both or neither.
+  string target_type = 6;
+  string target_id = 7;
+  // Who sent it: "booking-api".
+  string source = 8;
+  // RFC 3339. No alert goes out after this. Empty: the kind's own limit.
+  string deliver_by = 9;
+}
+
+message NotifyReply {
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+    // Kept, and its alerts queued.
+    ACCEPTED = 1;
+    // This dedupe_key was already kept for this customer: nothing new.
+    DUPLICATE = 2;
+    // No active customer with this id. An answer, not an error.
+    NOT_FOUND = 3;
+    // A promotion whose switch is off: not kept at all.
+    SUPPRESSED = 4;
+  }
+  Outcome outcome = 1;
+  // Empty for NOT_FOUND and SUPPRESSED.
+  string notification_id = 2;
 }
 
 message GetReminderLeadsRequest {

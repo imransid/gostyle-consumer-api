@@ -24,23 +24,33 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1c\x63ustomer_notifications.proto\x12\x13gostyle.consumer.v1\"/\n\x17GetReminderLeadsRequest\x12\x14\n\x0c\x63onsumer_ids\x18\x01 \x03(\t\"5\n\x0cReminderLead\x12\x0f\n\x07\x65nabled\x18\x01 \x01(\x08\x12\x14\n\x0clead_minutes\x18\x02 \x01(\x05\"\xae\x01\n\x15GetReminderLeadsReply\x12\x44\n\x05leads\x18\x01 \x03(\x0b\x32\x35.gostyle.consumer.v1.GetReminderLeadsReply.LeadsEntry\x1aO\n\nLeadsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\x30\n\x05value\x18\x02 \x01(\x0b\x32!.gostyle.consumer.v1.ReminderLead:\x02\x38\x01\x32\x85\x01\n\x15\x43ustomerNotifications\x12l\n\x10GetReminderLeads\x12,.gostyle.consumer.v1.GetReminderLeadsRequest\x1a*.gostyle.consumer.v1.GetReminderLeadsReplyb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1c\x63ustomer_notifications.proto\x12\x13gostyle.consumer.v1\"\x96\x02\n\rNotifyRequest\x12\x13\n\x0b\x63onsumer_id\x18\x01 \x01(\t\x12\x0c\n\x04type\x18\x02 \x01(\t\x12\x12\n\ndedupe_key\x18\x03 \x01(\t\x12\x13\n\x0boccurred_at\x18\x04 \x01(\t\x12>\n\x06params\x18\x05 \x03(\x0b\x32..gostyle.consumer.v1.NotifyRequest.ParamsEntry\x12\x13\n\x0btarget_type\x18\x06 \x01(\t\x12\x11\n\ttarget_id\x18\x07 \x01(\t\x12\x0e\n\x06source\x18\x08 \x01(\t\x12\x12\n\ndeliver_by\x18\t \x01(\t\x1a-\n\x0bParamsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\xc1\x01\n\x0bNotifyReply\x12\x39\n\x07outcome\x18\x01 \x01(\x0e\x32(.gostyle.consumer.v1.NotifyReply.Outcome\x12\x17\n\x0fnotification_id\x18\x02 \x01(\t\"^\n\x07Outcome\x12\x17\n\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x0c\n\x08\x41\x43\x43\x45PTED\x10\x01\x12\r\n\tDUPLICATE\x10\x02\x12\r\n\tNOT_FOUND\x10\x03\x12\x0e\n\nSUPPRESSED\x10\x04\"/\n\x17GetReminderLeadsRequest\x12\x14\n\x0c\x63onsumer_ids\x18\x01 \x03(\t\"5\n\x0cReminderLead\x12\x0f\n\x07\x65nabled\x18\x01 \x01(\x08\x12\x14\n\x0clead_minutes\x18\x02 \x01(\x05\"\xae\x01\n\x15GetReminderLeadsReply\x12\x44\n\x05leads\x18\x01 \x03(\x0b\x32\x35.gostyle.consumer.v1.GetReminderLeadsReply.LeadsEntry\x1aO\n\nLeadsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\x30\n\x05value\x18\x02 \x01(\x0b\x32!.gostyle.consumer.v1.ReminderLead:\x02\x38\x01\x32\xd5\x01\n\x15\x43ustomerNotifications\x12l\n\x10GetReminderLeads\x12,.gostyle.consumer.v1.GetReminderLeadsRequest\x1a*.gostyle.consumer.v1.GetReminderLeadsReply\x12N\n\x06Notify\x12\".gostyle.consumer.v1.NotifyRequest\x1a .gostyle.consumer.v1.NotifyReplyb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'customer_notifications_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
+  _globals['_NOTIFYREQUEST_PARAMSENTRY']._loaded_options = None
+  _globals['_NOTIFYREQUEST_PARAMSENTRY']._serialized_options = b'8\001'
   _globals['_GETREMINDERLEADSREPLY_LEADSENTRY']._loaded_options = None
   _globals['_GETREMINDERLEADSREPLY_LEADSENTRY']._serialized_options = b'8\001'
-  _globals['_GETREMINDERLEADSREQUEST']._serialized_start=53
-  _globals['_GETREMINDERLEADSREQUEST']._serialized_end=100
-  _globals['_REMINDERLEAD']._serialized_start=102
-  _globals['_REMINDERLEAD']._serialized_end=155
-  _globals['_GETREMINDERLEADSREPLY']._serialized_start=158
-  _globals['_GETREMINDERLEADSREPLY']._serialized_end=332
-  _globals['_GETREMINDERLEADSREPLY_LEADSENTRY']._serialized_start=253
-  _globals['_GETREMINDERLEADSREPLY_LEADSENTRY']._serialized_end=332
-  _globals['_CUSTOMERNOTIFICATIONS']._serialized_start=335
-  _globals['_CUSTOMERNOTIFICATIONS']._serialized_end=468
+  _globals['_NOTIFYREQUEST']._serialized_start=54
+  _globals['_NOTIFYREQUEST']._serialized_end=332
+  _globals['_NOTIFYREQUEST_PARAMSENTRY']._serialized_start=287
+  _globals['_NOTIFYREQUEST_PARAMSENTRY']._serialized_end=332
+  _globals['_NOTIFYREPLY']._serialized_start=335
+  _globals['_NOTIFYREPLY']._serialized_end=528
+  _globals['_NOTIFYREPLY_OUTCOME']._serialized_start=434
+  _globals['_NOTIFYREPLY_OUTCOME']._serialized_end=528
+  _globals['_GETREMINDERLEADSREQUEST']._serialized_start=530
+  _globals['_GETREMINDERLEADSREQUEST']._serialized_end=577
+  _globals['_REMINDERLEAD']._serialized_start=579
+  _globals['_REMINDERLEAD']._serialized_end=632
+  _globals['_GETREMINDERLEADSREPLY']._serialized_start=635
+  _globals['_GETREMINDERLEADSREPLY']._serialized_end=809
+  _globals['_GETREMINDERLEADSREPLY_LEADSENTRY']._serialized_start=730
+  _globals['_GETREMINDERLEADSREPLY_LEADSENTRY']._serialized_end=809
+  _globals['_CUSTOMERNOTIFICATIONS']._serialized_start=812
+  _globals['_CUSTOMERNOTIFICATIONS']._serialized_end=1025
 # @@protoc_insertion_point(module_scope)

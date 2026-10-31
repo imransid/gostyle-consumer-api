@@ -85,10 +85,12 @@ class NotifyTests(TestCase):
         self.assertFalse(out.notification.deliveries.exists())
 
     @override_settings(PUSH_API_KEY="")
-    def test_no_push_service_keeps_the_item_but_queues_nothing(self):
+    def test_the_push_is_queued_even_where_this_process_has_no_push_key(self):
+        # The grpc process holds no PUSH_API_KEY; the worker that sends does
+        # (and skips the row when it does not: test_worker).
         out = kept(self.user)
         self.assertTrue(out.created)
-        self.assertFalse(out.notification.deliveries.exists())
+        self.assertEqual(list(out.notification.deliveries.values_list("channel", flat=True)), ["push"])
 
     def test_money_ignores_the_event_switches(self):
         prefs = NotificationPreference.for_account(self.user)
