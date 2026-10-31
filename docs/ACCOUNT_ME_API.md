@@ -222,7 +222,8 @@ Switched on with no phone:
 ```
 
 The same switch sent to `PATCH /notifications/preferences` instead. Note the
-`400`, and no `code` on the item:
+`400`. Each item has carried a `code` since 2026-10-31
+(docs/NOTIFICATION_PREFERENCES_API.md); before that it had none:
 
 ```json
 {
@@ -231,6 +232,7 @@ The same switch sent to `PATCH /notifications/preferences` instead. Note the
   "errors": [
     {
       "field": "whatsapp_booking_updates",
+      "code": "unknown_field",
       "message": "This notification preference is not supported."
     }
   ]

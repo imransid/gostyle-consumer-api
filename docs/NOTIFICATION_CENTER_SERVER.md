@@ -112,3 +112,55 @@ One PR, `feat/notification-center`, base `main`.
 - Whole release: the image from step 1 on `gostyle-consumer_api` and
   `gostyle-consumer_grpc`, then `docker service rm gostyle-consumer_worker`.
   The two tables stay; the older image does not read them.
+
+---
+
+# Phase 3: channels and reminder time
+
+One PR, `feat/notification-channels`, base `main`. App side:
+docs/NOTIFICATION_PREFERENCES_API.md.
+
+## What ships
+
+- **Migration `accounts/0028`**: three columns on `notification_preference`,
+  `email` (`DEFAULT true`), `sms` (`DEFAULT false`), `reminder_lead_minutes`
+  (`DEFAULT 1440`, a check for 30, 60, 120 or 1440). No backfill. An older
+  image runs fine on top of it.
+- **`/notifications/preferences`** takes and answers them, behind two new
+  switches, both off:
+  - `NOTIFICATION_CHANNELS_V1` (on `api` and `grpc`): `email`, `sms`,
+    `channels_available`, and email as a Notification Center channel (the
+    worker sends it through SendGrid, to verified addresses only). SMS is
+    stored, never sent.
+  - `REMINDER_TIMING_V1` (on `api`): `reminder_lead_minutes`.
+- **gRPC**: a new service on the same `:50051`, `CustomerNotifications`
+  with `GetReminderLeads` (booking-api's ladder, phase 5), and
+  `email_enabled` on `GetConsumerContact`. Same `INTERNAL_GRPC_KEY`.
+- Every error item on the preferences endpoint now has a `code`.
+
+## Steps
+
+```sh
+docker tag gostyle-consumer-api:local gostyle-consumer-api:before-notification-channels
+cd ~/gostyle-customer && git pull && git log --oneline -1
+docker build -t gostyle-consumer-api:local .
+docker service update --force --image gostyle-consumer-api:local gostyle-consumer_api
+docker service update --force --image gostyle-consumer-api:local gostyle-consumer_grpc
+docker service update --force --image gostyle-consumer-api:local gostyle-consumer_worker
+```
+
+All three services: `_grpc` serves the new call, `_worker` sends email.
+
+## When to turn the switches on
+
+- `NOTIFICATION_CHANNELS_V1`: after booking-api honours `email_enabled` for
+  its reminder emails (booking-api `feat/reminder-email-switch`), so an
+  Email switch turned off in the app is never ignored. Then on `api` and
+  `grpc`, and in `stack.env`.
+- `REMINDER_TIMING_V1`: only with phase 5 (booking-api reading the time).
+  On before that, a customer could pick a time nothing uses.
+
+## Roll back
+
+The image from the first line on all three services. The three columns
+stay; the older image does not read them.
