@@ -233,3 +233,68 @@ status `sent`; their `provider_ref` is `accepted:<notification id>`.
   gostyle-booking_api`. booking-api pushes them itself again at once.
 - Whole release: the previous booking-api sha, and the customer-api image
   from the first line. The enum value stays; nothing reads it.
+
+---
+
+# Phase 5: the reminder at the customer's chosen time
+
+Two PRs, both base `main`, in this order:
+
+1. customer-api `feat/reminder-words`: the words of `booking.reminder`
+   ("Your booking GS-1483 at Demo Salon & Spa is today at 11:30 AM.", the
+   day and time on the salon's clock). No migration, no new switch.
+2. booking-api `feat/reminder-choice`: switch `MOBILE_REMINDER_CHOICE`
+   (off). On, with `MOBILE_NOTIFY_HUB` on: one reminder per app booking at
+   the time its customer chose (asked of customer-api every minute,
+   `GetReminderLeads`), handed to the Notification Center; the fixed 24h /
+   3h / 15m rungs keep desk bookings only. Migration
+   `20261031150000_reminder_chosen` (two nullable booking columns and a
+   partial index).
+
+## Steps
+
+customer-api (tag first):
+
+```sh
+docker tag gostyle-consumer-api:local gostyle-consumer-api:before-reminder-words
+cd ~/gostyle-customer && git pull && git log --oneline -1
+docker build -t gostyle-consumer-api:local .
+docker service update --force --image gostyle-consumer-api:local gostyle-consumer_api
+docker service update --force --image gostyle-consumer-api:local gostyle-consumer_grpc
+docker service update --force --image gostyle-consumer-api:local gostyle-consumer_worker
+```
+
+booking-api: `git pull && ./deploy.sh` on the Mac, the two printed lines on
+the server, then the migration:
+
+```sh
+docker exec $(docker ps -qf name=gostyle-booking_api | head -1) npx prisma migrate deploy
+```
+
+## Turning it on
+
+Both together, so a customer can pick a time exactly when it is used:
+
+```sh
+docker service update --env-add MOBILE_REMINDER_CHOICE=true gostyle-booking_api
+docker service update --env-add REMINDER_TIMING_V1=true gostyle-consumer_api
+grep -q '^REMINDER_TIMING_V1=' /root/gostyle-customer/stack.env || echo 'REMINDER_TIMING_V1=true' >> /root/gostyle-customer/stack.env
+```
+
+Then the business web check (create, drag, cancel): desk bookings still get
+the fixed reminders.
+
+## How to check it on live
+
+Set a test account's reminder to 30 minutes
+(`PATCH /notifications/preferences {"reminder_lead_minutes": 30}`), book a
+visit starting in about 40 minutes, record its payment. About 10 minutes
+later one "Appointment reminder" item ("... is today at ...") is in the
+Updates tab, and the phones get one push. booking-api's `booking` row has
+`reminded_chosen_at` and `reminder_lead_min = 30`.
+
+## Roll back
+
+`docker service update --env-rm MOBILE_REMINDER_CHOICE gostyle-booking_api`
+brings back the fixed rungs for every booking at the next tick. The two
+columns stay; nothing else reads them.
