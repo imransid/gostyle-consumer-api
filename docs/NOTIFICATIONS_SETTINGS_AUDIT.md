@@ -1,9 +1,14 @@
 # Notifications, Settings and Privacy: Backend Audit and Plan
 
 Status: written 2026-10-31 for review, then approved ("execute the plan best
-way": the recommendation in each decision row is the decision). Phase 1 is
-live and proven (2026-10-31, booking-api PR #27, customer-api PR #44).
-Phase 2 is `feat/notification-center`.
+way": the recommendation in each decision row is the decision).
+
+**Done and live (2026-10-31):** phases 1 to 5, phase 7a (privacy), the
+check-in answers in the center, one "confirmed" per routine and per party,
+and the push service tidy-ups. R1, R3 and R13 are closed. Skipped by
+decision: 7b (data export). Waiting on decisions: the Payments tab (no real
+gateway), Promotions (nothing sends offers), SMS (no provider). The FE
+guide for all of it: `docs/NOTIFICATIONS_FE_GUIDE.md`.
 
 Code read (live branches):
 

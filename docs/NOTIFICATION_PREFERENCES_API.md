@@ -1,5 +1,9 @@
 # Notification Preferences: channels and reminder time (FE Integration Guide)
 
+> **Live on production. Build from `docs/NOTIFICATIONS_FE_GUIDE.md`**, the
+> one guide for the whole feature. This page is the first version, kept for
+> its history.
+
 Date: 2026-10-31. For: the mobile app team. The Notification Preferences
 screen: "Notification Channels" (Push, Email, SMS) and "Appointment reminder
 timing" (30 minutes, 1 hour, 2 hours, 1 day before). The six event switches
