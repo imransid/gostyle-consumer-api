@@ -72,6 +72,8 @@ FLOW = (
                 "Turn the authenticator app on with its first code",
             ),
             ("DELETE", "/api/v1/me/security/authenticator", "Remove the authenticator app"),
+            ("GET", "/api/v1/me/privacy", "My privacy settings (PRIVACY_SETTINGS_V1)"),
+            ("PATCH", "/api/v1/me/privacy", "Show my name to salons, show my photo in Moments"),
         ),
     ),
     (

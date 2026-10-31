@@ -14,6 +14,8 @@ import logging
 
 from django.db import IntegrityError, connection, transaction
 
+from apps.accounts.privacy import name_for_salons
+
 from .phone import to_e164
 
 log = logging.getLogger(__name__)
@@ -52,11 +54,34 @@ def _one(sql, params):
 
 
 def _name_of(account):
-    full = (account.full_name or "").strip()
+    # "Show my name to salons" off: "Sara A." (apps/accounts/privacy.py).
+    full = name_for_salons(account.full_name, account.show_name_to_salons)
     if not full:
         return "Guest", None
     first, _, last = full.partition(" ")
     return first, (last or None)
+
+
+RENAME = """
+UPDATE public.customer
+   SET first_name = %(first_name)s, last_name = %(last_name)s, updated_at = now()
+ WHERE id = %(id)s::uuid AND deleted_at IS NULL
+"""
+
+
+def refresh_salon_name(account):
+    """Put the name "Show my name to salons" allows on the salon's record of
+    this customer, after the switch changes.
+
+    ONLY THE ROW THIS SERVICE MADE: the one whose id is the account's own
+    (resolve_customer creates it so). A customer matched to a salon's
+    walk-in record keeps that record as the salon wrote it: it is the
+    salon's, not the app's. Returns how many rows changed (0 or 1).
+    """
+    first, last = _name_of(account)
+    with connection.cursor() as cur:
+        cur.execute(RENAME, {"id": account.pk, "first_name": first, "last_name": last})
+        return cur.rowcount
 
 
 def resolve_customer(account, tenant_id, *, city="Dubai", country="UAE"):
