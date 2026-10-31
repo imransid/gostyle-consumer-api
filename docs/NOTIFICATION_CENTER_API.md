@@ -154,7 +154,7 @@ Cheap. Call it when the app comes to the front, and when a push arrives
 | `booking.confirmed` | orders | `booking` | a booking is confirmed (for one paid in the app: once the payment is recorded) |
 | `booking.rescheduled` | orders | `booking` | a booking moved to a new time |
 | `booking.cancelled` | orders | `booking` | a booking was cancelled |
-| `check_in.approved`, `check_in.rejected`, `check_in.expired` | orders | `booking` | coming |
+| `check_in.approved`, `check_in.rejected`, `check_in.expired` | orders | `booking` | the desk's answer to "I am here", in the words the check-in push always used ("You are checked in", "Sara A. is checked in"). Not silenced by "Booking changes": it answers the customer's own tap |
 | `booking.reminder` | updates | `booking` | the appointment reminder, at the customer's chosen time ("Your booking GS-1483 at Demo Salon & Spa is today at 11:30 AM.") |
 | `payment.completed`, `payment.refunded` | payments | `booking` | coming |
 | `promo.offer`, `promo.new_salon`, `promo.loyalty`, `salon.new_styles` | promotions / updates | `offer` or `salon` | coming |
@@ -166,7 +166,7 @@ Every push that comes from the center carries, in its `data` (all strings):
 | Key | Example |
 | --- | --- |
 | `notificationId` | `6b1f0c3e-...` (the item's `id`) |
-| `type` | the item's `type`, except the sign-in alert, which keeps the `new_sign_in` it always had |
+| `type` | the item's `type`, except two kinds that keep the type they always had: the sign-in alert (`new_sign_in`) and the check-in answers (`check_in_request.approved` / `.rejected` / `.expired`, with `bookingId`, `code`, `requestId`, `groupId` as before) |
 | `category` | `updates` |
 | `targetType`, `targetId` | the item's `target`, when it has one |
 | anything in the item's `data` | `sessionId`; for a booking `bookingId`, `bookingCode`, `startAt`, `salonId` |
