@@ -1,5 +1,9 @@
 # Notification Center (FE Integration Guide)
 
+> **Live on production. Build from `docs/NOTIFICATIONS_FE_GUIDE.md`**, the
+> one guide for the whole feature. This page is the first version, kept for
+> its history.
+
 Date: 2026-10-31. For: the mobile app team. The Notification Center screen
 (tabs All, Orders, Updates, Payments, Promotions) and the bell's unread
 badge.

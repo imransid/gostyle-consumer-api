@@ -1,5 +1,8 @@
 # Privacy & Visibility (FE Integration Guide)
 
+> **Live on production. Build from `docs/NOTIFICATIONS_FE_GUIDE.md`**, the
+> one guide for the whole feature. This page keeps the server steps.
+
 Date: 2026-10-31. For: the mobile app team. The Privacy & Visibility
 screen. Server steps at the end.
 
