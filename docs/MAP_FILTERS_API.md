@@ -18,12 +18,14 @@ Behind the switch `MAP_FILTER_V1`. Off, `/me/map/filters` is `404` and
 
 ---
 
-## What differs from your draft
+## Notes on your draft
 
-1. **Errors are `422`, not `400`.** Every field error in this API is `422`
-   with the usual envelope (`detail`, `code`, `errors[]`), and the map's own
-   params (`latitude`, `radius` ...) already answer `422`. Same envelope, same
-   reader. Codes in §4.
+Built as your draft asks. What to know:
+
+1. **Filter errors are `400`, the map's own are still `422`.** The five
+   filter params and their origin answer `400` as you asked, in the usual
+   envelope (`detail`, `code`, `errors[]`). The params the map took before
+   (`latitude`, `radius` ...) keep their `422`, as today. Codes in §4.
 2. **A service category id is one category NAME across all salons.** On the
    platform every salon makes its own categories, so salon A's "Hair" and
    salon B's "Hair" are two rows with two ids, and one salon's id means
@@ -33,21 +35,18 @@ Behind the switch `MAP_FILTER_V1`. Off, `/me/map/filters` is `404` and
    category's parent when it has one ("Hair > Colouring" is "Hair").
 3. **No "Verified" chip.** No salon carries a "verified by Go Style" mark on
    the platform yet, so the drawer leaves it out, as your §7 says, and
-   `additional=verified` is refused (`422`, `invalid_choice`).
+   `additional=verified` is refused (`400`, `invalid_choice`).
 4. **The `/me/map/filters` shape is ours.** We did not have your
    `map-filters.md`, so §1 is built from this doc: each section's `key` is the
    param, each option's `id` a value. If your `map-filters.md` asks for
    another shape, send it and we match it.
-5. **`rating` reads the rating as the pin shows it** (one decimal). A salon
-   at 4.96 shows "5.0" on its pin, so it passes `rating=5`; one at 4.94 shows
-   "4.9" and does not.
-6. **`availability` is per service category**, the full version from your
+5. **`availability` is per service category**, the full version from your
    §3, not the "any service" fallback from your §7.
-7. **`count` is the number of venues in the answer**, after the filters and
-   after `limit`, as today.
-8. **With `distance`, the venues come nearest to the origin first**, so when
-   there are more than `limit`, the nearest are kept. Without it the order is
-   as today.
+6. **With a filter, `count` can be more than the venues sent.** It is every
+   salon in view that matches, before `limit`, as your §4 says. A call with
+   no filter keeps today's `count`.
+7. **One extra answer: `503`** when `availability` is sent and we cannot read
+   who is busy. See §4.
 
 ---
 
@@ -180,7 +179,9 @@ GET /api/v1/discover/map?category=gents&latitude=25.2048&longitude=55.2708
     &additional=open_now
 ```
 
-Nothing matches: `200` with `"count": 0` and `"venues": []`.
+`count` is every salon in view that matches the filters, before `limit`,
+so it can be more than the venues sent. Nothing matches: `200` with
+`"count": 0` and `"venues": []`. The order of the venues is as today.
 
 ---
 
@@ -192,7 +193,7 @@ All params narrow together (AND), and together with the visible area and
 | Param | Keeps a salon when |
 | ----- | ------------------ |
 | `service_categories` | It has a service on its menu (published, open to online booking) in any of the categories (OR inside the list) |
-| `rating` | Its rating, rounded to one decimal as on the pin, is at least the value. Salons with no rating yet are left out |
+| `rating` | Its rating is at least the value: `5` means 5.0 only. Salons with no rating yet are left out |
 | `availability` | It has a start a customer could still book, on the salon's own clock: `today` from now to closing, `tomorrow` any time tomorrow, `week` from now to the end of the 7th day, today included. With `service_categories`, the start must be for a service in those categories |
 | `distance` | Its straight-line distance from `origin_latitude`, `origin_longitude` is at most the value, in km |
 | `additional=open_now` | It is open right now, by the same rule as `is_open_now` on `/discover` (and the card's `open`) |
@@ -227,15 +228,16 @@ All in the usual envelope:
 
 | Case | Status | `errors[].field` | `errors[].code` |
 | ---- | ------ | ---------------- | --------------- |
-| `rating`, `availability` or `distance` with an id the drawer does not offer | `422` | that param | `invalid_choice` |
-| `additional` with an id the drawer does not offer (e.g. `verified`) | `422` | `additional` | `invalid_choice` |
-| `distance` without `origin_latitude` or `origin_longitude` | `422` | the missing one | `required` |
-| `origin_latitude` or `origin_longitude` without `distance` | `422` | that param | `invalid` |
-| An origin that is not a number, or off the globe | `422` | that param | `invalid` |
+| `rating`, `availability` or `distance` with an id the drawer does not offer | `400` | that param | `invalid_choice` |
+| `additional` with an id the drawer does not offer (e.g. `verified`) | `400` | `additional` | `invalid_choice` |
+| `distance` without `origin_latitude` or `origin_longitude` | `400` | the missing one | `required` |
+| `origin_latitude` or `origin_longitude` without `distance` | `400` | that param | `invalid` |
+| An origin that is not a number, or off the globe | `400` | that param | `invalid` |
 | `service_categories` with an id we no longer have | `200` | | the id is ignored |
 | `any` in any param | `200` | | read as not sent |
 | `availability` sent and we cannot read who is busy | `503` | `null` | `availability_unavailable` (top `code`: `service_unavailable`). Retry, or show the map without it |
 | `/me/map/filters` with the switch off | `404` | | top `code`: `not_found` |
+| One of the map's own params (`latitude`, `radius` ...) cannot be read | `422` | that param | `invalid`, as today |
 
 ---
 
