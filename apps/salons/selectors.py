@@ -1190,18 +1190,26 @@ def with_is_favorite(qs, user):
         )
     )
 
-def with_distance(qs, user_lat, user_lng):
+def with_distance(qs, user_lat, user_lng, name="distance_km"):
+    """
+    The straight-line distance in km from a point, as the annotation `name`.
 
+    `name` lets one queryset carry two distances: the map's filters measure
+    from the customer (origin_latitude, origin_longitude) while its `radius`
+    still measures from the map's centre as `distance_km`.
+    """
     return qs.annotate(
-        distance_km=Value(EARTH_RADIUS_KM) * ACos(
-            Least(
-                Cos(Radians(Value(user_lat)))
-                * Cos(Radians(F("lat")))
-                * Cos(Radians(F("lng")) - Radians(Value(user_lng)))
-                + Sin(Radians(Value(user_lat))) * Sin(Radians(F("lat"))),
-                Value(1.0),
+        **{
+            name: Value(EARTH_RADIUS_KM) * ACos(
+                Least(
+                    Cos(Radians(Value(user_lat)))
+                    * Cos(Radians(F("lat")))
+                    * Cos(Radians(F("lng")) - Radians(Value(user_lng)))
+                    + Sin(Radians(Value(user_lat))) * Sin(Radians(F("lat"))),
+                    Value(1.0),
+                )
             )
-        )
+        }
     )
 
 
@@ -1234,9 +1242,12 @@ def filter_top_rated(qs):
     )
 
 
-def filter_by_radius(qs, user_lat, user_lng, radius_km):
+def filter_by_radius(qs, user_lat, user_lng, radius_km, name="distance_km"):
     """
     Salons within radius_km of a point, as the crow flies.
+
+    `name` is the annotation with_distance() made for this point (its own
+    `name`), so a second point on the same queryset filters on its own one.
 
     REQUIRES with_distance() to have run first: this filters on that
     annotation, and calling it on a bare queryset raises FieldError. That is
@@ -1268,7 +1279,7 @@ def filter_by_radius(qs, user_lat, user_lng, radius_km):
         lat__lte=ne_lat,
         lng__gte=sw_lng,
         lng__lte=ne_lng,
-        distance_km__lte=radius_km,
+        **{f"{name}__lte": radius_km},
     )
 
 
@@ -1485,6 +1496,43 @@ def map_venues(
         A lightweight queryset of ``Storefront`` instances annotated with
         ``lat``, ``lng``, ``avg_rating``, and ``photo_url``.
     """
+    qs = map_venue_queryset(
+        latitude=latitude,
+        longitude=longitude,
+        latitude_delta=latitude_delta,
+        longitude_delta=longitude_delta,
+        category=category,
+        radius_km=radius_km,
+    )
+
+    # NO try/except HERE, deliberately. This used to swallow every exception
+    # and fall back to the local `salons_salon` demo table, which meant a
+    # schema drift, a missing column or a denied SELECT under the read-only
+    # `consumer_app` grant all came back as three fake salons with a 200 and
+    # nothing in the log. A map that is broken must look broken: let it raise,
+    # let django.request log it, let the 500 be visible.
+    return qs[:map_venue_cap(limit)]
+
+
+def map_venue_cap(limit):
+    """How many pins one map call may return: the caller may ask for fewer, never for more."""
+    return MAP_VENUE_LIMIT if limit is None else min(int(limit), MAP_VENUE_LIMIT)
+
+
+def map_venue_queryset(
+    latitude=None,
+    longitude=None,
+    latitude_delta=None,
+    longitude_delta=None,
+    category="all",
+    radius_km=None,
+):
+    """
+    map_venues' query, ordered and NOT capped: the box, the category and the
+    radius, with the marker's columns. The map's filters (map_filters.py)
+    narrow this further before the cap, because the cap comes last: filter
+    first, then limit.
+    """
     box = bounding_box(latitude, longitude, latitude_delta, longitude_delta)
 
     published_reviews = StorefrontReview.objects.filter(
@@ -1555,16 +1603,8 @@ def map_venues(
     else:
         qs = qs.order_by("id")
 
-    # The caller may ask for fewer, never for more.
-    cap = MAP_VENUE_LIMIT if limit is None else min(int(limit), MAP_VENUE_LIMIT)
+    return qs
 
-    # NO try/except HERE, deliberately. This used to swallow every exception
-    # and fall back to the local `salons_salon` demo table, which meant a
-    # schema drift, a missing column or a denied SELECT under the read-only
-    # `consumer_app` grant all came back as three fake salons with a 200 and
-    # nothing in the log. A map that is broken must look broken: let it raise,
-    # let django.request log it, let the 500 be visible.
-    return qs[:cap]
 
 def salon_stories(storefront_id):
     """
@@ -1742,6 +1782,27 @@ def shift_rows(tenant_id, branch_id, staff_ids, day):
     )
 
 
+def shift_rows_between(tenant_id, branch_id, staff_ids, first_day, last_day):
+    """
+    `shift_rows` for every day from `first_day` to `last_day` (both included),
+    in one read, each row with its `shift_date`. Same rules: this branch's
+    roster only. For the map's availability filter (map_availability.py),
+    which looks at a salon's next seven days at once.
+    """
+    if not staff_ids:
+        return []
+
+    return list(
+        Shift.objects.filter(
+            tenant_id=tenant_id,
+            roster__branch_id=branch_id,
+            staff_member_id__in=list(staff_ids),
+            shift_date__gte=first_day,
+            shift_date__lte=last_day,
+        ).values("staff_member_id", "shift_date", "start_time", "end_time", "break_time")
+    )
+
+
 def roster_shift_days(storefront, staff_ids, first_week, last_week):
     """
     Which days these stylists were rostered at THIS salon's branch, in the
@@ -1832,6 +1893,16 @@ def service_timing_rows(storefront, service_ids, branch_id=None):
         "duration_minutes", "stage_minutes", "lead_time_minutes",
     ]
 
+    return list(
+        salon_services(storefront, branch_id)
+        .filter(id__in=list(service_ids))
+        .annotate(stage_minutes=_stage_minutes())
+        .values(*fields)
+    )
+
+
+def _stage_minutes():
+    """A service's stages summed (buffer_pre + work + impact + buffer_post), as a subquery."""
     stages = ServiceStage.objects.filter(service_id=OuterRef("pk")).values(
         "service_id"
     ).annotate(
@@ -1841,12 +1912,37 @@ def service_timing_rows(storefront, service_ids, branch_id=None):
             output_field=IntegerField(),
         )
     ).values("total")
+    return Subquery(stages, output_field=IntegerField())
 
+
+def menu_timing_rows(storefront):
+    """
+    `service_timing_rows` for EVERY service on this salon's menu (the
+    Services tab's own list, salon_services), each with its category
+    (`category_0_id`). For the map's availability filter, which asks whether
+    ANY service here still has a free start, or any in some categories.
+    """
     return list(
-        salon_services(storefront, branch_id)
-        .filter(id__in=list(service_ids))
-        .annotate(stage_minutes=Subquery(stages, output_field=IntegerField()))
-        .values(*fields)
+        salon_services(storefront)
+        .annotate(stage_minutes=_stage_minutes())
+        .values(
+            "id", "category_0_id", "duration_minutes", "stage_minutes", "lead_time_minutes",
+        )
+    )
+
+
+def manual_states_between(storefront_id, first_day, last_day):
+    """
+    `manual_state_on` for every day from `first_day` to `last_day` (both
+    included), as {date: state}. One read: a salon has one status row.
+    """
+    return dict(
+        StorefrontStatus.objects.filter(
+            storefront_id=storefront_id,
+            source="MANUAL",
+            applies_on__gte=first_day,
+            applies_on__lte=last_day,
+        ).values_list("applies_on", "state")
     )
 
 

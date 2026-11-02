@@ -81,7 +81,8 @@ FLOW = (
         "The discovery screens: the list, the map and the story rail.",
         (
             ("GET", "/api/v1/discover", "Salons to discover (the list, with filters)"),
-            ("GET", "/api/v1/discover/map", "Salons on the map"),
+            ("GET", "/api/v1/me/map/filters", "The map's Filters drawer (MAP_FILTER_V1)"),
+            ("GET", "/api/v1/discover/map", "Salons on the map (with the drawer's filters)"),
             ("GET", "/api/v1/discover/story", "Salons with a story right now"),
             ("GET", "/api/v1/discover/{id}", "One salon's card"),
         ),
