@@ -104,8 +104,14 @@ def api_exception_handler(exc, context):
     errors = _flatten(response.data)
 
     # 400 with field errors is a validation failure; the client expects 422.
-    # Other statuses (401, 403, 429) keep their own meaning.
-    if response.status_code == status.HTTP_400_BAD_REQUEST and errors:
+    # Other statuses (401, 403, 429) keep their own meaning. An exception with
+    # `stays_400` keeps its 400 (same envelope): a contract that asked for 400,
+    # the map's filter params (docs/map-filter-params-fe-contract.md, section 6).
+    if (
+        response.status_code == status.HTTP_400_BAD_REQUEST
+        and errors
+        and not getattr(exc, "stays_400", False)
+    ):
         response.status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
 
     code = response.status_code

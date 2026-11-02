@@ -52,11 +52,10 @@ DISTANCE_OPTIONS = (("5", "5 km"), ("10", "10 km"), ("20", "20 km"), ("100", "10
 # like any other id the drawer does not offer (the FE doc's own rule).
 ADDITIONAL_OPTIONS = (("open_now", "Open now"),)
 
-# Kept when its rating, AS THE PIN SHOWS IT (one decimal, MapVenueSerializer),
-# is at least the pick: 3.96 shows as 4.0 and passes "4". Half up to one
-# decimal reaches the pick exactly when the average is at least 0.05 below
-# it, so "5" keeps the salons whose pin reads 5.0, and nothing else.
-RATING_FLOORS = {rating_id: float(rating_id) - 0.05 for rating_id, _ in RATING_OPTIONS}
+# Kept when its average rating is at least the pick (the FE doc, section 3):
+# "4" keeps 4.0 and up, "5" keeps 5.0 only. The plain average, not the pin's
+# rounded one: 3.96 shows "4.0" on its pin and does NOT pass "4".
+RATING_FLOORS = {rating_id: float(rating_id) for rating_id, _ in RATING_OPTIONS}
 
 # The distance from the customer, beside the map's own `distance_km` (from
 # the map's centre, for `radius`).
@@ -360,9 +359,10 @@ def _on_menu_in(category_ids):
 
 def filtered_map_venues(map_params, filters, now):
     """
-    GET /discover/map's venues with the drawer's filters on: a list, at most
-    the map's cap long. `map_params` is params.parse_map's answer, `now` an
-    aware datetime.
+    GET /discover/map's venues with the drawer's filters on, as (venues,
+    count): `venues` a list at most the map's cap long, `count` every salon
+    in view that matches, before the cap (the FE doc, section 4).
+    `map_params` is params.parse_map's answer, `now` an aware datetime.
 
     FILTER FIRST, THEN THE CAP. Cheapest first (the FE doc, 5.1): the box,
     the category and the radius (map_venue_queryset), the rating, the
@@ -374,7 +374,12 @@ def filtered_map_venues(map_params, filters, now):
     qs, picked = filtered_queryset(map_params, filters)
     cap = map_venue_cap(map_params["limit"])
     if not filters.open_now and filters.availability is None:
-        return list(qs[:cap])
+        if picked is None and filters.rating is None and filters.distance_km is None:
+            # Every category id unknown and nothing else: as if no param was
+            # sent (the FE doc, section 6), so `count` as on a plain call.
+            venues = list(qs[:cap])
+            return venues, len(venues)
+        return list(qs[:cap]), qs.count()
 
     # What "open now" and the slots are read from: the published hours,
     # today's hand-set state (which needs the branch's timezone) and the
@@ -387,17 +392,16 @@ def filtered_map_venues(map_params, filters, now):
             )
         )
     )
-    return keep_open_and_available(list(qs), filters, picked, now, cap)
+    kept = keep_open_and_available(list(qs), filters, picked, now)
+    return kept[:cap], len(kept)
 
 
-def keep_open_and_available(rows, filters, picked, now, cap=None):
+def keep_open_and_available(rows, filters, picked, now):
     """
     The rows open now (when asked) and with a start left (when asked), in
-    their order, at most `cap` of them.
-
-    The availability is asked a batch of `cap` rows at a time, in order, and
-    stops once `cap` are kept: a salon after those would be cut by the cap
-    anyway, so its slots are never worked out.
+    their order, ALL of them: `count` is every match in view, so the
+    availability is worked out for every salon left, in one call (one read of
+    who is busy), not only until the cap is full.
     """
     if filters.open_now:
         # /discover's is_open_now, by the card's own rule (SalonCardSerializer.get_open).
@@ -405,17 +409,10 @@ def keep_open_and_available(rows, filters, picked, now, cap=None):
         rows = [row for row in rows if card.get_open(row)]
 
     if filters.availability is None or not rows:
-        return rows[:cap]
+        return rows
 
-    kept = []
-    step = cap or len(rows)
-    for start in range(0, len(rows), step):
-        batch = rows[start:start + step]
-        keep = map_availability.available_ids(batch, filters.availability, picked, now)
-        kept.extend(row for row in batch if row.pk in keep)
-        if cap is not None and len(kept) >= cap:
-            break
-    return kept[:cap]
+    keep = map_availability.available_ids(rows, filters.availability, picked, now)
+    return [row for row in rows if row.pk in keep]
 
 
 def filtered_queryset(map_params, filters):
@@ -440,13 +437,10 @@ def filtered_queryset(map_params, filters):
     if filters.distance_km is not None:
         origin_latitude, origin_longitude = filters.origin
         qs = with_distance(qs, origin_latitude, origin_longitude, name=ORIGIN_DISTANCE)
+        # The map keeps its own order: the FE doc changes nothing in the answer.
         qs = filter_by_radius(
             qs, origin_latitude, origin_longitude, filters.distance_km, name=ORIGIN_DISTANCE
         )
-        # The nearest to the customer first, so the cap keeps those. With a
-        # `radius` the map keeps its own order (from its centre).
-        if map_params["radius_km"] is None:
-            qs = qs.order_by(ORIGIN_DISTANCE, "id")
 
     picked = None
     if filters.service_categories:

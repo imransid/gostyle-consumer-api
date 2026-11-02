@@ -995,6 +995,16 @@ class MapAvailabilityDown(APIException):
     default_code = "availability_unavailable"
 
 
+class MapFilterInvalid(ValidationError):
+    """
+    A Filters drawer pick that cannot be read: 400, as the FE doc asks
+    (docs/map-filter-params-fe-contract.md, section 6), in the usual envelope.
+    The map's own params (latitude, radius ...) keep their 422.
+    """
+
+    stays_400 = True
+
+
 class DiscoverMapView(APIView):
     """Map viewport endpoint, returns lightweight venue markers.
 
@@ -1040,8 +1050,8 @@ class DiscoverMapView(APIView):
                              )),
             OpenApiParameter("rating", str, required=False,
                              description=(
-                                 "MAP_FILTER_V1. The rating as the pin shows it is at least "
-                                 "this. Unrated salons are left out."
+                                 "MAP_FILTER_V1. The salon's rating is at least this (5: "
+                                 "5.0 only). Unrated salons are left out."
                              ),
                              enum=["any", *[o for o, _ in map_filters.RATING_OPTIONS]]),
             OpenApiParameter("availability", str, required=False,
@@ -1076,9 +1086,16 @@ class DiscoverMapView(APIView):
                     "venues": MapVenueSerializer(many=True),
                 },
             ),
+            400: OpenApiResponse(
+                response=_OUR_ENVELOPE,
+                description=(
+                    "MAP_FILTER_V1. A filter param with an id the drawer does not "
+                    "offer, or distance and its origin not sent together."
+                ),
+            ),
             422: OpenApiResponse(
                 response=_OUR_ENVELOPE,
-                description="A param that cannot be read, or an id the drawer does not offer.",
+                description="One of the map's own params (latitude, radius ...) cannot be read.",
             ),
             503: OpenApiResponse(
                 response=_OUR_ENVELOPE,
@@ -1092,6 +1109,13 @@ class DiscoverMapView(APIView):
     def get(self, request):
         try:
             params = parse_map(request.query_params)
+        except ParamError as exc:
+            # Raised, not returned. The project's exception handler turns this
+            # into the same field-level envelope /discover produces, so one
+            # client-side error reader works for both endpoints.
+            raise _invalid(exc) from exc
+
+        try:
             # The drawer's picks, read only with the switch on: off, the map
             # ignores them, as it ignored every param it did not know.
             filters = (
@@ -1100,21 +1124,23 @@ class DiscoverMapView(APIView):
                 else map_filters.NO_FILTERS
             )
         except ParamError as exc:
-            # Raised, not returned. The project's exception handler turns this
-            # into the same field-level envelope /discover produces, so one
-            # client-side error reader works for both endpoints.
-            raise _invalid(exc) from exc
+            # The same envelope, but 400: the FE doc's own answer (section 6).
+            raise MapFilterInvalid(
+                {exc.param: [ErrorDetail(exc.message, code=exc.code)]}
+            ) from exc
 
         if filters.active:
             try:
-                venues_qs = map_filters.filtered_map_venues(
+                venues_qs, count = map_filters.filtered_map_venues(
                     params, filters, now=datetime.now(dt_timezone.utc)
                 )
             except map_availability.AvailabilityUnavailable as exc:
                 logger.error("map availability: %s", exc)
                 raise MapAvailabilityDown() from exc
             venues = MapVenueSerializer(venues_qs, many=True).data
-            return Response({"mode": "markers", "count": len(venues), "venues": venues})
+            # `count` is every salon in view that matches, before `limit`
+            # (the FE doc, section 4), so it can be more than len(venues).
+            return Response({"mode": "markers", "count": count, "venues": venues})
 
         venues_qs = map_venues(
             latitude=params["latitude"],

@@ -354,29 +354,29 @@ class FilteredQuerysetTests(SimpleTestCase):
         self.assertEqual(tuple(qs.query.order_by), ("id",))
         self.assertIsNone(picked)
 
-    def test_rating_compares_the_rating_as_the_pin_shows_it(self):
-        for rating, floor in (("3", 2.95), ("4", 3.95), ("4.5", 4.45), ("5", 4.95)):
+    def test_rating_is_the_average_at_least_the_pick(self):
+        # The FE doc: "at least the value", "5 means 5.0 only".
+        for rating, floor in (("3", 3.0), ("4", 4.0), ("4.5", 4.5), ("5", 5.0)):
             qs, _ = self.build(MapFilters(rating=rating))
             self.assertIn("gte", [lookup for lookup, _ in where_lookups(qs.query)])
-            self.assertAlmostEqual(
+            self.assertEqual(
                 [value for lookup, value in where_lookups(qs.query) if lookup == "gte"
-                 and isinstance(value, float) and value < 5][-1],
+                 and isinstance(value, float) and value <= 5][-1],
                 floor,
             )
 
-    def test_the_rating_floor_keeps_what_rounds_up_to_the_pick(self):
-        # MapVenueSerializer shows round(avg, 1). Half up, avg >= floor is the pick.
-        for rating, floor in map_filters.RATING_FLOORS.items():
-            self.assertEqual(round(floor + 0.0001, 1), float(rating))
-            self.assertLess(round(floor - 0.0001, 1), float(rating))
+    def test_the_rating_floor_is_the_pick_itself_not_the_pin_s_rounding(self):
+        self.assertEqual(
+            map_filters.RATING_FLOORS, {"3": 3.0, "4": 4.0, "4.5": 4.5, "5": 5.0}
+        )
 
     def test_distance_measures_from_the_origin_under_its_own_name(self):
         qs, _ = self.build(MapFilters(distance_km=10.0, origin=(25.19, 55.27)))
         self.assertIn(map_filters.ORIGIN_DISTANCE, qs.query.annotations)
         self.assertNotIn("distance_km", qs.query.annotations)
         self.assertIn(("lte", 10.0), where_lookups(qs.query))
-        # The nearest to the customer first, so the cap keeps those.
-        self.assertEqual(tuple(qs.query.order_by), (map_filters.ORIGIN_DISTANCE, "id"))
+        # The map keeps its own order: the FE doc changes nothing in the answer.
+        self.assertEqual(tuple(qs.query.order_by), ("id",))
 
     def test_with_a_radius_too_the_map_keeps_its_own_order_and_both_distances(self):
         with_radius = parse_map(q("latitude=25.2&longitude=55.27&radius=5000"))
@@ -439,30 +439,28 @@ class KeepOpenAndAvailableTests(SimpleTestCase):
         asked, window, picked, now = found.call_args.args
         self.assertEqual(([r.pk for r in asked], window, picked, now), ([SALON_A], "today", [HAIR], NOW))
 
-    def test_availability_stops_once_the_cap_is_full(self):
+    def test_availability_is_asked_once_for_every_row_left(self):
+        # `count` is every match in view, so no salon is skipped for the cap.
         rows = [row(uuid.uuid4(), "OPEN") for _ in range(5)]
         every = {r.pk for r in rows}
         with mock.patch.object(map_availability, "available_ids", return_value=every) as found:
             kept = map_filters.keep_open_and_available(
-                rows, MapFilters(availability="week"), None, NOW, cap=2
+                rows, MapFilters(availability="week"), None, NOW
             )
-        self.assertEqual(kept, rows[:2])
+        self.assertEqual(kept, rows)
         found.assert_called_once()
-        self.assertEqual(found.call_args.args[0], rows[:2])
+        self.assertEqual(found.call_args.args[0], rows)
 
-    def test_availability_reads_on_in_order_until_the_cap_is_full(self):
+    def test_availability_keeps_the_order(self):
         rows = [row(uuid.uuid4(), "OPEN") for _ in range(5)]
         # Only the 2nd and the 5th have a start left.
         with mock.patch.object(
-            map_availability, "available_ids", return_value={rows[1].pk, rows[4].pk}
-        ) as found:
+            map_availability, "available_ids", return_value={rows[4].pk, rows[1].pk}
+        ):
             kept = map_filters.keep_open_and_available(
-                rows, MapFilters(availability="today"), None, NOW, cap=2
+                rows, MapFilters(availability="today"), None, NOW
             )
         self.assertEqual(kept, [rows[1], rows[4]])
-        self.assertEqual(
-            [call.args[0] for call in found.call_args_list], [rows[0:2], rows[2:4], rows[4:5]]
-        )
 
     def test_nothing_left_asks_nothing(self):
         with mock.patch.object(map_availability, "available_ids") as found:
@@ -474,24 +472,41 @@ class KeepOpenAndAvailableTests(SimpleTestCase):
 
 
 class FilteredMapVenuesTests(SimpleTestCase):
-    """filtered_map_venues: filter first, then the cap."""
+    """filtered_map_venues: filter first, then the cap; count is every match."""
 
-    def test_the_cap_comes_after_the_python_filters(self):
+    def test_the_cap_comes_after_the_python_filters_and_count_before_it(self):
         rows = [row(uuid.uuid4(), "CLOSED") for _ in range(3)] + [row(SALON_A, "OPEN"), row(SALON_B, "OPEN")]
         fake_qs = mock.MagicMock()
         fake_qs.annotate.return_value = fake_qs
         with mock.patch.object(map_filters, "filtered_queryset", return_value=(fake_qs, None)), \
                 mock.patch.object(map_filters, "with_published_card_fields", return_value=rows):
-            kept = map_filters.filtered_map_venues({**MAP, "limit": 1}, MapFilters(open_now=True), NOW)
+            kept, count = map_filters.filtered_map_venues(
+                {**MAP, "limit": 1}, MapFilters(open_now=True), NOW
+            )
         self.assertEqual([r.pk for r in kept], [SALON_A])
+        self.assertEqual(count, 2)
 
-    def test_sql_only_filters_slice_in_sql(self):
+    def test_sql_only_filters_slice_and_count_in_sql(self):
+        fake_qs = mock.MagicMock()
+        fake_qs.__getitem__.return_value = ["a", "b"]
+        fake_qs.count.return_value = 7
+        with mock.patch.object(map_filters, "filtered_queryset", return_value=(fake_qs, None)):
+            kept, count = map_filters.filtered_map_venues(
+                {**MAP, "limit": 2}, MapFilters(rating="4"), NOW
+            )
+        fake_qs.__getitem__.assert_called_once_with(slice(None, 2))
+        self.assertEqual((kept, count), (["a", "b"], 7))
+
+    def test_every_category_unknown_counts_as_a_plain_call(self):
+        # As if the param were not sent: count is the venues, as today.
         fake_qs = mock.MagicMock()
         fake_qs.__getitem__.return_value = ["a", "b"]
         with mock.patch.object(map_filters, "filtered_queryset", return_value=(fake_qs, None)):
-            kept = map_filters.filtered_map_venues({**MAP, "limit": 2}, MapFilters(rating="4"), NOW)
-        fake_qs.__getitem__.assert_called_once_with(slice(None, 2))
-        self.assertEqual(kept, ["a", "b"])
+            kept, count = map_filters.filtered_map_venues(
+                {**MAP, "limit": 2}, MapFilters(service_categories=("gone",)), NOW
+            )
+        fake_qs.count.assert_not_called()
+        self.assertEqual((kept, count), (["a", "b"], 2))
 
 
 class LatestStartTests(SimpleTestCase):
@@ -865,7 +880,9 @@ class DiscoverMapViewTests(SimpleTestCase):
         patcher = mock.patch.object(views, "map_venues", return_value=[venue(SALON_A)])
         self.map_venues = patcher.start()
         self.addCleanup(patcher.stop)
-        patcher = mock.patch.object(map_filters, "filtered_map_venues", return_value=[venue(SALON_B)])
+        patcher = mock.patch.object(
+            map_filters, "filtered_map_venues", return_value=([venue(SALON_B)], 1)
+        )
         self.filtered = patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -917,8 +934,16 @@ class DiscoverMapViewTests(SimpleTestCase):
         })
 
     @override_settings(MAP_FILTER_V1=True)
+    def test_count_is_every_match_not_only_the_venues_sent(self):
+        self.filtered.return_value = ([venue(SALON_B)], 240)
+        response = self.get("latitude=25.2&longitude=55.27&limit=1&rating=4")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["count"], 240)
+        self.assertEqual(len(response.json()["venues"]), 1)
+
+    @override_settings(MAP_FILTER_V1=True)
     def test_nothing_matches_is_200_and_empty(self):
-        self.filtered.return_value = []
+        self.filtered.return_value = ([], 0)
         response = self.get("rating=5")
         self.assertEqual((response.status_code, response.json()),
                          (200, {"mode": "markers", "count": 0, "venues": []}))
@@ -931,9 +956,9 @@ class DiscoverMapViewTests(SimpleTestCase):
         self.map_venues.assert_called_once()
 
     @override_settings(MAP_FILTER_V1=True)
-    def test_an_id_not_offered_is_the_field_error_envelope(self):
+    def test_an_id_not_offered_is_the_field_error_envelope_as_a_400(self):
         response = self.get("rating=7")
-        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.status_code, 400)
         body = response.json()
         self.assertEqual(body["code"], "validation_error")
         self.assertEqual(body["errors"][0]["field"], "rating")
@@ -943,12 +968,29 @@ class DiscoverMapViewTests(SimpleTestCase):
     @override_settings(MAP_FILTER_V1=True)
     def test_distance_without_its_origin_is_refused(self):
         response = self.get("distance=10")
-        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["code"], "validation_error")
         self.assertEqual(
             response.json()["errors"],
             [{"field": "origin_latitude", "code": "required",
               "message": "Send origin_latitude and origin_longitude with distance."}],
         )
+
+    @override_settings(MAP_FILTER_V1=True)
+    def test_every_filter_error_is_a_400(self):
+        # The FE doc, section 6: an id not offered, or an origin without distance.
+        for query, field in (
+            ("availability=soon", "availability"),
+            ("distance=7&origin_latitude=25.19&origin_longitude=55.27", "distance"),
+            ("additional=open_now,verified", "additional"),
+            ("origin_latitude=25.19&origin_longitude=55.27", "origin_latitude"),
+            ("distance=any&origin_latitude=25.19&origin_longitude=55.27", "origin_latitude"),
+        ):
+            with self.subTest(query=query):
+                response = self.get(query)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["errors"][0]["field"], field)
+        self.filtered.assert_not_called()
 
     @override_settings(MAP_FILTER_V1=True)
     def test_the_old_params_keep_their_errors(self):
