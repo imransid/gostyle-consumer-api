@@ -448,6 +448,14 @@ REMINDER_TIMING_V1 = env.bool("REMINDER_TIMING_V1", default=False)
 # stored setting either way; while this is off, nobody can change it.
 PRIVACY_SETTINGS_V1 = env.bool("PRIVACY_SETTINGS_V1", default=False)
 
+# The map's Filters drawer (docs/MAP_FILTERS_API.md): GET /me/map/filters and
+# the five filter params on GET /discover/map (service_categories, rating,
+# availability, distance with its origin, additional). OFF, /me/map/filters
+# is a 404 and /discover/map ignores the five params, as it always did.
+# availability reads booking-api's database (BOOKING_DB_NAME): without it, a
+# map call asking for availability answers 503.
+MAP_FILTER_V1 = env.bool("MAP_FILTER_V1", default=False)
+
 # The key authenticator secrets are encrypted with (AES-GCM): 32 random bytes,
 # base64. docs/TWO_FACTOR_SERVER.md says how to make one. Empty or not a key:
 # the authenticator calls answer 503 and log it, email and phone codes still

@@ -5,6 +5,7 @@ from . import (
     expert_profile_views,
     group_check_in_views,
     group_views,
+    map_views,
     package_detail_views,
     routine_views,
     series_views,
@@ -40,6 +41,8 @@ urlpatterns = [
     path("salons/", SalonListView.as_view()),
     path("discover", SalonDiscoveryListView.as_view(), name="salon-discover"),
     path("discover/map", DiscoverMapView.as_view(), name="salon-discover-map"),
+    # The map's Filters drawer (MAP_FILTER_V1). Off, it is a 404.
+    path("me/map/filters", map_views.MapFiltersView.as_view(), name="map-filters"),
     path("discover/<uuid:pk>", SalonDiscoveryDetailView.as_view(), name="salon-discover-detail"),
     path("salon/<uuid:salon_id>", SalonProfileView.as_view(), name="salon-profile"),
     path("salon/<uuid:salon_id>/services", SalonServicesView.as_view(), name="salon-services"),

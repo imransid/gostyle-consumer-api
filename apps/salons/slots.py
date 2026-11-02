@@ -144,3 +144,33 @@ def starts(free, duration_minutes, window_start, window_end, earliest, day_start
             found.append(moment)
             moment += timedelta(minutes=grid_minutes)
     return sorted(found)
+
+
+def latest_start(free, duration_minutes, window_start, window_end, earliest, day_start,
+                 grid_minutes=SLOT_GRID_MINUTES):
+    """
+    The LAST start `starts` would offer, or None when it offers none.
+
+    The same rules, worked out per interval instead of walked one grid step
+    at a time: the map's availability filter asks this for every stylist and
+    service of every salon in view, and only ever needs the last one (any
+    start at or after "now" exists exactly when the last one is).
+    """
+    grid = grid_minutes * 60
+    duration = timedelta(minutes=duration_minutes)
+    latest = None
+    for interval_start, interval_end in free:
+        first = align_up(
+            max(interval_start, window_start, earliest), day_start, grid_minutes
+        )
+        # A start may run to `interval_end - duration`, and must be before
+        # `window_end`: the two conditions of the loop in `starts`.
+        if first + duration > interval_end or first >= window_end:
+            continue
+        steps_to_end = (interval_end - duration - first).total_seconds() // grid
+        before_window = (window_end - first).total_seconds()
+        steps_to_window = -(-before_window // grid) - 1
+        moment = first + timedelta(seconds=min(steps_to_end, steps_to_window) * grid)
+        if latest is None or moment > latest:
+            latest = moment
+    return latest

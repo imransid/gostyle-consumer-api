@@ -15,7 +15,9 @@ from drf_spectacular.utils import (
     OpenApiResponse,
     extend_schema,
     extend_schema_view,
+    inline_serializer,
 )
+from rest_framework import serializers
 from rest_framework.exceptions import (
     APIException,
     ErrorDetail,
@@ -58,7 +60,7 @@ from apps.accounts.models import Favourite, FavouriteStylist
 from .customer_sync import NoUsablePhone, resolve_customer
 
 from . import packages as package_rules
-from . import roster, slots, timezones
+from . import map_availability, map_filters, roster, slots, timezones
 from .hours import resolve as resolve_hours
 from .hours import weekly_row as hours_row
 from .menu import service_groups, service_row
@@ -985,6 +987,14 @@ class SalonStoriesView(APIView):
         })
 
 
+class MapAvailabilityDown(APIException):
+    """503 when the map's availability filter cannot read who is busy (map_availability)."""
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    default_detail = "Availability is temporarily unavailable. Please try again."
+    default_code = "availability_unavailable"
+
+
 class DiscoverMapView(APIView):
     """Map viewport endpoint, returns lightweight venue markers.
 
@@ -1020,17 +1030,91 @@ class DiscoverMapView(APIView):
             OpenApiParameter("category", str, required=False,
                              description="Venue category filter",
                              enum=["all", "gents", "ladies", "unisex"]),
+            # The Filters drawer's picks (MAP_FILTER_V1; off, they are ignored).
+            # Each is a section key of GET /me/map/filters, its value the ids.
+            OpenApiParameter("service_categories", str, required=False,
+                             description=(
+                                 "MAP_FILTER_V1. Category ids from /me/map/filters, comma "
+                                 "separated: a salon with a service in any of them. An "
+                                 "unknown id is ignored."
+                             )),
+            OpenApiParameter("rating", str, required=False,
+                             description=(
+                                 "MAP_FILTER_V1. The rating as the pin shows it is at least "
+                                 "this. Unrated salons are left out."
+                             ),
+                             enum=["any", *[o for o, _ in map_filters.RATING_OPTIONS]]),
+            OpenApiParameter("availability", str, required=False,
+                             description=(
+                                 "MAP_FILTER_V1. A start a customer can still book, on the "
+                                 "salon's clock: today, tomorrow, or the next 7 days (week). "
+                                 "With service_categories, for a service in them."
+                             ),
+                             enum=["any", *[o for o, _ in map_filters.AVAILABILITY_OPTIONS]]),
+            OpenApiParameter("distance", str, required=False,
+                             description=(
+                                 "MAP_FILTER_V1. Kilometres from origin_latitude, "
+                                 "origin_longitude, sent with both."
+                             ),
+                             enum=["any", *[o for o, _ in map_filters.DISTANCE_OPTIONS]]),
+            OpenApiParameter("origin_latitude", float, required=False,
+                             description="MAP_FILTER_V1. Where distance is measured from. Only with distance."),
+            OpenApiParameter("origin_longitude", float, required=False,
+                             description="MAP_FILTER_V1. Where distance is measured from. Only with distance."),
+            OpenApiParameter("additional", str, required=False,
+                             description=(
+                                 "MAP_FILTER_V1. Comma separated: open_now (open right now, "
+                                 "as is_open_now on /discover)."
+                             )),
         ],
-        responses={200: MapVenueSerializer(many=True)},
+        responses={
+            200: inline_serializer(
+                "MapVenues",
+                fields={
+                    "mode": serializers.CharField(),
+                    "count": serializers.IntegerField(),
+                    "venues": MapVenueSerializer(many=True),
+                },
+            ),
+            422: OpenApiResponse(
+                response=_OUR_ENVELOPE,
+                description="A param that cannot be read, or an id the drawer does not offer.",
+            ),
+            503: OpenApiResponse(
+                response=_OUR_ENVELOPE,
+                description=(
+                    "availability was asked for and who is busy cannot be read "
+                    "(availability_unavailable)."
+                ),
+            ),
+        },
     )
     def get(self, request):
         try:
             params = parse_map(request.query_params)
+            # The drawer's picks, read only with the switch on: off, the map
+            # ignores them, as it ignored every param it did not know.
+            filters = (
+                map_filters.parse_map_filters(request.query_params)
+                if settings.MAP_FILTER_V1
+                else map_filters.NO_FILTERS
+            )
         except ParamError as exc:
             # Raised, not returned. The project's exception handler turns this
             # into the same field-level envelope /discover produces, so one
             # client-side error reader works for both endpoints.
-            raise ValidationError({exc.param: [exc.message]}) from exc
+            raise _invalid(exc) from exc
+
+        if filters.active:
+            try:
+                venues_qs = map_filters.filtered_map_venues(
+                    params, filters, now=datetime.now(dt_timezone.utc)
+                )
+            except map_availability.AvailabilityUnavailable as exc:
+                logger.error("map availability: %s", exc)
+                raise MapAvailabilityDown() from exc
+            venues = MapVenueSerializer(venues_qs, many=True).data
+            return Response({"mode": "markers", "count": len(venues), "venues": venues})
 
         venues_qs = map_venues(
             latitude=params["latitude"],
