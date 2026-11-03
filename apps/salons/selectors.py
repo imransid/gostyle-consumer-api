@@ -72,6 +72,7 @@ from .skills import (
 )
 
 from .geo import EARTH_RADIUS_KM, bounding_box, radius_box
+from .models import SalonCountry
 from .serializers import CATEGORY_ALIASES
 from .timezones import DEFAULT_TIMEZONE
 
@@ -1474,6 +1475,7 @@ def map_venues(
     category: str = "all",
     radius_km: float | None = None,
     limit: int | None = None,
+    country: str | None = None,
 ) -> "QuerySet[Storefront]":
     """Return discoverable storefronts inside the viewport bounding box.
 
@@ -1496,6 +1498,8 @@ def map_venues(
         limit: Optional caller ceiling on rows, itself capped by
             MAP_VENUE_LIMIT. A public endpoint cannot let the caller pick the
             number.
+        country: Optional ISO code ("AE"): only salons in that country
+            (MAP_COUNTRY_V1, apps/salons/map_country.py), before the cap.
 
     Returns:
         A lightweight queryset of ``Storefront`` instances annotated with
@@ -1508,6 +1512,7 @@ def map_venues(
         longitude_delta=longitude_delta,
         category=category,
         radius_km=radius_km,
+        country=country,
     )
 
     # NO try/except HERE, deliberately. This used to swallow every exception
@@ -1524,6 +1529,39 @@ def map_venue_cap(limit):
     return MAP_VENUE_LIMIT if limit is None else min(int(limit), MAP_VENUE_LIMIT)
 
 
+def map_salons():
+    """
+    Every salon the map can show, anywhere: public, not deleted, with a pin
+    (`lat` and `lng`, from its branch). map_venue_queryset narrows it to one
+    view; map_country counts it per country (`has_salons`).
+    """
+    branch = Branch.objects.filter(id=OuterRef("branch_id"))
+    return (
+        Storefront.objects.filter(
+            visibility="PUBLIC",
+            deleted_at__isnull=True,
+        )
+        .annotate(
+            lat=Subquery(branch.values("lat")[:1], output_field=FloatField()),
+            lng=Subquery(branch.values("lng")[:1], output_field=FloatField()),
+        )
+        .filter(
+            lat__isnull=False,
+            lng__isnull=False,
+        )
+    )
+
+
+def in_country(country):
+    """
+    The salon's pin is in `country` (an ISO code, "AE"), by the country this
+    service worked out from its coordinates (models.SalonCountry).
+    """
+    return Exists(
+        SalonCountry.objects.filter(branch_id=OuterRef("branch_id"), country_code=country)
+    )
+
+
 def map_venue_queryset(
     latitude=None,
     longitude=None,
@@ -1531,12 +1569,13 @@ def map_venue_queryset(
     longitude_delta=None,
     category="all",
     radius_km=None,
+    country=None,
 ):
     """
-    map_venues' query, ordered and NOT capped: the box, the category and the
-    radius, with the marker's columns. The map's filters (map_filters.py)
-    narrow this further before the cap, because the cap comes last: filter
-    first, then limit.
+    map_venues' query, ordered and NOT capped: the country, the box, the
+    category and the radius, with the marker's columns. The map's filters
+    (map_filters.py) narrow this further before the cap, because the cap
+    comes last: filter first, then limit.
     """
     box = bounding_box(latitude, longitude, latitude_delta, longitude_delta)
 
@@ -1545,16 +1584,9 @@ def map_venue_queryset(
         state="PUBLISHED",
     )
 
-    branch = Branch.objects.filter(id=OuterRef("branch_id"))
-
     qs = (
-        Storefront.objects.filter(
-            visibility="PUBLIC",
-            deleted_at__isnull=True,
-        )
+        map_salons()
         .annotate(
-            lat=Subquery(branch.values("lat")[:1], output_field=FloatField()),
-            lng=Subquery(branch.values("lng")[:1], output_field=FloatField()),
             avg_rating=Subquery(
                 published_reviews.values("storefront_id")
                 .annotate(avg=Avg("rating"))
@@ -1573,11 +1605,13 @@ def map_venue_queryset(
                 output_field=TextField(),
             ),
         )
-        .filter(
-            lat__isnull=False,
-            lng__isnull=False,
-        )
     )
+
+    # The customer's country first (MAP_COUNTRY_V1): before the box, the
+    # filters and the cap, so the cap is never spent on a salon across a
+    # border.
+    if country is not None:
+        qs = qs.filter(in_country(country))
 
     if box is not None:
         sw_lat, sw_lng, ne_lat, ne_lng = box

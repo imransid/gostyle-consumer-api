@@ -324,6 +324,24 @@ def parse_map(params):
     }
 
 
+def parse_user_position(params):
+    """
+    The phone's own position on GET /discover/map (MAP_COUNTRY_V1), as
+    (latitude, longitude), or None when the customer shared none. Only ever
+    used to pick the customer's country (apps/salons/map_country.py): never
+    stored, never logged.
+
+    Both or neither, and in range: anything else is a 422 on the param to
+    blame (docs/map-country-fe-contract.md, section 7).
+    """
+    latitude = _number(params, "user_latitude", minimum=-90, maximum=90)
+    longitude = _number(params, "user_longitude", minimum=-180, maximum=180)
+    if (latitude is None) != (longitude is None):
+        missing = "user_longitude" if longitude is None else "user_latitude"
+        raise ParamError(missing, "Send user_latitude and user_longitude together.")
+    return None if latitude is None else (latitude, longitude)
+
+
 
 
 

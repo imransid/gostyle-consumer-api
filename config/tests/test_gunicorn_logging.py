@@ -82,3 +82,28 @@ class AccessLoggerTests(SimpleTestCase):
                 text, atoms = self.line(path, "keep=1")
                 self.assertEqual(json.loads(text)["query"], "keep=1")
                 self.assertEqual(atoms["r"], f"GET {path}?keep=1 HTTP/1.1")
+
+    def test_the_phone_s_position_is_cut_out_and_the_rest_kept(self):
+        # MAP_COUNTRY_V1: user_latitude and user_longitude only pick the country.
+        query = ("latitude=25.2048&longitude=55.2708&latitudeDelta=0.12&longitudeDelta=0.08"
+                 "&zoom=12&limit=100&user_latitude=25.20&user_longitude=55.27")
+        kept = "latitude=25.2048&longitude=55.2708&latitudeDelta=0.12&longitudeDelta=0.08&zoom=12&limit=100"
+        text, atoms = self.line("/api/v1/discover/map", query)
+        self.assertEqual(json.loads(text)["query"], kept)
+        self.assertEqual(atoms["r"], f"GET /api/v1/discover/map?{kept} HTTP/1.1")
+        self.assertEqual(atoms["{query_string}e"], kept)
+        self.assertEqual(atoms["{raw_uri}e"], f"/api/v1/discover/map?{kept}")
+        for key in ("q", "r", "{query_string}e", "{raw_uri}e"):
+            self.assertNotIn("user_", str(atoms[key]))
+
+    def test_the_position_alone_leaves_no_query(self):
+        text, atoms = self.line("/api/v1/discover/map", "user_longitude=55.27&user_latitude=25.20")
+        self.assertEqual(json.loads(text)["query"], "")
+        self.assertEqual(atoms["r"], "GET /api/v1/discover/map HTTP/1.1")
+
+    def test_the_position_is_cut_out_on_any_path_and_in_any_spelling(self):
+        text, _ = self.line("/api/v1/discover", "user%5Flatitude=25.2&user_longitude=55.27&page=2")
+        self.assertEqual(json.loads(text)["query"], "page=2")
+        # A name that only looks like it stays.
+        text, _ = self.line("/api/v1/discover/map", "xuser_latitude=1&origin_latitude=25.19")
+        self.assertEqual(json.loads(text)["query"], "xuser_latitude=1&origin_latitude=25.19")
