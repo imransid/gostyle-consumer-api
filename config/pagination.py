@@ -26,3 +26,13 @@ class ClientPageNumberPagination(PageNumberPagination):
     # 50 rather than 100: three screens of cards is already more than any
     # scroll position needs, and the app pages with `next`.
     max_page_size = 50
+
+    # A page size the view has already read and checked itself, when it has
+    # one (params._page_size: 422 out of range, never cut to the cap). It
+    # wins over ?page_size=. None, the default: ?page_size= as above.
+    settled_page_size = None
+
+    def get_page_size(self, request):
+        if self.settled_page_size is not None:
+            return self.settled_page_size
+        return super().get_page_size(request)

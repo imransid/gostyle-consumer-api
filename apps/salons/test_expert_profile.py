@@ -2890,6 +2890,11 @@ class ServicesRouteOpenApiTests(SimpleTestCase):
         self.assertNotIn("required", branch)
         self.assertIn("price", branch["description"])
 
-    def test_tenant_id_is_required(self):
-        self.assertIs(self.parameters()["tenant_id"]["required"], True)
+    def test_tenant_id_picks_the_salon_s_menu(self):
+        # Optional on the path since the search (SEARCH_POPULAR_V1): without
+        # it, GET /services lists every salon's services. The menu itself
+        # still needs it (ServicesRoutePinnedTests, the 422).
+        tenant = self.parameters()["tenant_id"]
+        self.assertNotIn("required", tenant)
+        self.assertIn("menu", tenant["description"])
 
