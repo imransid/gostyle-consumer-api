@@ -123,6 +123,8 @@ services:
       MAP_FILTER_V1: ${MAP_FILTER_V1:-False}
       # The search: GET /services across salons, is_popular on /discover.
       SEARCH_POPULAR_V1: ${SEARCH_POPULAR_V1:-False}
+      # The map shows only the customer's country: user_latitude, user_longitude, country.
+      MAP_COUNTRY_V1: ${MAP_COUNTRY_V1:-False}
 
       # Sessions' location from the IP (docs/DEVICE_SESSIONS_SERVER.md).
       # Empty: location stays null.

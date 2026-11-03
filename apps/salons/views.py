@@ -42,6 +42,7 @@ from .params import (
     parse_service_ids,
     parse_services,
     parse_stylists,
+    parse_user_position,
 )
 
 from .booking_api import (
@@ -61,7 +62,7 @@ from apps.accounts.models import Favourite, FavouriteStylist
 from .customer_sync import NoUsablePhone, resolve_customer
 
 from . import packages as package_rules
-from . import map_availability, map_filters, roster, slots, timezones
+from . import map_availability, map_country, map_filters, roster, slots, timezones
 from .service_search_views import service_search_response
 from .hours import resolve as resolve_hours
 from .hours import weekly_row as hours_row
@@ -1114,6 +1115,11 @@ class DiscoverMapView(APIView):
     sends a viewport size in metres. ``/discover`` takes kilometres. The
     conversion happens once, inside ``parse_map``, so everything below this
     view speaks kilometres only.
+
+    THE CUSTOMER'S COUNTRY ONLY (MAP_COUNTRY_V1, map_country.py): the phone's
+    position (``user_latitude``, ``user_longitude``), else the map's centre,
+    picks one country, and only salons in it come back, before the filters
+    and the cap. The answer says which in ``country``.
     """
 
     permission_classes = [AllowAny]
@@ -1173,6 +1179,15 @@ class DiscoverMapView(APIView):
                                  "MAP_FILTER_V1. Comma separated: open_now (open right now, "
                                  "as is_open_now on /discover)."
                              )),
+            # The customer's country (MAP_COUNTRY_V1; off, they are ignored).
+            OpenApiParameter("user_latitude", float, required=False,
+                             description=(
+                                 "MAP_COUNTRY_V1. The phone's own GPS fix, rounded to 2 "
+                                 "decimals, never the map's centre. With user_longitude. "
+                                 "Only picks the customer's country: not stored, not logged."
+                             )),
+            OpenApiParameter("user_longitude", float, required=False,
+                             description="MAP_COUNTRY_V1. The phone's own GPS fix. With user_latitude."),
         ],
         responses={
             200: inline_serializer(
@@ -1181,6 +1196,23 @@ class DiscoverMapView(APIView):
                     "mode": serializers.CharField(),
                     "count": serializers.IntegerField(),
                     "venues": MapVenueSerializer(many=True),
+                    "country": inline_serializer(
+                        "MapCountry",
+                        fields={
+                            "code": serializers.CharField(help_text="ISO 3166-1 alpha-2, upper case (AE)."),
+                            "name": serializers.CharField(help_text="In English, for the app's empty message."),
+                            "has_salons": serializers.BooleanField(
+                                help_text="Any live salon in the whole country, ignoring the box and the filters."
+                            ),
+                        },
+                        allow_null=True,
+                        required=False,
+                        help_text=(
+                            "MAP_COUNTRY_V1 (absent while it is off). The country the "
+                            "salons were limited to: the phone's, else the map centre's. "
+                            "null: no country, the box only."
+                        ),
+                    ),
                 },
             ),
             400: OpenApiResponse(
@@ -1192,7 +1224,11 @@ class DiscoverMapView(APIView):
             ),
             422: OpenApiResponse(
                 response=_OUR_ENVELOPE,
-                description="One of the map's own params (latitude, radius ...) cannot be read.",
+                description=(
+                    "One of the map's own params (latitude, radius ...) cannot be read. "
+                    "MAP_COUNTRY_V1: user_latitude without user_longitude (or the "
+                    "other way round), or either out of range."
+                ),
             ),
             503: OpenApiResponse(
                 response=_OUR_ENVELOPE,
@@ -1211,6 +1247,21 @@ class DiscoverMapView(APIView):
             # into the same field-level envelope /discover produces, so one
             # client-side error reader works for both endpoints.
             raise _invalid(exc) from exc
+
+        country = None
+        if settings.MAP_COUNTRY_V1:
+            try:
+                user_position = parse_user_position(request.query_params)
+            except ParamError as exc:
+                raise _invalid(exc) from exc
+            # New salons and moved pins get their country (once a minute).
+            map_country.keep_salons_fresh()
+            country = map_country.resolve_country(
+                user_position, params["latitude"], params["longitude"]
+            )
+            # Both paths below filter on it first: before the filters, the
+            # order and the cap.
+            params["country"] = country.code if country else None
 
         try:
             # The drawer's picks, read only with the switch on: off, the map
@@ -1237,7 +1288,9 @@ class DiscoverMapView(APIView):
             venues = MapVenueSerializer(venues_qs, many=True).data
             # `count` is every salon in view that matches, before `limit`
             # (the FE doc, section 4), so it can be more than len(venues).
-            return Response({"mode": "markers", "count": count, "venues": venues})
+            return Response(
+                self._answer({"mode": "markers", "count": count, "venues": venues}, country)
+            )
 
         venues_qs = map_venues(
             latitude=params["latitude"],
@@ -1247,16 +1300,24 @@ class DiscoverMapView(APIView):
             category=params["category"],
             radius_km=params["radius_km"],
             limit=params["limit"],
+            country=params.get("country"),
         )
 
         serializer = MapVenueSerializer(venues_qs, many=True)
         venues = serializer.data
 
-        return Response({
+        return Response(self._answer({
             "mode": "markers",
             "count": len(venues),
             "venues": venues,
-        })
+        }, country))
+
+    @staticmethod
+    def _answer(body, country):
+        """The answer, with `country` while MAP_COUNTRY_V1 is on (null: no country)."""
+        if settings.MAP_COUNTRY_V1:
+            body["country"] = map_country.country_payload(country)
+        return body
 
 
 class DiscoverStoryListView(ListAPIView):

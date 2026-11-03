@@ -904,7 +904,7 @@ class DiscoverMapViewTests(SimpleTestCase):
         self.filtered.assert_not_called()
         self.map_venues.assert_called_once_with(
             latitude=25.2, longitude=55.27, latitude_delta=0.1, longitude_delta=0.1,
-            category=None, radius_km=None, limit=100.0,
+            category=None, radius_km=None, limit=100.0, country=None,
         )
         self.assertEqual(response.json(), {
             "mode": "markers", "count": 1,

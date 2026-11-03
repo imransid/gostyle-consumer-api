@@ -25,3 +25,40 @@ class Salon(models.Model):
 
 
         
+
+class SalonCountry(models.Model):
+    """
+    The country a salon's map pin is in, for the map's country filter
+    (MAP_COUNTRY_V1, docs/MAP_COUNTRY_API.md).
+
+    Worked out HERE, from the branch's coordinates and the same borders the
+    customer's position is judged by (apps/salons/countries.py), never from
+    the typed address: platform's own branch.country_code comes from the
+    address form, so a mistyped one would hide a salon. A table of ours, not
+    a column on platform's branch: platform owns that table, and this
+    service only reads it.
+
+    One row per branch, keyed by branch id. `lat` and `lng` are the
+    coordinates the country was worked out from: when the branch's differ
+    (the salon moved its pin) or the row is missing (a new salon), the row
+    is redone (map_country.refresh_salon_countries). `country_code` is null
+    for a pin out at sea, more than 25 km from every country.
+    """
+
+    branch_id = models.UUIDField(primary_key=True)
+    lat = models.FloatField()
+    lng = models.FloatField()
+    # ISO 3166-1 alpha-2, upper case ("AE").
+    country_code = models.CharField(max_length=2, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "salon_country"
+        indexes = [
+            # The map's filter reads branch ids by country, and the count of
+            # live salons per country groups on it.
+            models.Index(fields=["country_code", "branch_id"], name="salon_country_code_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.branch_id}: {self.country_code or '-'}"

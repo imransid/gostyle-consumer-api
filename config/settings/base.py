@@ -464,6 +464,14 @@ MAP_FILTER_V1 = env.bool("MAP_FILTER_V1", default=False)
 # (BOOKING_DB_NAME): without it they are in the tie-break order, never an error.
 SEARCH_POPULAR_V1 = env.bool("SEARCH_POPULAR_V1", default=False)
 
+# The map shows only the customer's country (docs/MAP_COUNTRY_API.md): GET
+# /discover/map reads user_latitude and user_longitude, limits the salons to
+# the phone's country (else the map centre's) and answers `country`. Each
+# salon's country is worked out here from its pin (apps/salons/map_country.py,
+# table salon_country). OFF, both params are ignored and the answer has no
+# `country`, as before.
+MAP_COUNTRY_V1 = env.bool("MAP_COUNTRY_V1", default=False)
+
 # The key authenticator secrets are encrypted with (AES-GCM): 32 random bytes,
 # base64. docs/TWO_FACTOR_SERVER.md says how to make one. Empty or not a key:
 # the authenticator calls answer 503 and log it, email and phone codes still

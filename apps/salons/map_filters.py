@@ -417,7 +417,8 @@ def keep_open_and_available(rows, filters, picked, now):
 
 def filtered_queryset(map_params, filters):
     """
-    The SQL half of `filtered_map_venues`: the map's own query narrowed by the
+    The SQL half of `filtered_map_venues`: the map's own query (the customer's
+    country first, when the view found one: MAP_COUNTRY_V1) narrowed by the
     rating, the distance and the service categories, ordered, not capped.
     Returns (queryset, the picked category ids the catalog knows, or None).
     """
@@ -428,6 +429,7 @@ def filtered_queryset(map_params, filters):
         longitude_delta=map_params["longitude_delta"],
         category=map_params["category"],
         radius_km=map_params["radius_km"],
+        country=map_params.get("country"),
     )
 
     if filters.rating is not None:
