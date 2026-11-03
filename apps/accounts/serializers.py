@@ -379,9 +379,29 @@ class DeleteAccountSerializer(serializers.Serializer):
 
 
 class DeletionScheduledSerializer(serializers.Serializer):
-    """The answer to a deletion request: when the account will be purged."""
+    """The answer to a deletion request: when the account will be purged,
+    and where the confirmation email went."""
 
     purge_at = serializers.DateTimeField()
+    # The account's verified email, which the confirmation goes to. Null
+    # when it has none: then no email is sent, and the screen must not say
+    # one was.
+    confirmation_sent_to = serializers.EmailField(allow_null=True)
+
+
+class DeletionSummarySerializer(serializers.Serializer):
+    """GET /auth/me/delete/summary: the "Delete your account?" screen. Only
+    what this system really has. No wallet, saved cards or gallery exist, so
+    none is sent; the app hides those rows."""
+
+    purge_after_days = serializers.IntegerField()
+    # Set when a deletion is already scheduled (as on /auth/me).
+    purge_at = serializers.DateTimeField(allow_null=True)
+    # The Upcoming tab's own number. Null when booking-api could not be
+    # asked: unknown, not none.
+    upcoming_bookings = serializers.IntegerField(allow_null=True)
+    # Saved salons and stylists, which the purge removes.
+    favourites = serializers.IntegerField()
 
 
 class PasswordForgotSerializer(DestinationMixin, serializers.Serializer):

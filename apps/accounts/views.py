@@ -1,3 +1,7 @@
+import logging
+import urllib.parse
+
+from django.conf import settings
 from django.db import transaction
 from rest_framework import status
 from rest_framework.exceptions import NotFound, ValidationError
@@ -28,11 +32,16 @@ from .serializers import (
 from .models import Favourite
 
 from . import ratelimit, services, sessions, two_factor
-from .notifications import send_deletion_cancelled_notice, send_deletion_scheduled_notice
+from .notifications import (
+    send_deletion_cancelled_notice,
+    send_deletion_scheduled_notice,
+    verified_email,
+)
 from .permissions import IsVerified
 from .serializers import (
     DeleteAccountSerializer,
     DeletionScheduledSerializer,
+    DeletionSummarySerializer,
     DetailSerializer,
     LoginSerializer,
     LogoutSerializer,
@@ -53,6 +62,8 @@ from .serializers import (
     UserLookupResultSerializer,
     UserLookupSerializer,
 )
+logger = logging.getLogger(__name__)
+
 # Constant OTP-request response. It carries nothing derived from the request or
 # from account existence, so the body is byte-identical for every identifier.
 _OTP_REQUESTED = {
@@ -527,9 +538,80 @@ class DeleteAccountView(APIView):
         account = request.user
         transaction.on_commit(lambda: send_deletion_scheduled_notice(account))
         return Response(
-            DeletionScheduledSerializer(request.user).data,
+            DeletionScheduledSerializer(
+                {
+                    "purge_at": account.purge_at,
+                    # The address send_deletion_scheduled_notice uses, by the
+                    # same rule, so the screen never names one that got nothing.
+                    "confirmation_sent_to": verified_email(account),
+                }
+            ).data,
             status=status.HTTP_200_OK,
         )
+
+
+class DeletionSummaryView(APIView):
+    """
+    GET /api/v1/auth/me/delete/summary
+
+    What the "Delete your account?" screen lists: only what this system
+    really has. Upcoming bookings come from booking-api's own Upcoming
+    number, asked with the caller's token; booking-api down is null, never
+    an error, so the screen still opens.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        summary="What a deletion removes (the Delete Account screen)",
+        description=(
+            "The numbers for the first Delete Account screen. `purge_after_days` "
+            "is the countdown (30). `purge_at` is set when a deletion is already "
+            "scheduled. `upcoming_bookings` is the Upcoming tab's number, null "
+            "when booking-api could not be asked. `favourites` is saved salons "
+            "plus stylists. Nothing else is sent: there is no wallet, saved card, "
+            "discount card or gallery in the system yet, so the app hides those rows."
+        ),
+        responses={200: DeletionSummarySerializer},
+    )
+    def get(self, request):
+        account = request.user
+        return Response(
+            DeletionSummarySerializer(
+                {
+                    "purge_after_days": account.PURGE_AFTER_DAYS,
+                    "purge_at": account.purge_at,
+                    "upcoming_bookings": _upcoming_bookings(request),
+                    "favourites": account.favourites.count()
+                    + account.favourite_stylists.count(),
+                }
+            ).data
+        )
+
+
+def _upcoming_bookings(request):
+    """booking-api's counts.upcoming for the caller, or None when it could
+    not be asked or answered something else."""
+    # Imported here: apps.salons imports this app.
+    from apps.salons.booking_api import BookingApiUnavailable, list_bookings
+
+    query = urllib.parse.urlencode({"filter": "upcoming", "page": 1, "pageSize": 1})
+    try:
+        code, body = list_bookings(
+            query,
+            authorization=request.META.get("HTTP_AUTHORIZATION", ""),
+            timeout=settings.SINGLE_LOOKUP_TIMEOUT,
+        )
+    except BookingApiUnavailable:
+        code, body = None, None
+    counts = body.get("counts") if code == 200 and isinstance(body, dict) else None
+    upcoming = counts.get("upcoming") if isinstance(counts, dict) else None
+    if isinstance(upcoming, bool) or not isinstance(upcoming, int):
+        logger.warning(
+            "deletion summary: no Upcoming number from booking-api (%s)", code
+        )
+        return None
+    return upcoming
 
 
 class CancelDeletionView(APIView):

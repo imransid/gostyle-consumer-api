@@ -16,9 +16,11 @@ null. A row with deleted_at set is one it has already done.
 import uuid
 from datetime import timedelta
 from io import StringIO
+from unittest import mock
 
+from django.core import mail
 from django.core.management import call_command
-from django.test import Client
+from django.test import Client, override_settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -34,10 +36,15 @@ from apps.accounts.models import (
     VerificationCode,
     VerificationToken,
 )
+from apps.accounts.deletion import BOOKINGS_WAIT, purge_due
 from apps.accounts.tests.test_auth import PASSWORD, AuthTestCase
+from apps.notifications.models import Notification
+from apps.salons.account_deletion import Report, Unreachable
+from apps.salons.booking_api import BookingApiUnavailable
 
 DELETE = "/api/v1/auth/me/delete"
 CANCEL = "/api/v1/auth/me/delete/cancel"
+SUMMARY = "/api/v1/auth/me/delete/summary"
 ME = "/api/v1/auth/me"
 LOGIN = "/api/v1/auth/login"
 REFRESH = "/api/v1/auth/token/refresh"
@@ -51,6 +58,13 @@ class DeletionTestCase(AuthTestCase):
         # purge must come from the real token checks.
         self.tokens = self.register_and_authenticate().data
         self.account = ConsumerAccount.objects.get(phone=self.phone)
+        # The purge cancels bookings in booking-api first. Not here: that
+        # part has its own tests (apps/salons/test_account_deletion.py).
+        patcher = mock.patch(
+            "apps.salons.account_deletion.cancel_bookings_to_come", return_value=Report()
+        )
+        self.cancel_bookings = patcher.start()
+        self.addCleanup(patcher.stop)
 
     def request_deletion(self, **overrides):
         payload = {"password": PASSWORD, "reason": "privacy", "note": "Moving abroad."}
@@ -141,6 +155,60 @@ class DeleteRequestTests(DeletionTestCase):
         self.assertEqual(resp.status_code, 422)
         self.assertEqual(resp.json()["errors"][0]["field"], "note")
 
+    def test_no_verified_email_means_no_confirmation_named(self):
+        """The Scheduled screen says where the email went. An account with no
+        verified email gets none, and the answer must not name one."""
+        ConsumerAccount.objects.filter(pk=self.account.pk).update(email="kevin@example.com")
+
+        resp = self.request_deletion()
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertIsNone(resp.json()["confirmation_sent_to"])
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_the_confirmation_names_the_verified_email_it_went_to(self):
+        ConsumerAccount.objects.filter(pk=self.account.pk).update(
+            email="kevin@example.com", email_verified_at=timezone.now()
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            resp = self.request_deletion()
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.json()["confirmation_sent_to"], "kevin@example.com")
+        self.assertEqual([m.to for m in mail.outbox], [["kevin@example.com"]])
+
+    def test_asking_again_keeps_the_first_date(self):
+        first = self.request_deletion().json()["purge_at"]
+        ConsumerAccount.objects.filter(pk=self.account.pk).update(
+            purge_at=parse_datetime(first) - timedelta(days=10)
+        )
+        moved = ConsumerAccount.objects.get(pk=self.account.pk).purge_at
+
+        resp = self.request_deletion(reason="not_using", note="")
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(parse_datetime(resp.json()["purge_at"]), moved)
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.purge_at, moved)
+        # The newest reason and note are kept.
+        self.assertEqual(self.account.deletion_reason, "not_using")
+        self.assertEqual(self.account.deletion_note, "")
+
+    def test_after_a_cancel_a_new_request_starts_30_days_again(self):
+        self.request_deletion()
+        self.client.post(CANCEL)
+
+        before = timezone.now()
+        self.request_deletion()
+
+        self.account.refresh_from_db()
+        self.assertAlmostEqual(
+            self.account.purge_at,
+            before + timedelta(days=ConsumerAccount.PURGE_AFTER_DAYS),
+            delta=timedelta(seconds=30),
+        )
+
 
 class CancelDeletionTests(DeletionTestCase):
     def test_cancel_clears_the_schedule(self):
@@ -184,6 +252,68 @@ class MeDeletionFieldsTests(DeletionTestCase):
         self.account.refresh_from_db()
         self.assertIsNone(self.account.purge_at)
         self.assertIsNone(self.account.deleted_at)
+
+
+class DeletionSummaryTests(DeletionTestCase):
+    def summary(self, answer=(200, {"counts": {"upcoming": 3, "recurring": 1, "archive": 9}})):
+        with mock.patch("apps.salons.booking_api.list_bookings", return_value=answer) as ask:
+            resp = self.client.get(SUMMARY)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        return resp.json(), ask
+
+    def test_the_numbers_for_the_warning_screen(self):
+        Favourite.objects.create(account=self.account, storefront_id=uuid.uuid4())
+        FavouriteStylist.objects.create(account=self.account, staff_id=uuid.uuid4())
+
+        body, ask = self.summary()
+
+        self.assertEqual(
+            body,
+            {"purge_after_days": 30, "purge_at": None, "upcoming_bookings": 3, "favourites": 2},
+        )
+        # The caller's own token, and the Upcoming number only (one row).
+        query = ask.call_args.args[0]
+        self.assertIn("filter=upcoming", query)
+        self.assertIn("pageSize=1", query)
+        self.assertEqual(
+            ask.call_args.kwargs["authorization"], f"Bearer {self.tokens['access']}"
+        )
+
+    def test_only_real_things_are_sent(self):
+        """No wallet, saved card, discount card, points or gallery exist: the
+        app hides those rows because the keys are not here."""
+        body, _ = self.summary()
+
+        for missing in ("wallet", "points", "tier", "cards", "discount_card", "gallery"):
+            with self.subTest(key=missing):
+                self.assertFalse(any(missing in key for key in body))
+
+    def test_a_scheduled_deletion_shows_its_date(self):
+        purge_at = self.request_deletion().json()["purge_at"]
+
+        body, _ = self.summary()
+
+        self.assertEqual(body["purge_at"], purge_at)
+
+    def test_booking_api_down_is_null_not_an_error(self):
+        with mock.patch(
+            "apps.salons.booking_api.list_bookings", side_effect=BookingApiUnavailable("down")
+        ):
+            resp = self.client.get(SUMMARY)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNone(resp.json()["upcoming_bookings"])
+
+    def test_a_refusal_or_an_odd_answer_is_null(self):
+        for answer in ((401, {"code": "UNAUTHENTICATED"}), (200, {"counts": {}}), (200, None),
+                       (200, {"counts": {"upcoming": True}})):
+            with self.subTest(answer=answer):
+                body, _ = self.summary(answer)
+                self.assertIsNone(body["upcoming_bookings"])
+
+    def test_no_token_is_401(self):
+        self.anonymous()
+        self.assertEqual(self.client.get(SUMMARY).status_code, 401)
 
 
 class PurgeCommandTests(DeletionTestCase):
@@ -282,6 +412,123 @@ class PurgeCommandTests(DeletionTestCase):
         for model in (UserAuthenticator, VerificationCode, VerificationToken, LoginChallenge):
             with self.subTest(model=model.__name__):
                 self.assertFalse(model.objects.filter(user=self.account).exists())
+
+
+class PurgeCancelsBookingsTests(DeletionTestCase):
+    def setUp(self):
+        super().setUp()
+        self.request_deletion()
+
+    def test_bookings_are_cancelled_before_the_purge(self):
+        seen = {}
+
+        def cancel(account):
+            # Still the customer: the purge has not run yet.
+            seen["phone"] = ConsumerAccount.all_objects.get(pk=account.pk).phone
+            report = Report(cancelled=2)
+            report.leave("party", "g1", "a place in someone else's party")
+            return report
+
+        self.cancel_bookings.side_effect = cancel
+        self.make_due(self.account)
+
+        out = self.purge()
+
+        self.assertEqual(seen["phone"], self.phone)
+        self.assertIn("Purged 1 account(s).", out)
+        self.assertIn("Bookings cancelled: 2, left as they were: 1.", out)
+        self.assertIsNotNone(ConsumerAccount.all_objects.get(pk=self.account.pk).deleted_at)
+
+    def test_booking_api_down_makes_the_purge_wait(self):
+        self.cancel_bookings.side_effect = Unreachable("booking-api down")
+        self.make_due(self.account)
+
+        out = self.purge()
+
+        self.assertIn("Purged 0 account(s).", out)
+        self.assertIn("1 account(s) wait for booking-api", out)
+        self.account.refresh_from_db()
+        self.assertIsNone(self.account.deleted_at)
+        self.assertEqual(self.account.phone, self.phone)
+
+    def test_not_for_ever_the_purge_goes_ahead_after_the_wait(self):
+        self.cancel_bookings.side_effect = Unreachable("booking-api down")
+        ConsumerAccount.objects.filter(pk=self.account.pk).update(
+            purge_at=timezone.now() - BOOKINGS_WAIT - timedelta(minutes=1)
+        )
+
+        run = purge_due()
+
+        self.assertEqual((run.purged, run.waiting), (1, 0))
+        self.assertIsNotNone(ConsumerAccount.all_objects.get(pk=self.account.pk).deleted_at)
+
+    def test_not_due_is_not_asked(self):
+        self.purge()
+        self.cancel_bookings.assert_not_called()
+
+    def test_a_failing_cancel_does_not_stop_the_others(self):
+        other = ConsumerAccount.objects.create(phone="+8801766666666")
+        other.request_deletion()
+        self.make_due(self.account)
+        self.make_due(other)
+        self.cancel_bookings.side_effect = [RuntimeError("boom"), Report()]
+
+        run = purge_due()
+
+        self.assertEqual((run.purged, run.failed), (1, 1))
+
+    def test_the_purge_removes_the_notification_center(self):
+        Notification.objects.create(
+            account=self.account, category="orders", type="booking.cancelled",
+            title="Booking cancelled", body="Your visit at Glow on 21 Nov",
+            source="booking", dedupe_key="b1",
+        )
+        self.make_due(self.account)
+
+        self.purge()
+
+        self.assertFalse(Notification.objects.filter(account_id=self.account.pk).exists())
+
+
+class WorkerPurgeTests(DeletionTestCase):
+    """The notification worker runs the purge every hour while
+    ACCOUNT_PURGE_V1 is on, and never while it is off."""
+
+    def run_worker_once(self):
+        from apps.notifications.management.commands import notification_worker
+
+        command = notification_worker.Command()
+
+        def stop_after_one_loop(*args, **kwargs):
+            command.stopping = True
+            return {}
+
+        # PURGE_EVERY 0: the hourly block runs on the first loop whatever the
+        # machine's monotonic clock reads.
+        with mock.patch.object(notification_worker.worker, "run_once", side_effect=stop_after_one_loop), \
+                mock.patch.object(notification_worker, "PURGE_EVERY", 0), \
+                mock.patch.object(notification_worker, "close_old_connections"), \
+                mock.patch.object(notification_worker.signal, "signal"):
+            command.handle(once=False, interval=0)
+
+    def setUp(self):
+        super().setUp()
+        self.request_deletion()
+        self.make_due(self.account)
+
+    @override_settings(ACCOUNT_PURGE_V1=False)
+    def test_off_nothing_is_purged(self):
+        self.run_worker_once()
+
+        self.assertIsNone(ConsumerAccount.all_objects.get(pk=self.account.pk).deleted_at)
+        self.cancel_bookings.assert_not_called()
+
+    @override_settings(ACCOUNT_PURGE_V1=True)
+    def test_on_the_due_account_is_purged(self):
+        self.run_worker_once()
+
+        self.assertIsNotNone(ConsumerAccount.all_objects.get(pk=self.account.pk).deleted_at)
+        self.cancel_bookings.assert_called_once()
 
 
 class AfterPurgeTests(DeletionTestCase):

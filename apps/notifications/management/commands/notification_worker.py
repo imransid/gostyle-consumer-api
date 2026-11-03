@@ -2,10 +2,12 @@ import logging
 import signal
 import time
 
+from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db import close_old_connections
 from django.utils import timezone
 
+from apps.accounts.deletion import purge_due
 from apps.notifications import worker
 
 logger = logging.getLogger("apps.notifications.worker")
@@ -61,6 +63,8 @@ class Command(BaseCommand):
                     gone = worker.purge_old(timezone.now())
                     if gone:
                         logger.info("notification center: %d old items deleted", gone)
+                    if settings.ACCOUNT_PURGE_V1:
+                        self._purge_accounts()
                 if clock - last_stats >= STATS_EVERY:
                     last_stats = clock
                     stats = worker.queue_stats(timezone.now())
@@ -84,6 +88,19 @@ class Command(BaseCommand):
             if not counts:
                 self._sleep(options["interval"])
         logger.info("notification worker stopped")
+
+    def _purge_accounts(self):
+        """The accounts whose 30 days are over (apps/accounts/deletion.py).
+        Here because this is the one process that always runs; same as the
+        purge_due_accounts command."""
+        run = purge_due()
+        if run.purged or run.waiting or run.failed:
+            logger.info(
+                "account deletion: purged=%d waiting=%d failed=%d "
+                "bookings_cancelled=%d bookings_left=%d",
+                run.purged, run.waiting, run.failed,
+                run.bookings_cancelled, run.bookings_left,
+            )
 
     def _stop(self, *_):
         self.stopping = True

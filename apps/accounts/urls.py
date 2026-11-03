@@ -17,6 +17,7 @@ from .two_factor_views import (
 from .views import (
     CancelDeletionView,
     DeleteAccountView,
+    DeletionSummaryView,
     LoginView,
     LogoutView,
     MeView,
@@ -46,6 +47,7 @@ urlpatterns = [
     path("auth/me", MeView.as_view()),
     path("auth/me/delete", DeleteAccountView.as_view()),
     path("auth/me/delete/cancel", CancelDeletionView.as_view()),
+    path("auth/me/delete/summary", DeletionSummaryView.as_view()),
     path("auth/password/change", PasswordChangeView.as_view()),
     path("auth/password/forgot", PasswordForgotView.as_view()),
     path("auth/password/verify", PasswordVerifyView.as_view()),

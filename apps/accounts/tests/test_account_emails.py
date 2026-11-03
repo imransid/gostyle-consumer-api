@@ -21,6 +21,7 @@ from rest_framework.test import APIClient
 
 from apps.accounts import services, sessions
 from apps.accounts.models import ConsumerAccount, OtpCode, Purpose
+from apps.salons.account_deletion import Report
 
 from .test_auth import AuthTestCase
 from .test_sendgrid_backend import TEST_EMAIL
@@ -313,6 +314,13 @@ class DeletionEmailTests(AuthTestCase):
         super().setUp()
         self.register_and_authenticate("email", TEST_EMAIL)
         ConsumerAccount.objects.filter(email=TEST_EMAIL).update(email_verified_at=timezone.now())
+        # The purge cancels bookings in booking-api first; not this test's
+        # subject (apps/salons/test_account_deletion.py).
+        patcher = patch(
+            "apps.salons.account_deletion.cancel_bookings_to_come", return_value=Report()
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def post(self, path, body=None):
         with self.captureOnCommitCallbacks(execute=True):
@@ -363,7 +371,7 @@ class DeletionEmailTests(AuthTestCase):
             purge_at=timezone.now() - timedelta(minutes=1)
         )
         with patch.object(ConsumerAccount, "set_unusable_password", side_effect=RuntimeError):
-            with self.assertLogs("apps.accounts.management.commands.purge_due_accounts", "ERROR"):
+            with self.assertLogs("apps.accounts.deletion", "ERROR"):
                 with self.captureOnCommitCallbacks(execute=True):
                     with self.assertRaises(Exception):
                         call_command("purge_due_accounts", stdout=StringIO())

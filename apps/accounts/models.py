@@ -124,7 +124,11 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
     def request_deletion(self, reason=DeletionReason.OTHER, note=""):
         if self.is_deleted:
             return
-        self.purge_at = timezone.now() + timedelta(days=self.PURGE_AFTER_DAYS)
+        # Asked again while one is scheduled: the date stays. The countdown
+        # the customer was shown is the one that holds; only the reason and
+        # the note are the newest.
+        if self.purge_at is None:
+            self.purge_at = timezone.now() + timedelta(days=self.PURGE_AFTER_DAYS)
         self.deletion_reason = reason
         self.deletion_note = note[:1000]
         self.save(update_fields=["purge_at", "deletion_reason", "deletion_note", "updated_at"])
@@ -187,6 +191,10 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
         self.favourites.all().delete()
         self.favourite_stylists.all().delete()
         NotificationPreference.objects.filter(account=self).delete()
+        # The Notification Center's items hold booking details, salon names
+        # and sign-in places. Their deliveries go with them (CASCADE), so a
+        # push or an email still queued is never sent.
+        self.notifications.all().delete()
         # 2-step verification: the authenticator's secret, and any code,
         # token or sign-in challenge still waiting.
         UserAuthenticator.objects.filter(user=self).delete()
