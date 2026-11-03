@@ -7,6 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 
+from . import account_numbers
 from .identifiers import InvalidDestination, normalize_destination
 from .models import (
     ConsumerAccount,
@@ -158,6 +159,11 @@ class ProfileSerializer(serializers.ModelSerializer):
         choices=Gender.choices, required=False, allow_null=True
     )
     whatsapp_booking_updates = WhatsAppBookingUpdatesField(required=False)
+    # "" and null both clear it (see validate). Trimmed, like full_name.
+    display_name = serializers.CharField(
+        max_length=40, required=False, allow_blank=True, allow_null=True
+    )
+    account_number = serializers.SerializerMethodField()
 
     # Live/derived values — NOT stored on the profile, exposed read-only.
     points = serializers.SerializerMethodField()
@@ -168,7 +174,11 @@ class ProfileSerializer(serializers.ModelSerializer):
         model = ConsumerAccount
         fields = [
             "id",
+            # Settings' "Account ID" (read-only)
+            "account_number",
             "full_name",
+            # Personal Details' "Display name" (editable via PATCH)
+            "display_name",
             "email",
             "phone",
             "phone_verified_at",
@@ -195,6 +205,7 @@ class ProfileSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id",
+            "account_number",
             "email",
             "phone",
             "phone_verified_at",
@@ -215,6 +226,9 @@ class ProfileSerializer(serializers.ModelSerializer):
         # swap to the column's "not set" value has to happen here.
         if "gender" in attrs and attrs["gender"] is None:
             attrs["gender"] = ""
+        # The same for display_name: null and "" are both "not set".
+        if "display_name" in attrs and attrs["display_name"] is None:
+            attrs["display_name"] = ""
 
         # Only turning it ON needs a phone. OFF always works.
         if attrs.get("whatsapp_booking_updates"):
@@ -251,7 +265,11 @@ class ProfileSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         # "" is how the column says "not set"; the app reads that as null.
         data["gender"] = data["gender"] or None
+        data["display_name"] = data["display_name"] or None
         return data
+
+    def get_account_number(self, obj) -> str:
+        return account_numbers.ensure(obj)
 
     def get_points(self, obj):
         # TODO: wire to the loyalty app when it exists. No loyalty system yet.

@@ -38,7 +38,7 @@ this release is deployed.
    the phone check is.
 7. **Server-owned fields are ignored, not refused** (your §4, "What it must
    keep refusing"). `email`, `phone`, `email_verified_at`, `phone_verified_at`,
-   `points`, `tier_level`, `push_token` and `id` in a PATCH get `200` and change
+   `points`, `tier_level`, `push_token`, `account_number` and `id` in a PATCH get `200` and change
    nothing. It has always worked this way, and we keep it, so an app that
    sends the whole user back never fails on them.
 8. **`full_name` cannot be emptied.** `""`, or only spaces, is now
@@ -54,7 +54,9 @@ this release is deployed.
 ```json
 {
   "id": "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed",
+  "account_number": "GS-8841-2290",
   "full_name": "Jack Roger",
+  "display_name": "Jack R.",
   "email": "jack@example.com",
   "phone": "+8801712345678",
   "phone_verified_at": "2026-09-15T11:27:02Z",
@@ -100,6 +102,7 @@ was. This request:
 ```json
 {
   "full_name": "Jack Roger",
+  "display_name": "Jack R.",
   "date_of_birth": "1991-03-14",
   "gender": "male",
   "whatsapp_booking_updates": true
@@ -113,6 +116,7 @@ three set.
 | Field | Status | Notes |
 |---|---|---|
 | `full_name` | today | Trimmed. `""` or only spaces is `422 blank` (new) |
+| `display_name` | 2026-11-03 | Trimmed, up to 40 characters. `""` or `null` clears it (§7) |
 | `image` | today | The `file_url` an upload answered |
 | `location` | today | Free text |
 | `language` | today | From the Language screen |
@@ -187,6 +191,7 @@ one field that failed, so you can highlight it.
 | 422 | `whatsapp_booking_updates` | `invalid` | Not `true` or `false` | Must be a boolean. |
 | 422 | `whatsapp_booking_updates` | `null` | `null` | This field may not be null. |
 | 422 | `full_name` | `blank` | `""` or only spaces | This field may not be blank. |
+| 422 | `display_name` | `max_length` | More than 40 characters | Ensure this field has no more than 40 characters. |
 
 `too_young` is reserved and unused (§5, point 1).
 
@@ -272,3 +277,33 @@ service. booking-api does not read that table: it asks this service over gRPC
 `appointment_reminder`, `push_enabled` and `email_verified`, not this switch.
 So before any sender can honour it, add it to `proto/consumer_directory.proto`
 (this repo and booking-api's copy) and to `apps/grpc_gen/servicer.py`.
+
+---
+
+## 7. Display name and Account ID (added 2026-11-03)
+
+Two more fields on both calls, for Personal Details and Settings. No switch:
+they are there as soon as this release is deployed.
+
+### 7.1 display_name
+
+- Personal Details' "Display name". Up to 40 characters, trimmed.
+- Reads `null` until the user sets one. `""` or `null` in a PATCH clears it.
+  Leaving it out of a PATCH keeps it.
+- **When it is `null`, show the short form of `full_name` as the hint**
+  ("Jack Roger" -> "Jack R."). Do not save that hint unless the user taps Save.
+- **Salons do not see it yet.** The salon side still gets `full_name`, or its
+  short form when "Show my name to salons" is off (Privacy & Visibility).
+  Showing the display name to salons would change what the business web
+  shows, so it is a separate decision. Until then, do not write "shown to
+  salons" under the field.
+
+### 7.2 account_number
+
+- Settings' "Account ID": `"GS-8841-2290"`. Always `GS-`, 4 digits, `-`,
+  4 digits, so you can show it as it comes.
+- Every account has one, old accounts too, and it never changes. Read-only:
+  a PATCH ignores it (point 7 above).
+- Random. It says nothing about the account, so it is safe to show and to
+  read out to support. Support finds the account by it.
+
