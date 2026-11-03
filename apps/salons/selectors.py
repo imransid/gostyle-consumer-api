@@ -2,7 +2,10 @@ import logging
 import uuid
 from datetime import timezone as dt_timezone
 
-from django.db.models import QuerySet
+from django.conf import settings
+from django.db import DatabaseError
+from django.db.models import ExpressionWrapper, QuerySet
+from django.db.models.functions import Cast
 from django.db.models import Avg, Case, Count, DateField, Exists, F, FloatField, Func, OuterRef, Q, Subquery, TextField, Value, When
 from django.db.models.functions import ACos, Coalesce, Cos, Least, Lower, Now, NullIf, Radians, Sin
 from django.contrib.postgres.aggregates import ArrayAgg
@@ -58,6 +61,8 @@ from apps.platform_data.models import (
     Skill,
     StaffSkillAssignment,
 )
+from apps.booking_data.models import BookingItem
+
 from . import packages as package_rules
 from .skills import (
     coverage as skill_coverage,
@@ -1962,4 +1967,185 @@ def manual_state_on(storefront_id, day):
         )
         .values_list("state", flat=True)
         .first()
+    )
+
+
+# ---------------------------------------------------------------------------
+# The search over the map (SEARCH_POPULAR_V1, docs/SEARCH_POPULAR_API.md)
+# ---------------------------------------------------------------------------
+
+# How many reviews before a salon's own rating is fully trusted: the weighted
+# rating's m (the mobile team's doc, 3.1). Below it, a salon's score leans on
+# the average of every rated salon.
+POPULAR_TRUSTED_REVIEWS = 10
+
+
+class BookingCountsUnavailable(Exception):
+    """booking-api's database cannot be read: not set, or it failed."""
+
+
+def search_salons(latitude=None, longitude=None, radius_km=None):
+    """
+    The salons GET /services lists the services of, as dicts (lazy): /discover's
+    salons (discoverable_salons), and with a position only those within
+    radius_km of it, by /discover's own rule (a salon with no pin has no
+    distance, so it is left out).
+
+    Each: id, tenant_id, branch_id, published_name and branch_name (the
+    card's name), category (the platform's raw salon.gender), avg_rating and
+    review_count. Only these are selected: the card's other subqueries
+    never run.
+    """
+    qs = with_published_card_fields(discoverable_salons())
+    if latitude is not None:
+        qs = with_distance(qs, latitude, longitude)
+        qs = qs.filter(lat__isnull=False, lng__isnull=False)
+        if radius_km is not None:
+            qs = filter_by_radius(qs, latitude, longitude, radius_km)
+    return qs.values(
+        "id",
+        "tenant_id",
+        "branch_id",
+        "published_name",
+        "branch_name",
+        "category",
+        "avg_rating",
+        "review_count",
+    )
+
+
+def menu_services(tenant_ids, term=None, label_ids=(), other_from=None):
+    """
+    Every service on these tenants' menus, as dicts (lazy): the Services
+    tab's three rules (salon_services: published, not deleted, open to
+    online booking).
+
+    With `term`, only the services the search finds (service_search.py):
+    its name holds the term (ILIKE, so case is ignored), or it is filed
+    under one of `label_ids`, the categories whose chip label holds it. And
+    when the term is in "Other" too, `other_from` is every live category id:
+    a service under none of them is filed under the tab's "Other".
+    """
+    tenant_ids = list(tenant_ids)
+    if not tenant_ids:
+        return Service.objects.none()
+
+    qs = Service.objects.filter(
+        tenant_id__in=tenant_ids,
+        status="PUBLISHED",
+        deleted_at__isnull=True,
+        online_booking_enabled=True,
+    )
+    if term:
+        found = Q(name__icontains=term) | Q(category_0_id__in=list(label_ids))
+        if other_from is not None:
+            found |= Q(category_0_id__isnull=True) | ~Q(category_0_id__in=list(other_from))
+        qs = qs.filter(found)
+
+    return qs.values(
+        "id",
+        "tenant_id",
+        "name",
+        "description",
+        "price_minor",
+        "duration_minutes",
+        "category_0_id",
+        "created_at",
+    )
+
+
+def branch_service_rows(branch_ids):
+    """
+    These branches' own rows for their services
+    (service_branch_availability), as {(service_id, branch_id): row} with
+    `price_minor` and `available`: branch_price_minor and the tab's
+    BRANCH_AVAILABILITY_ENABLED filter, read for many salons in one query.
+    """
+    branch_ids = list(branch_ids)
+    if not branch_ids:
+        return {}
+    rows = ServiceBranchAvailability.objects.filter(branch_id__in=branch_ids).values(
+        "service_id", "branch_id", "price_minor", "available"
+    )
+    return {(row["service_id"], row["branch_id"]): row for row in rows}
+
+
+def service_booking_counts(branch_ids, since, statuses):
+    """
+    {(branch_id, service_id): bookings}: how many bookings made since `since`
+    (booking.created_at), in one of `statuses`, hold a line of that service,
+    at these branches. A booking with the service twice counts once.
+
+    Read from booking-api's database, read-only (BOOKING_DB_NAME, the
+    "booking" alias the admin and the map read). Raises
+    BookingCountsUnavailable when it is not set or the read fails.
+    """
+    branch_ids = list(branch_ids)
+    if not branch_ids:
+        return {}
+    if "booking" not in settings.DATABASES:
+        raise BookingCountsUnavailable("BOOKING_DB_NAME is not set.")
+
+    rows = booking_count_query(branch_ids, since, statuses)
+    try:
+        return {
+            (row["booking__branch_id"], row["service_id"]): row["bookings"]
+            for row in rows
+        }
+    except DatabaseError as exc:
+        raise BookingCountsUnavailable(f"booking-api's database failed: {exc}") from exc
+
+
+def booking_count_query(branch_ids, since, statuses):
+    """service_booking_counts' query, lazy: one row per branch and service."""
+    return (
+        BookingItem.objects.using("booking")
+        .filter(
+            booking__branch_id__in=list(branch_ids),
+            booking__created_at__gte=since,
+            booking__status__in=list(statuses),
+        )
+        .values("booking__branch_id", "service_id")
+        .annotate(bookings=Count("booking", distinct=True))
+        .order_by()
+    )
+
+
+def average_salon_rating():
+    """
+    The weighted rating's C: the plain average of every rated public salon's
+    rating (each salon once, whatever its review count), or None when no
+    salon is rated yet.
+    """
+    value = (
+        discoverable_salons()
+        .filter(avg_rating__isnull=False)
+        .aggregate(average=Avg("avg_rating"))["average"]
+    )
+    return None if value is None else float(value)
+
+
+def with_popular_score(qs, average):
+    """
+    `popular_score`, /discover's is_popular order (the mobile team's doc,
+    3.1): the weighted rating
+
+        (v / (v + m)) * R + (m / (v + m)) * C   =   (v * R + m * C) / (v + m)
+
+    R the salon's rating (avg_rating), v its review_count, m
+    POPULAR_TRUSTED_REVIEWS and C `average` (average_salon_rating). NULL for
+    a salon nobody has reviewed: R is NULL, so the score is too, and it
+    sorts after every rated salon (nulls last).
+
+    REQUIRES discoverable_salons(): avg_rating and review_count come from
+    there.
+    """
+    reviews = Cast(F("review_count"), FloatField())
+    trusted = Value(float(POPULAR_TRUSTED_REVIEWS))
+    return qs.annotate(
+        popular_score=ExpressionWrapper(
+            (reviews * Cast(F("avg_rating"), FloatField()) + trusted * Value(average or 0.0))
+            / (reviews + trusted),
+            output_field=FloatField(),
+        )
     )

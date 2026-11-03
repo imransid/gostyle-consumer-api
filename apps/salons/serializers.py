@@ -23,6 +23,18 @@ CATEGORY_ALIASES = {
 }
 
 
+def card_category(raw):
+    """
+    The card's `category` from the platform's raw salon.gender: "gents",
+    "ladies", "unisex", or None when it is empty. See get_category below.
+    GET /services' salon.category reads it too, so the two agree.
+    """
+    if not raw:
+        return None
+    value = raw.lower()
+    return CATEGORY_ALIASES.get(value, value)
+
+
 class SalonCardSerializer(serializers.Serializer):
     """
     Read-only card shape for the discovery list and map (Figma salon card).
@@ -189,11 +201,7 @@ class SalonCardSerializer(serializers.Serializer):
         Null when the platform's salon.gender is empty, which is its own
         answer: this salon has not declared one.
         """
-        raw = getattr(obj, "category", None)
-        if not raw:
-            return None
-        value = raw.lower()
-        return CATEGORY_ALIASES.get(value, value)
+        return card_category(getattr(obj, "category", None))
 
     def get_rating(self, obj) -> str | None:
         """

@@ -34,6 +34,7 @@ from .snapshot import field as snap_field
 from .params import (
     MAX_SERVICE_IDS,
     ParamError,
+    asks_for_one_menu,
     body_uuid,
     parse_discovery,
     parse_map,
@@ -61,11 +62,13 @@ from .customer_sync import NoUsablePhone, resolve_customer
 
 from . import packages as package_rules
 from . import map_availability, map_filters, roster, slots, timezones
+from .service_search_views import service_search_response
 from .hours import resolve as resolve_hours
 from .hours import weekly_row as hours_row
 from .menu import service_groups, service_row
 from .money import major
 from .selectors import (
+    average_salon_rating,
     booking_route,
     discoverable_salons,
     filter_by_category,
@@ -96,6 +99,7 @@ from .selectors import (
     stylist_service_coverage,
     tenant_for_salon,
     with_distance,
+    with_popular_score,
     with_published_card_fields,
     product_detail,
 )
@@ -181,6 +185,22 @@ class SalonListView(APIView):
         OpenApiParameter("city", str, description="Filter by city name, e.g. Dubai. Exact, case-insensitive."),
         OpenApiParameter("rating_min", float, description="Minimum average rating, e.g. 4.5."),
         OpenApiParameter("total_amount", float, description="Booking total used to compute deposit.amount, e.g. 250"),
+        OpenApiParameter(
+            "is_popular", bool,
+            description=(
+                "SEARCH_POPULAR_V1 (off: ignored). true: the most popular salons first, by "
+                "a weighted rating (docs/SEARCH_POPULAR_API.md); salons nobody reviewed "
+                "after every rated one. Only the order: every other param still narrows. "
+                "It wins over sort."
+            ),
+        ),
+        OpenApiParameter(
+            "pageSize", int,
+            description=(
+                "SEARCH_POPULAR_V1 (off: ignored). Cards per page, 1 to 50, else 422. "
+                "Wins over page_size."
+            ),
+        ),
     ],
     responses=SalonCardSerializer(many=True),
 )
@@ -228,6 +248,11 @@ class SalonDiscoveryListView(ListAPIView):
         qs = filter_by_category(qs, params["category"])
         qs = filter_by_search(qs, params["search"])
 
+        if params["is_popular"]:
+            # C is every rated public salon's average, whatever this call
+            # narrowed the list to (the mobile team's doc, 3.1).
+            qs = with_popular_score(qs, average_salon_rating())
+
         return qs.order_by(*self._ordering(params))
 
     def _parsed(self):
@@ -240,7 +265,10 @@ class SalonDiscoveryListView(ListAPIView):
         cached = getattr(self, "_discovery_params", None)
         if cached is None:
             try:
-                cached = parse_discovery(self.request.query_params)
+                cached = parse_discovery(
+                    self.request.query_params,
+                    search_popular=settings.SEARCH_POPULAR_V1,
+                )
             except ParamError as exc:
                 # Lands in the project's error envelope as a field-level
                 # error naming the parameter. See accounts.exceptions.
@@ -265,6 +293,19 @@ class SalonDiscoveryListView(ListAPIView):
         that nobody has reviewed yet led the discovery list ahead of the
         five-star ones.
         """
+        # is_popular (SEARCH_POPULAR_V1): the weighted rating, highest first,
+        # an unrated salon (NULL) after every rated one. Ties: more reviews,
+        # then the nearest when a location was sent. It decides the order
+        # alone, so it wins over `sort`.
+        if params["is_popular"]:
+            nearest = ("distance_km",) if params["latitude"] is not None else ()
+            return (
+                F("popular_score").desc(nulls_last=True),
+                "-review_count",
+                *nearest,
+                "id",
+            )
+
         # The DEFAULT stays rating, even when a location was sent. Nearest
         # first is a plausible default for a discovery screen and it is not
         # this one's, so switching it here would change what every existing
@@ -277,6 +318,13 @@ class SalonDiscoveryListView(ListAPIView):
             "-review_count",
             "id",
         )
+
+    def paginate_queryset(self, queryset):
+        # pageSize (SEARCH_POPULAR_V1), read and checked by parse_discovery.
+        # None, when it was not sent or the switch is off: ?page_size= as it
+        # always was.
+        self.paginator.settled_page_size = self._parsed()["page_size"]
+        return super().paginate_queryset(queryset)
 
     def filter_queryset(self, queryset):
         queryset = super().filter_queryset(queryset)
@@ -617,8 +665,24 @@ class StylistListView(APIView):
 
         
 @extend_schema(
+    description=(
+        "Two answers on one path.\n\n"
+        "With tenant_id (or branch_id or category_id): one salon's menu, "
+        "`{service_categories, service_groups}`, as it always was.\n\n"
+        "With none of them (SEARCH_POPULAR_V1; off, a 422 asking for tenant_id): "
+        "services from every salon, for the search over the map, in /discover's "
+        "page shape `{count, next, previous, results}`. Each result: id, name, "
+        "description, price, duration_min, duration_max, category `{id, label}` and "
+        "salon `{id, name, category}`. See docs/SEARCH_POPULAR_API.md."
+    ),
     parameters=[
-        OpenApiParameter("tenant_id", str, required=True, description="Tenant UUID"),
+        OpenApiParameter(
+            "tenant_id", str, required=False,
+            description=(
+                "Tenant UUID: that salon's menu. Leave it out (and branch_id, "
+                "category_id) for the services of every salon (SEARCH_POPULAR_V1)."
+            ),
+        ),
         OpenApiParameter(
             "branch_id", str, required=False,
             description=(
@@ -631,12 +695,45 @@ class StylistListView(APIView):
             "category_id", str, required=False,
             description="Only the groups of this chip, or this one group.",
         ),
+        OpenApiParameter(
+            "is_popular", bool,
+            description=(
+                "Every salon's services only. true: the most booked in the last 30 days "
+                "first (cancelled left out), at most 2 of one salon on a page. Missing or "
+                "false: the newest first."
+            ),
+        ),
+        OpenApiParameter(
+            "search", str,
+            description=(
+                "Every salon's services only. The service's name or its category.label "
+                "holds it, case ignored. Up to 100 characters. Empty is missing."
+            ),
+        ),
+        OpenApiParameter("latitude", float, description="Every salon's services only. Send with longitude."),
+        OpenApiParameter("longitude", float, description="Every salon's services only. Send with latitude."),
+        OpenApiParameter(
+            "radius", float,
+            description=(
+                "Every salon's services only. KILOMETRES, as on /discover: only salons "
+                "this close to latitude/longitude."
+            ),
+        ),
+        OpenApiParameter("page", int, description="Every salon's services only. From 1."),
+        OpenApiParameter(
+            "pageSize", int,
+            description="Every salon's services only. 1 to 50, default 20, else 422.",
+        ),
     ],
 )
 class ServiceListView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
+        if settings.SEARCH_POPULAR_V1 and not asks_for_one_menu(request.query_params):
+            # No salon's ids: the services of every salon, for the search.
+            return service_search_response(request)
+
         try:
             params = parse_services(request.query_params)
         except ParamError as exc:

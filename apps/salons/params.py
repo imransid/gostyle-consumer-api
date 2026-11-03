@@ -129,46 +129,21 @@ def _reject_renamed(params, renamed):
             raise ParamError(old, f"{old} was renamed to {new}.")
 
 
-def parse_services(params):
-    tenant_id = _uuid(params, "tenant_id")
-    branch_id = _uuid(params, "branch_id")
-    category_id = _uuid(params, "category_id")   # optional
+# GET /services' list across salons (SEARCH_POPULAR_V1): its default page,
+# and the cap every list here has (config.pagination).
+SERVICE_SEARCH_PAGE_SIZE = 20
+MAX_PAGE_SIZE = 50
 
-    if tenant_id is None:
-        raise ParamError("tenant_id", "This parameter is required.")
-    # if branch_id is None:
-    #     raise ParamError("branch_id", "This parameter is required.")
+# The old menu route's params. Any one of them sent: GET /services is that
+# salon's menu, as it always was. None: the list across salons.
+SALON_MENU_PARAMS = ("tenant_id", "branch_id", "category_id")
 
-    return {
-        "tenant_id": tenant_id,
-        "branch_id": branch_id,
-        "category_id": category_id,
-    }
 
-def parse_discovery(params):
+def _location(params):
     """
-    The whole /discover query string, settled.
-
-    Returns a dict with every key always present, so the view never reaches
-    for a parameter that might not be there:
-
-        latitude, longitude   float or None, and either both or neither
-        radius_km             float > 0 or None. KILOMETRES.
-        category              "gents"/"ladies"/"unisex", or None for no filter
-        search                str or None
-        city                  str or None
-        sort                  "distance"/"rating" or None for the default
-        rating_min            float or None
-        is_top_rated          bool
-        is_open_now           bool
-        hijab_only            bool
-
-    Note that "all" comes back as None. It is not a category — it is the
-    absence of the category filter — and turning it into None here means no
-    caller downstream has to remember that.
+    latitude, longitude and radius (KILOMETRES), as /discover reads them:
+    both coordinates or neither, a radius only with them and above 0.
     """
-    _reject_renamed(params, RENAMED_DISCOVERY)
-
     latitude = _number(params, "latitude", minimum=-90, maximum=90)
     longitude = _number(params, "longitude", minimum=-180, maximum=180)
 
@@ -187,6 +162,103 @@ def parse_discovery(params):
             raise ParamError(
                 "radius", "Needs latitude and longitude to measure from."
             )
+    return latitude, longitude, radius_km
+
+
+def _page_size(params, *names):
+    """
+    A page size the caller sent, or None. A whole number from 1 to
+    MAX_PAGE_SIZE; anything else is a 422 naming the parameter, never a page
+    of some other size.
+    """
+    name, raw = _raw(params, *names)
+    if raw is None:
+        return None
+    # ASCII only: "²".isdigit() is True, and int() of it fails.
+    if not (raw.isascii() and raw.isdigit()) or not 1 <= int(raw) <= MAX_PAGE_SIZE:
+        raise ParamError(
+            name, f"Must be a whole number from 1 to {MAX_PAGE_SIZE}, got {raw!r}."
+        )
+    return int(raw)
+
+
+def asks_for_one_menu(params):
+    """True when GET /services was sent one salon's ids: the old menu route."""
+    return any(_raw(params, name)[1] is not None for name in SALON_MENU_PARAMS)
+
+
+def parse_service_search(params):
+    """
+    GET /services' list across salons (SEARCH_POPULAR_V1), settled:
+
+        is_popular            bool
+        search                str or None (empty is the same as missing)
+        latitude, longitude   float or None, both or neither
+        radius_km             float > 0 or None. KILOMETRES, as on /discover.
+        page_size             int, SERVICE_SEARCH_PAGE_SIZE when not sent
+
+    pageSize is the app's spelling; page_size is read too, the same way.
+    """
+    _reject_renamed(params, RENAMED_COORDINATES)
+    latitude, longitude, radius_km = _location(params)
+    page_size = _page_size(params, "pageSize", "page_size")
+
+    return {
+        "is_popular": _boolean(params, "is_popular"),
+        "search": _text(params, "search", max_length=SEARCH_MAX_LENGTH),
+        "latitude": latitude,
+        "longitude": longitude,
+        "radius_km": radius_km,
+        "page_size": page_size or SERVICE_SEARCH_PAGE_SIZE,
+    }
+
+
+def parse_services(params):
+    tenant_id = _uuid(params, "tenant_id")
+    branch_id = _uuid(params, "branch_id")
+    category_id = _uuid(params, "category_id")   # optional
+
+    if tenant_id is None:
+        raise ParamError("tenant_id", "This parameter is required.")
+    # if branch_id is None:
+    #     raise ParamError("branch_id", "This parameter is required.")
+
+    return {
+        "tenant_id": tenant_id,
+        "branch_id": branch_id,
+        "category_id": category_id,
+    }
+
+def parse_discovery(params, search_popular=False):
+    """
+    The whole /discover query string, settled.
+
+    Returns a dict with every key always present, so the view never reaches
+    for a parameter that might not be there:
+
+        latitude, longitude   float or None, and either both or neither
+        radius_km             float > 0 or None. KILOMETRES.
+        category              "gents"/"ladies"/"unisex", or None for no filter
+        search                str or None
+        city                  str or None
+        sort                  "distance"/"rating" or None for the default
+        rating_min            float or None
+        is_top_rated          bool
+        is_open_now           bool
+        hijab_only            bool
+        is_popular            bool, always False unless `search_popular`
+        page_size             int, or None for the paginator's own reading
+
+    `search_popular` is settings.SEARCH_POPULAR_V1. Off, is_popular and
+    pageSize are not read at all, so the list is exactly what it was.
+
+    Note that "all" comes back as None. It is not a category — it is the
+    absence of the category filter — and turning it into None here means no
+    caller downstream has to remember that.
+    """
+    _reject_renamed(params, RENAMED_DISCOVERY)
+
+    latitude, longitude, radius_km = _location(params)
 
     sort = _choice(params, "sort", choices=SORT_CHOICES)
     if sort == "distance" and latitude is None:
@@ -209,6 +281,11 @@ def parse_discovery(params):
         "is_top_rated": _boolean(params, "is_top_rated", "top_rated"),
         "is_open_now": _boolean(params, "is_open_now"),
         "hijab_only": _boolean(params, "hijab_mode", "hijab_only"),
+        # The search's "Popular Near You" row (SEARCH_POPULAR_V1). pageSize is
+        # the app's spelling; the old page_size keeps its old reading (cut to
+        # 50, a bad one is the default), so a caller sending it sees no change.
+        "is_popular": search_popular and _boolean(params, "is_popular"),
+        "page_size": _page_size(params, "pageSize") if search_popular else None,
     }
 
 
