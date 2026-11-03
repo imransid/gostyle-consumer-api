@@ -763,6 +763,8 @@ class AccountMeDocTests(AuthTestCase):
             "phone_verified_at": at(11, 27, 2),
             "image": "https://cdn.example.com/customers/uploads/2026/10/jack.jpg",
             "location": "Dhaka",
+            # Random on a real account; the doc shows this one.
+            "account_number": "GS-8841-2290",
             **fields,
         }
         account = ConsumerAccount.objects.create(**values)

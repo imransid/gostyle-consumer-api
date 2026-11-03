@@ -34,6 +34,7 @@ class ConsumerAccountAdmin(admin.ModelAdmin):
 
     list_display = [
         "id",
+        "account_number",
         "phone",
         "email",
         "full_name",
@@ -44,6 +45,8 @@ class ConsumerAccountAdmin(admin.ModelAdmin):
         "deletion_reason",
     ]
     list_filter = [DeletionFilter]
+    # Support is given "GS-8841-2290", read off the Settings screen.
+    search_fields = ["account_number"]
     readonly_fields = ["deleted_at", "purge_at", "deletion_reason", "deletion_note"]
     ordering = ["-created_at"]
     list_per_page = 50

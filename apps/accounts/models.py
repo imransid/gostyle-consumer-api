@@ -8,6 +8,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from . import account_numbers
 from .managers import ActiveConsumerAccountManager, ConsumerAccountManager
 from .notifications import send_account_deleted_notice, verified_email
 
@@ -47,6 +48,18 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
    
     email = models.EmailField(unique=True, null=True, blank=True)
     full_name = models.CharField(max_length=120, blank=True)
+
+    # Personal Details' "Display name". "" is "not set", which /auth/me reads
+    # as null. NOT the name salons see: that is still full_name, through
+    # accounts/privacy.py. db_default: a row written by older code is "".
+    display_name = models.CharField(max_length=40, blank=True, default="", db_default="")
+
+    # Settings' "Account ID", "GS-8841-2290" (accounts/account_numbers.py).
+    # Random, never made from the id or the row count. Null only on a row
+    # written by code from before this column; reading /auth/me fills it.
+    account_number = models.CharField(
+        max_length=12, unique=True, null=True, blank=True, editable=False
+    )
 
     # The person's row in the platform directory (public.customer).
     # A plain UUID, not a ForeignKey, for the reason Favourite.storefront_id
@@ -120,6 +133,12 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
     USERNAME_FIELD = "phone"
     REQUIRED_FIELDS = []
 
+    def save(self, *args, **kwargs):
+        # Every new account gets its number as it is made, whoever makes it:
+        # register, create_user and the tests all come through here.
+        if self._state.adding and not self.account_number:
+            self.account_number = account_numbers.new()
+        super().save(*args, **kwargs)
 
     def request_deletion(self, reason=DeletionReason.OTHER, note=""):
         if self.is_deleted:
@@ -165,6 +184,7 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
         self.email_verified_at = None
         self.account_verified = False
         self.full_name = ""
+        self.display_name = ""
         self.image = ""
         self.date_of_birth = None
         self.location = ""
