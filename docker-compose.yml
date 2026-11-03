@@ -239,6 +239,11 @@ services:
       SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
       SENDGRID_FROM_EMAIL: ${SENDGRID_FROM_EMAIL:-noreply@gostyle.uk}
       SENDGRID_FROM_NAME: ${SENDGRID_FROM_NAME:-GoStyle}
+      # Account deletion's day 30 (docs/ACCOUNT_DELETION_SERVER.md): every
+      # hour this worker purges the accounts whose date has passed, after
+      # cancelling their bookings in booking-api (BOOKING_API_URL, the same
+      # default as api's).
+      ACCOUNT_PURGE_V1: ${ACCOUNT_PURGE_V1:-False}
     networks:
       - gostyle-net
     deploy:

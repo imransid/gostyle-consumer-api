@@ -289,6 +289,33 @@ def start(user, request, sign_in=True, **fields):
     return _pair(refresh)
 
 
+def open_for_server(user, device_name):
+    """A session this server opens for itself, acting as the account, and
+    its access token: (session, access).
+
+    For the deletion purge, which cancels the account's bookings in
+    booking-api the way the customer's own Cancel does
+    (apps/salons/account_deletion.py). booking-api checks a customer token
+    with VerifyConsumer, which wants a live session (DEVICE_SESSIONS_V1), so
+    the token needs one.
+
+    No request: no device headers, no IP, no place, and no sign-in alert.
+    The token never leaves this process, and the caller ends the session as
+    soon as it is done (the purge then deletes every session anyway)."""
+    from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
+
+    refresh = RefreshToken.for_user(user)
+    session = UserSession(user=user, device_name=device_name)
+    refresh[SID_CLAIM] = str(session.id)
+    raw = str(refresh)
+    session.refresh_token_hash = _hash(raw)
+    with transaction.atomic():
+        session.save(force_insert=True)
+        # As _open: simplejwt saved the token before it had a sid.
+        OutstandingToken.objects.filter(jti=refresh[jwt_settings.JTI_CLAIM]).update(token=raw)
+    return session, str(refresh.access_token)
+
+
 def _new_device(user, device):
     """A device with no live session on the account for its X-Device-Id,
     or one that sends none, a web browser among them

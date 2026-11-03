@@ -82,7 +82,8 @@ this release is deployed.
   and back to `null` after `POST /auth/me/delete/cancel`. When it is set, show
   "Deletion scheduled" with that date. `deleted_at` is set only when the
   account is purged, and a purged account cannot sign in, so you will always
-  read it as `null`. Both are read-only: a PATCH ignores them.
+  read it as `null`. Both are read-only: a PATCH ignores them. The whole
+  Delete Account flow is `docs/MOBILE_ACCOUNT_DELETION_FE.md`.
 - **`points` and `tier_level` are placeholders.** `points` is always `0` and
   `tier_level` is always `"BRONZE"`. Loyalty tiers belong to each salon, and
   each salon types its own tier names, so there is no one tier for the whole

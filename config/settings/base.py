@@ -472,6 +472,14 @@ SEARCH_POPULAR_V1 = env.bool("SEARCH_POPULAR_V1", default=False)
 # `country`, as before.
 MAP_COUNTRY_V1 = env.bool("MAP_COUNTRY_V1", default=False)
 
+# Account deletion's day 30 (docs/ACCOUNT_DELETION_FE.md): the notification
+# worker purges, every hour, the accounts whose date has passed, after
+# cancelling their bookings still to come as the customer's own cancel
+# (apps/accounts/deletion.py). It is read by the WORKER, so it goes on the
+# worker service. OFF, nothing runs on its own: the purge_due_accounts
+# command still does it by hand, as before.
+ACCOUNT_PURGE_V1 = env.bool("ACCOUNT_PURGE_V1", default=False)
+
 # The key authenticator secrets are encrypted with (AES-GCM): 32 random bytes,
 # base64. docs/TWO_FACTOR_SERVER.md says how to make one. Empty or not a key:
 # the authenticator calls answer 503 and log it, email and phone codes still
