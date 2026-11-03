@@ -1380,7 +1380,8 @@ class DiscoverMapView(APIView):
                              description=(
                                  "MAP_FILTER_V1. Comma separated: open_now (open right now, "
                                  "as is_open_now on /discover); verified (marked by our staff), "
-                                 "only with MAP_FILTER_VERIFIED_V1."
+                                 "only with MAP_FILTER_VERIFIED_V1; parking (the profile lists "
+                                 "parking), only with MAP_FILTER_PARKING_V1."
                              )),
             OpenApiParameter("verified", bool, required=False,
                              description=(

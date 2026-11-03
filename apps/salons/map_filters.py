@@ -24,7 +24,13 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db.models import Exists, OuterRef, Subquery, TextField
 
-from apps.platform_data.models import Branch, Service, ServiceBranchAvailability, Storefront
+from apps.platform_data.models import (
+    Branch,
+    Service,
+    ServiceBranchAvailability,
+    Storefront,
+    StorefrontVersion,
+)
 
 from . import map_availability
 from . import verified as verified_rule
@@ -60,13 +66,23 @@ DISTANCE_OPTIONS = (("5", "5 km"), ("10", "10 km"), ("20", "20 km"), ("100", "10
 # (verified.py). Off, the chip is left out and `additional=verified` is
 # refused like any other id the drawer does not offer (the FE doc's own rule).
 ADDITIONAL_OPTIONS = (("open_now", "Open now"),)
+# MAP_FILTER_PARKING_V1: the salon's profile lists parking among its
+# amenities. "Parking", not "Free parking": the platform's amenity does not
+# say whether it is free. Off, the drawer does not offer it and the map
+# refuses it, as before.
+PARKING_OPTION = ("parking", "Parking")
+# The platform's own key in the profile's Amenities row (translate.py).
+PARKING_AMENITY = "PARKING"
 
 
 def additional_options():
     """The Additional section's (id, label) pairs, with the switches in force."""
+    options = ADDITIONAL_OPTIONS
     if verified_rule.is_on():
-        return (*ADDITIONAL_OPTIONS, verified_rule.OPTION)
-    return ADDITIONAL_OPTIONS
+        options = (*options, verified_rule.OPTION)
+    if settings.MAP_FILTER_PARKING_V1:
+        options = (*options, PARKING_OPTION)
+    return options
 
 # Kept when its average rating is at least the pick (the FE doc, section 3):
 # "4" keeps 4.0 and up, "5" keeps 5.0 only. The plain average, not the pin's
@@ -263,6 +279,7 @@ class MapFilters:
     open_now: bool = False
     # MAP_FILTER_VERIFIED_V1: additional=verified, or verified=true.
     verified: bool = False
+    parking: bool = False
 
     @property
     def active(self):
@@ -273,6 +290,7 @@ class MapFilters:
             or self.distance_km is not None
             or self.open_now
             or self.verified
+            or self.parking
         )
 
 
@@ -357,6 +375,7 @@ def parse_map_filters(params):
         # The app's map contract sends additional=verified; verified=true is
         # the same ask (MAP_FILTER_VERIFIED_V1; off, never true).
         verified=verified_rule.OPTION[0] in additional or verified_rule.wanted(params),
+        parking=PARKING_OPTION[0] in additional,
     )
 
 
@@ -387,6 +406,21 @@ def _on_menu_in(category_ids):
     return Exists(services)
 
 
+def _has_amenity(key):
+    """
+    EXISTS: the salon's published profile lists the amenity. The live
+    version, the one the profile's Amenities row is read from
+    (snapshot.read_snapshot, translate.amenities). A version whose list is
+    missing or not a list has no amenity: jsonb's @> is false on it.
+    """
+    return Exists(
+        StorefrontVersion.objects.filter(
+            id=OuterRef("live_version_id"),
+            snapshot__AMENITIES__items__contains=[key],
+        )
+    )
+
+
 def filtered_map_venues(map_params, filters, now):
     """
     GET /discover/map's venues with the drawer's filters on, as (venues,
@@ -396,7 +430,7 @@ def filtered_map_venues(map_params, filters, now):
 
     FILTER FIRST, THEN THE CAP. Cheapest first (the FE doc, 5.1): the box,
     the category and the radius (map_venue_queryset), the rating, the
-    distance from the customer and the service categories in SQL
+    distance from the customer, parking and the service categories in SQL
     (`filtered_queryset`); then "open now" and the availability, which need
     each salon's own clock, in Python on what is left, availability last
     (`keep_open_and_available`).
@@ -409,6 +443,7 @@ def filtered_map_venues(map_params, filters, now):
             and filters.rating is None
             and filters.distance_km is None
             and not filters.verified
+            and not filters.parking
         ):
             # Every category id unknown and nothing else: as if no param was
             # sent (the FE doc, section 6), so `count` as on a plain call.
@@ -454,7 +489,7 @@ def filtered_queryset(map_params, filters):
     """
     The SQL half of `filtered_map_venues`: the map's own query (the customer's
     country first, when the view found one: MAP_COUNTRY_V1) narrowed by the
-    rating, the distance and the service categories, ordered, not capped.
+    rating, the distance, parking and the service categories, ordered, not capped.
     Returns (queryset, the picked category ids the catalog knows, or None).
     """
     qs = map_venue_queryset(
@@ -483,6 +518,9 @@ def filtered_queryset(map_params, filters):
         qs = filter_by_radius(
             qs, origin_latitude, origin_longitude, filters.distance_km, name=ORIGIN_DISTANCE
         )
+
+    if filters.parking:
+        qs = qs.filter(_has_amenity(PARKING_AMENITY))
 
     picked = None
     if filters.service_categories:

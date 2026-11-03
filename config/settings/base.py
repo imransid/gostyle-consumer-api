@@ -485,6 +485,13 @@ PRIVACY_SETTINGS_V1 = env.bool("PRIVACY_SETTINGS_V1", default=False)
 # map call asking for availability answers 503.
 MAP_FILTER_V1 = env.bool("MAP_FILTER_V1", default=False)
 
+# A "Parking" chip in the map drawer's Additional section (docs/
+# MAP_FILTERS_API.md, section 6): GET /me/map/filters offers it and GET
+# /discover/map takes additional=parking, the salons whose profile lists
+# parking. Only with MAP_FILTER_V1 on. OFF, the drawer is as before and
+# additional=parking is the 400 any id the drawer does not offer gets.
+MAP_FILTER_PARKING_V1 = env.bool("MAP_FILTER_PARKING_V1", default=False)
+
 # The search over the map (docs/SEARCH_POPULAR_API.md): GET /services without
 # a salon's ids lists services from every salon (is_popular, search, the
 # customer's position), and GET /discover reads is_popular and pageSize. OFF,

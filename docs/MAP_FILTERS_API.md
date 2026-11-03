@@ -248,3 +248,43 @@ All in the usual envelope:
 
 - **Availability per service category:** done, per category (point 6 above).
 - **Verified:** left out until the platform has the mark (point 3 above).
+
+---
+
+## 6. The Parking chip (added 2026-11-03)
+
+For the Smart Search Matrix's "Free Parking". Behind its own switch,
+`MAP_FILTER_PARKING_V1`, off until we tell you it is on. Off, nothing in
+this guide changes.
+
+- **On, the drawer's Additional section has one more option**, after
+  "Open now". The section still opens with only `open_now` picked:
+
+```json
+{
+  "key": "additional",
+  "title": "Additional",
+  "multiple": true,
+  "default": ["open_now"],
+  "options": [
+    { "id": "open_now", "label": "Open now" },
+    { "id": "parking", "label": "Parking" }
+  ]
+}
+```
+
+- **Send it like `open_now`:** `additional=parking`, or
+  `additional=open_now,parking` for both.
+- **It keeps the salons whose profile lists parking** in its Amenities row,
+  the same list the salon profile shows. A salon that has not filled in its
+  amenities is left out.
+- **"Parking", not "Free parking".** The salon only ticks "parking"; we do
+  not know whether it is free. Use our label, or keep "Free Parking" only if
+  the business agrees.
+- **Off, `additional=parking` is `400 invalid_choice`**, as any id the
+  drawer does not offer (section 4). Read the drawer and show only what it
+  lists, and the chip appears by itself the day the switch is on.
+- **Not in this release:** Mall Shops, Home Service, Mentorship Only, Metro
+  Near, Membership Card, Offers, 20pt Deals. No salon data says any of them
+  yet. Packages waits until the Packages tab's new rules are on.
+

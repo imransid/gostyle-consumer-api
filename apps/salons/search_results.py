@@ -32,6 +32,7 @@ from .map_filters import (
     ANY,
     AVAILABILITY_OPTIONS,
     DISTANCE_OPTIONS,
+    PARKING_OPTION,
     RATING_FLOORS,
     _multiple,
     _single,
@@ -216,7 +217,11 @@ def parse_search(params, sorts, default_sort):
     rating = _single(params, "rating", rating_options())
     availability = _single(params, "availability", AVAILABILITY_OPTIONS)
     distance = _single(params, "distance", DISTANCE_OPTIONS)
-    additional = _ids(params, "additional", additional_options())
+    # Parking has its own param here (amenities), so the map's Parking chip
+    # (MAP_FILTER_PARKING_V1) is not offered on `additional`.
+    additional = _ids(
+        params, "additional", [option for option in additional_options() if option != PARKING_OPTION]
+    )
     amenities = _ids(params, "amenities", AMENITY_OPTIONS)
     sort = _choice(params, "sort", choices=sorts)
     page_size = _page_size(params, "pageSize", "page_size") or SERVICE_SEARCH_PAGE_SIZE
