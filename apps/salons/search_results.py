@@ -19,6 +19,7 @@ packages, availability last).
 from dataclasses import dataclass
 
 from django.conf import settings
+from django.core.cache import cache
 from django.db.models import Exists, F, OuterRef, Q
 from django.utils import timezone
 
@@ -28,6 +29,7 @@ from . import map_availability, map_filters, service_search
 from .geo import format_distance
 from .map_filters import (
     ADDITIONAL_OPTIONS,
+    ANY,
     AVAILABILITY_OPTIONS,
     DISTANCE_OPTIONS,
     RATING_FLOORS,
@@ -36,6 +38,7 @@ from .map_filters import (
     rating_options,
 )
 from .menu import service_price_minor
+from .models import SearchTag
 from .params import (
     CATEGORY_CHOICES,
     SEARCH_MAX_LENGTH,
@@ -44,6 +47,7 @@ from .params import (
     _choice,
     _number,
     _page_size,
+    _raw,
     _text,
 )
 from .selectors import (
@@ -98,6 +102,12 @@ class SearchQuery:
     distance_km: float | None = None
     open_now: bool = False
     amenities: tuple = ()
+    # SEARCH_OPTIONS_V1: the word chips picked (models.SearchTag slugs) and
+    # the words each stands for. Off, never read.
+    quick: str | None = None
+    quick_terms: tuple = ()
+    service_tags: tuple = ()
+    tag_terms: tuple = ()
     sort: str = "rating"
     page_size: int = SERVICE_SEARCH_PAGE_SIZE
 
@@ -122,6 +132,67 @@ def _ids(params, name, pairs):
                 code="invalid_choice",
             )
     return picked
+
+
+# ---------------------------------------------------------------------------
+# The word chips (SEARCH_OPTIONS_V1): the quick chips and the sub tags
+# ---------------------------------------------------------------------------
+
+TAGS_CACHE_KEY = "search-tags:v1"
+TAGS_SECONDS = 60
+
+
+def active_tags():
+    """
+    The active word chips (models.SearchTag) in the admin's order, as
+    {slug: {"group", "label", "label_ar", "icon", "terms"}}, cached 60 s:
+    an edit in the admin shows within a minute. A chip with no word is left
+    out (it could match nothing).
+    """
+    cached = cache.get(TAGS_CACHE_KEY)
+    if cached is not None:
+        return cached
+    tags = {}
+    for tag in SearchTag.objects.filter(active=True).order_by("group", "sort_order", "slug"):
+        terms = tuple(
+            " ".join(term.split()) for term in (tag.match_terms or [])
+            if isinstance(term, str) and term.strip()
+        )
+        if terms:
+            tags[tag.slug] = {
+                "group": tag.group,
+                "label": tag.label_en,
+                "label_ar": tag.label_ar or None,
+                "icon": tag.icon or None,
+                "terms": terms,
+            }
+    cache.set(TAGS_CACHE_KEY, tags, TAGS_SECONDS)
+    return tags
+
+
+def _word_chips(params):
+    """
+    quick (one id) and service_tags (comma separated), read only with
+    SEARCH_OPTIONS_V1 on: (quick slug or None, its words, the tag slugs,
+    their words). An id that is not an active chip of its kind is ignored,
+    as an unknown category is: it may be gone since the app loaded the list.
+    """
+    if not settings.SEARCH_OPTIONS_V1:
+        return None, (), (), ()
+    _, raw = _raw(params, "quick")
+    wanted_quick = raw.lower() if raw is not None and raw.lower() != ANY else None
+    wanted_tags = _multiple(params, "service_tags")
+    if wanted_quick is None and not wanted_tags:
+        return None, (), (), ()
+
+    tags = active_tags()
+    quick = wanted_quick if tags.get(wanted_quick, {}).get("group") == SearchTag.Group.QUICK else None
+    picked = tuple(
+        slug for slug in wanted_tags if slug in tags and tags[slug]["group"] != SearchTag.Group.QUICK
+    )
+    quick_terms = tags[quick]["terms"] if quick else ()
+    tag_terms = tuple(dict.fromkeys(term for slug in picked for term in tags[slug]["terms"]))
+    return quick, quick_terms, picked, tag_terms
 
 
 def parse_search(params, sorts, default_sort):
@@ -156,6 +227,8 @@ def parse_search(params, sorts, default_sort):
     if sort is None:
         sort = "distance" if latitude is not None else default_sort
 
+    quick, quick_terms, service_tags, tag_terms = _word_chips(params)
+
     return SearchQuery(
         q=q,
         latitude=latitude,
@@ -168,6 +241,10 @@ def parse_search(params, sorts, default_sort):
         distance_km=float(distance) if distance is not None else None,
         open_now="open_now" in additional,
         amenities=amenities,
+        quick=quick,
+        quick_terms=quick_terms,
+        service_tags=service_tags,
+        tag_terms=tag_terms,
         sort=sort,
         page_size=page_size,
     )
@@ -232,6 +309,14 @@ def service_text(q, categories):
     )
 
 
+def words_where(terms, categories):
+    """Q: a service the text finds for ANY of `terms` (service_text's rule, word by word)."""
+    where = Q()
+    for term in terms:
+        where |= service_text(term, categories)
+    return where
+
+
 def salon_queryset(query, *, with_text=True, categories=None):
     """
     The salons the SQL can narrow down, card fields on, not ordered:
@@ -285,6 +370,14 @@ def salon_queryset(query, *, with_text=True, categories=None):
             | Q(branch_city__icontains=query.q)
             | Q(offers_text=True)
         )
+
+    # SEARCH_OPTIONS_V1: a service on the menu matches the quick chip, and
+    # one matches any of the sub tags picked (each param on its own).
+    for terms in (query.quick_terms, query.tag_terms):
+        if terms:
+            if categories is None:
+                categories = public_categories()
+            qs = qs.filter(_on_menu(words_where(terms, categories)))
 
     return qs, picked
 
@@ -396,6 +489,9 @@ def menu_rows(tenant_ids, query, categories, category_ids):
         qs = qs.filter(found)
     if category_ids is not None:
         qs = qs.filter(category_0_id__in=list(category_ids))
+    for terms in (query.quick_terms, query.tag_terms):
+        if terms:
+            qs = qs.filter(words_where(terms, categories))
     return list(qs.values(*SERVICE_FIELDS))
 
 
@@ -410,6 +506,11 @@ def service_matches(row, categories, q):
     """The rule behind menu_rows' narrowing: name, chip label, or a tag holds `q`."""
     wanted = q.lower()
     return service_search.matches(row, categories, q) or any(wanted in tag.lower() for tag in _tags(row.service))
+
+
+def words_match(row, categories, terms):
+    """words_where's rule on one row: the service matches ANY of `terms`."""
+    return any(service_matches(row, categories, term) for term in terms)
 
 
 def _salon_dict(salon):
@@ -505,6 +606,9 @@ def service_list(query, now=None):
     )
     if query.q:
         rows = [row for row in rows if service_matches(row, categories, query.q)]
+    for terms in (query.quick_terms, query.tag_terms):
+        if terms:
+            rows = [row for row in rows if words_match(row, categories, terms)]
     return rows, categories
 
 

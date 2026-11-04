@@ -508,6 +508,15 @@ CARD_NEXT_OPENING_V1 = env.bool("CARD_NEXT_OPENING_V1", default=False)
 # touched either way.
 SEARCH_RESULTS_V1 = env.bool("SEARCH_RESULTS_V1", default=False)
 
+# The Smart Search's lists and word chips (docs/SEARCH_OPTIONS_API.md, the
+# audit's P3, D6): GET /search/options (tabs, quick chips, amenities, the
+# service sub tags, only the ones with data), and the `quick` and
+# `service_tags` params of GET /search/salons and /search/services. The word
+# chips are our table search_tag (migration salons 0003, seeded by 0004),
+# edited in the admin. OFF, /search/options is a 404 and both params are
+# ignored.
+SEARCH_OPTIONS_V1 = env.bool("SEARCH_OPTIONS_V1", default=False)
+
 # Account deletion's day 30 (docs/ACCOUNT_DELETION_FE.md): the notification
 # worker purges, every hour, the accounts whose date has passed, after
 # cancelling their bookings still to come as the customer's own cancel
