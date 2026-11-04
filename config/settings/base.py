@@ -492,6 +492,14 @@ MAP_RATING_FIGMA_V1 = env.bool("MAP_RATING_FIGMA_V1", default=False)
 # the results are exactly as before, and the currency columns are not read.
 SERVICE_CURRENCY_V1 = env.bool("SERVICE_CURRENCY_V1", default=False)
 
+# A shut salon's card names its NEXT opening (docs/SEARCH_DISCOVERY_AUDIT.md,
+# X4, D10). `status_line`: "Opens at 9:00 AM" later today, "Opens tomorrow at
+# 10:00 AM", "Opens Sunday at 10:00 AM"; and `next_opening` counts later today
+# too. Every salon card (/discover, /discover/{id}, favourites). OFF, as
+# before: after closing time status_line said today's opening (already past),
+# and next_opening always started from tomorrow, even before today's opening.
+CARD_NEXT_OPENING_V1 = env.bool("CARD_NEXT_OPENING_V1", default=False)
+
 # Account deletion's day 30 (docs/ACCOUNT_DELETION_FE.md): the notification
 # worker purges, every hour, the accounts whose date has passed, after
 # cancelling their bookings still to come as the customer's own cancel

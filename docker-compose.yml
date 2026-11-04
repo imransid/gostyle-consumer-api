@@ -131,6 +131,8 @@ services:
       MAP_RATING_FIGMA_V1: ${MAP_RATING_FIGMA_V1:-False}
       # The currency of each service on GET /services across salons.
       SERVICE_CURRENCY_V1: ${SERVICE_CURRENCY_V1:-False}
+      # A shut salon's card names its next opening: status_line, next_opening.
+      CARD_NEXT_OPENING_V1: ${CARD_NEXT_OPENING_V1:-False}
 
       # Sessions' location from the IP (docs/DEVICE_SESSIONS_SERVER.md).
       # Empty: location stays null.
