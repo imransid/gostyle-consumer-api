@@ -7,6 +7,9 @@ Search Result Salons, Search Result Services (the Figma "Discovery" frames).
 This is the one page to wire those six screens. It says which call each screen makes and
 which fields it reads. The field-by-field references are the guides it links to.
 
+**The complete API reference** (every route, param, field and error, with live examples):
+`docs/MOBILE_DISCOVERY_API.md`.
+
 Base URL: `https://api.gostyle.uk/api/v1`. No token is needed on any call here except the
 notification count; send it when the customer is signed in.
 
