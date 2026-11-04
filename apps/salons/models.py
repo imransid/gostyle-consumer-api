@@ -1,5 +1,6 @@
 import uuid
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 
@@ -123,3 +124,40 @@ class SearchTag(models.Model):
         ):
             raise ValidationError({"match_terms": 'A list of one or more words, like ["fade"].'})
         self.match_terms = [" ".join(term.split()) for term in terms]
+
+
+class SalonDiscoveryFlag(models.Model):
+    """
+    The "Verified salons" mark (MAP_FILTER_VERIFIED_V1, the audit's D2,
+    Sarwar 2026-11-04): a yes/no per salon that our staff set in the admin.
+
+    A table of ours, because the platform owns the salon tables (storefront,
+    salon: managed = False here) and has no "verified by Go Style" mark.
+    `salon_id` is the salon's id in the app, which is the platform's
+    STOREFRONT id (one per branch), not its `salon` row (one per business).
+
+    A salon with no row is not verified. The admin list adds a row for
+    every public salon when it opens (verified.sync_flags), so staff can
+    find each one by name; `salon_name` is a copy for that search only,
+    refreshed from the platform each time, never shown to customers.
+    """
+
+    salon_id = models.UUIDField(unique=True, help_text="The salon's id in the app (the platform's storefront id).")
+    salon_name = models.CharField(max_length=200, blank=True, default="", help_text="A copy for searching here.")
+    is_verified = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        help_text="The staff member who last changed it.",
+    )
+
+    class Meta:
+        db_table = "salon_discovery_flag"
+        ordering = ("salon_name", "salon_id")
+
+    def __str__(self):
+        return f"{self.salon_name or self.salon_id}: {'verified' if self.is_verified else 'not verified'}"

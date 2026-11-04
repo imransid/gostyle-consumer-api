@@ -16,7 +16,7 @@ really does. Two calls:
 Behind the switch `MAP_FILTER_V1`. Off, `/me/map/filters` is `404` and
 `/discover/map` ignores the new params, exactly as today.
 
-**Update 2026-11-04:** the Rating chips are now the Figma's: `5`, `4`, `3`, `2`, `1` (labels 5, 4.0+, 3.0+, 2.0+, 1.0+), switch `MAP_RATING_FIGMA_V1`, on. `4.5` is gone and is a `400 invalid_choice`. The examples below show the new chips. The whole Discovery flow, screen by screen, is `docs/MOBILE_DISCOVERY_FE.md`.
+**Update 2026-11-04:** the Rating chips are now the Figma's: `5`, `4`, `3`, `2`, `1` (labels 5, 4.0+, 3.0+, 2.0+, 1.0+), switch `MAP_RATING_FIGMA_V1`, on. `4.5` is gone and is a `400 invalid_choice`. The examples below show the new chips. With `MAP_FILTER_VERIFIED_V1` on, Additional also offers `verified` ("Verified salons"), `/discover/map` takes `additional=verified` (or `verified=true`) and each venue says `is_verified`. The whole Discovery flow, screen by screen, is `docs/MOBILE_DISCOVERY_FE.md`.
 
 ---
 

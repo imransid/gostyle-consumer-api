@@ -26,15 +26,16 @@ from django.utils import timezone
 from apps.platform_data.models import Service, ServiceMedia, Storefront, StorefrontMedia, StorefrontVersion
 
 from . import map_availability, map_filters, service_search
+from . import verified as verified_rule
 from .geo import format_distance
 from .map_filters import (
-    ADDITIONAL_OPTIONS,
     ANY,
     AVAILABILITY_OPTIONS,
     DISTANCE_OPTIONS,
     RATING_FLOORS,
     _multiple,
     _single,
+    additional_options,
     rating_options,
 )
 from .menu import service_price_minor
@@ -101,6 +102,8 @@ class SearchQuery:
     availability: str | None = None
     distance_km: float | None = None
     open_now: bool = False
+    # MAP_FILTER_VERIFIED_V1: verified=true, or additional=verified.
+    verified: bool = False
     amenities: tuple = ()
     # SEARCH_OPTIONS_V1: the word chips picked (models.SearchTag slugs) and
     # the words each stands for. Off, never read.
@@ -213,7 +216,7 @@ def parse_search(params, sorts, default_sort):
     rating = _single(params, "rating", rating_options())
     availability = _single(params, "availability", AVAILABILITY_OPTIONS)
     distance = _single(params, "distance", DISTANCE_OPTIONS)
-    additional = _ids(params, "additional", ADDITIONAL_OPTIONS)
+    additional = _ids(params, "additional", additional_options())
     amenities = _ids(params, "amenities", AMENITY_OPTIONS)
     sort = _choice(params, "sort", choices=sorts)
     page_size = _page_size(params, "pageSize", "page_size") or SERVICE_SEARCH_PAGE_SIZE
@@ -240,6 +243,7 @@ def parse_search(params, sorts, default_sort):
         availability=availability,
         distance_km=float(distance) if distance is not None else None,
         open_now="open_now" in additional,
+        verified=verified_rule.OPTION[0] in additional or verified_rule.wanted(params),
         amenities=amenities,
         quick=quick,
         quick_terms=quick_terms,
@@ -340,6 +344,11 @@ def salon_queryset(query, *, with_text=True, categories=None):
     if query.rating is not None:
         # NULL (no review yet) fails >=: an unrated salon is left out.
         qs = qs.filter(avg_rating__gte=RATING_FLOORS[query.rating])
+
+    if query.verified:
+        # The card query carries is_verified while the switch is on
+        # (verified.py); a salon with no flag row is not verified.
+        qs = qs.filter(is_verified=True)
 
     if "parking" in query.amenities:
         qs = qs.annotate(
@@ -526,6 +535,7 @@ def _salon_dict(salon):
         "review_count": getattr(salon, "review_count", 0),
         "logo_url": getattr(salon, "logo_url", None),
         "distance_km": getattr(salon, "distance_km", None),
+        "is_verified": bool(getattr(salon, "is_verified", False)),
     }
 
 
@@ -678,5 +688,7 @@ def service_result(row, categories, images):
         "distance": format_distance(salon.get("distance_km")),
         "rating": None if rating is None else f"{float(rating):.1f}",
     }
+    if verified_rule.is_on():
+        out["salon"]["is_verified"] = bool(salon.get("is_verified"))
     return out
 

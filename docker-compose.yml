@@ -129,6 +129,8 @@ services:
       MAP_PIN_LOGO_V1: ${MAP_PIN_LOGO_V1:-False}
       # The drawer's Rating chips as the Figma: 5, 4, 3, 2, 1.
       MAP_RATING_FIGMA_V1: ${MAP_RATING_FIGMA_V1:-False}
+      # Verified salons: the drawer chip, verified=true, is_verified.
+      MAP_FILTER_VERIFIED_V1: ${MAP_FILTER_VERIFIED_V1:-False}
       # The currency of each service on GET /services across salons.
       SERVICE_CURRENCY_V1: ${SERVICE_CURRENCY_V1:-False}
       # A shut salon's card names its next opening: status_line, next_opening.

@@ -1,6 +1,6 @@
 # Mobile Discovery screens (Map, Filters, Search, Smart Search, Results): audit and plan
 
-Date: 2026-11-04. Status: **built and LIVE: P1, P2, P3 and P5 (2026-11-04), all switches on and proven on live. P4 and P7 wait on the client (D2 to D5). P6 skipped (D1). Progress: section 6.**
+Date: 2026-11-04. Status: **built and LIVE: P1, P2, P3 and P5 (2026-11-04), all switches on and proven on live. P6 skipped (D1). 2026-11-04, Sarwar: Verified is built now (admin flag, `MAP_FILTER_VERIFIED_V1`); the other 6 data-missing chips are DEFERRED (not this round). Progress: section 6.**
 
 Repos read:
 
@@ -68,7 +68,7 @@ Switches that matter here, as they are on live (from the deploy notes): `MAP_FIL
 | 2.2 | Map Filters | Rating: Any, 5, 4.0+, 3.0+, 2.0+, 1.0+ | PARTIAL |
 | 2.3 | Map Filters | Availability: Any, Today, Tomorrow, This Week | AVAILABLE |
 | 2.4 | Map Filters | Distance: Default, 5, 10, 20, 100 km | AVAILABLE |
-| 2.5 | Map Filters | Additional: Open now, Verified salons | PARTIAL |
+| 2.5 | Map Filters | Additional: Open now, Verified salons | AVAILABLE once `MAP_FILTER_VERIFIED_V1` is on (built, D2) |
 | 2.6 | Map Filters | Show Results count | AVAILABLE |
 | 2.7 | Map Filters | Clear Filters | AVAILABLE |
 | 3.1 | Search | Recent searches list | MISSING (on purpose) |
@@ -77,17 +77,17 @@ Switches that matter here, as they are on live (from the deploy notes): `MAP_FIL
 | 3.4 | Search | Popular Near You salons | AVAILABLE |
 | 3.5 | Search | Live search as the user types | PARTIAL |
 | 4.1a | Smart Search | Tab: Near Me | AVAILABLE |
-| 4.1b | Smart Search | Tab: Mall Shops | DATA MISSING |
+| 4.1b | Smart Search | Tab: Mall Shops | DEFERRED (not this round) |
 | 4.1c | Smart Search | Tab: Packages | MISSING |
-| 4.1d | Smart Search | Tab: Home Service | DATA MISSING |
-| 4.2a | Smart Search | Quick: Offers (20 Pts) | DATA MISSING |
+| 4.1d | Smart Search | Tab: Home Service | DEFERRED (not this round) |
+| 4.2a | Smart Search | Quick: Offers (20 Pts) | DEFERRED (not this round) |
 | 4.2b | Smart Search | Quick: Cuts & Fade, Beard & Shave, Color & Styles | PARTIAL |
-| 4.3 | Smart Search | Location tree: Regions > Hubs > Neighbourhoods | DATA MISSING |
-| 4.4a | Smart Search | Amenity: Membership Card | DATA MISSING |
+| 4.3 | Smart Search | Location tree: Regions > Hubs > Neighbourhoods | DEFERRED (not this round) |
+| 4.4a | Smart Search | Amenity: Membership Card | DEFERRED (not this round) |
 | 4.4b | Smart Search | Amenity: Packages Use | MISSING |
-| 4.4c | Smart Search | Amenity: 20pt Deals | DATA MISSING |
+| 4.4c | Smart Search | Amenity: 20pt Deals | DEFERRED (not this round) |
 | 4.4d | Smart Search | Amenity: Free Parking | PARTIAL |
-| 4.4e | Smart Search | Amenity: Metro Near | DATA MISSING |
+| 4.4e | Smart Search | Amenity: Metro Near | DEFERRED (not this round) |
 | 4.5 | Smart Search | Service sub tags (Fade, Buzz, Scissor, Beard Trim, Hot Towel, Shave, Grey Blend, Highlights, Keratin) | MISSING |
 | 4.6 | Smart Search | Apply (all combined) and Clear Filters | MISSING |
 | 4.7 | Smart Search | Where the option lists come from | MISSING |
@@ -461,23 +461,25 @@ so real shapes (category names, tags, hours) are only seen on live.
 
 ## 5. Open questions (D1 to D15)
 
-| # | Question | Recommended |
-| - | -------- | ----------- |
-| D1 | Recent searches: on the phone (as the FE contract says today, `docs/search-popular-fe-contract.md:159`) or on the server (same list on every phone, needs N5 + a table)? | **Phone.** Skip P6 unless the app team asks |
-| D2 | What does "Verified salons" mean? (a) hijab certification `CERTIFIED`; (b) at least one custom badge reviewed `APPROVED`; (c) our own admin mark; (d) the platform adds a real "verified by Go Style" mark | **Keep the chip hidden until (d)**, or (c) if the business wants it now |
-| D3 | Where does the location tree come from? (a) our own list (regions, hubs, neighbourhoods with a centre point, polygons later from OpenStreetMap, free, no signup), each salon placed from its pin; (b) the free-text `branch.region` / `salon.area`; (c) the platform adds area fields | **(a).** Note: the Figma's "Major Hubs" lists "Dubai" beside Downtown and Business Bay; please confirm the real list |
-| D4 | Mall Shops, Home Service, Metro Near, Membership Card: who says it is true? (a) the salon, through new platform amenity keys; (b) our admin table; (c) hide the chips until there is data | **(c) now, (a) later** |
-| D5 | "Offers (20 Pts)" and "20pt Deals": what are they? Points are per business today. Should "Offers" mean a live `storefront_offer` (a dated discount the salon posts)? | **"Offers" = a live `storefront_offer`; hide the points chips** until there is an app-wide points rule |
-| D6 | Sub tags (Fade, Buzz ...) and quick chips: our curated word list matched on service name, category and tags (`search_tag`), or ask salons to pick fixed tags on the platform? | **Our curated list** |
-| D7 | Rating chips: the Figma (5, 4.0+, 3.0+, 2.0+, 1.0+) or today's (3.0+, 4.0+, 4.5+, 5.0)? | **The Figma** (X2) |
-| D8 | Free Parking: the badge `FREE_PARKING` (says free), the amenity `PARKING` (does not), or either? This also decides the unpushed parking chip | **Badge or amenity, label "Parking"; "Free Parking" only from the badge** |
-| D9 | New `/search/...` routes, or more params on `/discover` and `/services`? | **New routes** (your rule; the old ones stay as they are) |
-| D10 | `status_line` after closing: fix the server sentence (X4), or tell the app to use `next_opening` only? | **Both:** fix behind a switch, and the FE guide says "Opens tomorrow at ..." is built from `next_opening` |
-| D11 | Should a text like "Fade" find salons that offer a fade on the Salons tab? | **Yes, on N2 only**; `/discover` unchanged |
-| D12 | Stylists and products in the search bar: in v1? | **Stylists yes** (N4), **products later** (no list of products across salons yet) |
-| D13 | Gender chips stay strict (a unisex salon only under All, as today), or does Gents also show unisex? | **Keep strict**, same as the map and `/discover` |
-| D14 | Packages tab: salons with at least one bookable package by the Packages tab's rules. Which rules, today's or `PACKAGES_LIVE_RULES_V1`? | **The same rules the salon's Packages tab uses at that moment** (one switch decides both) |
-| D15 | Duration range "20 to 30 mins": take min and max over the service's variants? It would then differ from the Services tab and Service Detail, which send one number twice | **Change it everywhere at once, later**, behind one switch; v1 keeps one number |
+Decisions recorded 2026-11-04: Rafa's (D1, D6 to D15) and Sarwar's, the lead (D2 to D5).
+
+| # | Question | Recommended | Decision (2026-11-04) |
+| - | -------- | ----------- | -------------------- |
+| D1 | Recent searches: on the phone (as the FE contract says today, `docs/search-popular-fe-contract.md:159`) or on the server (same list on every phone, needs N5 + a table)? | **Phone.** Skip P6 unless the app team asks | Rafa: on the phone. P6 skipped |
+| D2 | What does "Verified salons" mean? (a) hijab certification `CERTIFIED`; (b) at least one custom badge reviewed `APPROVED`; (c) our own admin mark; (d) the platform adds a real "verified by Go Style" mark | **Keep the chip hidden until (d)**, or (c) if the business wants it now | **Sarwar: BUILD NOW**, option (c), our own admin mark: staff set a yes/no per salon (`SalonDiscoveryFlag`, `MAP_FILTER_VERIFIED_V1`) |
+| D3 | Where does the location tree come from? (a) our own list (regions, hubs, neighbourhoods with a centre point, polygons later from OpenStreetMap, free, no signup), each salon placed from its pin; (b) the free-text `branch.region` / `salon.area`; (c) the platform adds area fields | **(a).** Note: the Figma's "Major Hubs" lists "Dubai" beside Downtown and Business Bay; please confirm the real list | **Sarwar: DEFERRED (not this round).** Regions, Major Hubs, Neighbourhood are not built |
+| D4 | Mall Shops, Home Service, Metro Near, Membership Card: who says it is true? (a) the salon, through new platform amenity keys; (b) our admin table; (c) hide the chips until there is data | **(c) now, (a) later** | **Sarwar: DEFERRED (not this round).** Mall Shops, Home Service, Metro Near, Membership Card are not built; membership is future work |
+| D5 | "Offers (20 Pts)" and "20pt Deals": what are they? Points are per business today. Should "Offers" mean a live `storefront_offer` (a dated discount the salon posts)? | **"Offers" = a live `storefront_offer`; hide the points chips** until there is an app-wide points rule | **Sarwar: DEFERRED (not this round).** Offers (20 Pts) and 20pt Deals are not built; rewards are future work |
+| D6 | Sub tags (Fade, Buzz ...) and quick chips: our curated word list matched on service name, category and tags (`search_tag`), or ask salons to pick fixed tags on the platform? | **Our curated list** | Rafa: our curated list (`search_tag`) |
+| D7 | Rating chips: the Figma (5, 4.0+, 3.0+, 2.0+, 1.0+) or today's (3.0+, 4.0+, 4.5+, 5.0)? | **The Figma** (X2) | Rafa: the Figma's chips, no 4.5 |
+| D8 | Free Parking: the badge `FREE_PARKING` (says free), the amenity `PARKING` (does not), or either? This also decides the unpushed parking chip | **Badge or amenity, label "Parking"; "Free Parking" only from the badge** | Rafa: "Parking" = amenity or badge; "Free Parking" only from the badge |
+| D9 | New `/search/...` routes, or more params on `/discover` and `/services`? | **New routes** (your rule; the old ones stay as they are) | Rafa: new routes |
+| D10 | `status_line` after closing: fix the server sentence (X4), or tell the app to use `next_opening` only? | **Both:** fix behind a switch, and the FE guide says "Opens tomorrow at ..." is built from `next_opening` | Rafa: both |
+| D11 | Should a text like "Fade" find salons that offer a fade on the Salons tab? | **Yes, on N2 only**; `/discover` unchanged | Rafa: yes, N2 only |
+| D12 | Stylists and products in the search bar: in v1? | **Stylists yes** (N4), **products later** (no list of products across salons yet) | Rafa: stylists yes, products later |
+| D13 | Gender chips stay strict (a unisex salon only under All, as today), or does Gents also show unisex? | **Keep strict**, same as the map and `/discover` | Rafa: keep strict |
+| D14 | Packages tab: salons with at least one bookable package by the Packages tab's rules. Which rules, today's or `PACKAGES_LIVE_RULES_V1`? | **The same rules the salon's Packages tab uses at that moment** (one switch decides both) | Rafa: the Packages tab's rules |
+| D15 | Duration range "20 to 30 mins": take min and max over the service's variants? It would then differ from the Services tab and Service Detail, which send one number twice | **Change it everywhere at once, later**, behind one switch; v1 keeps one number | Rafa: one number in v1, later everywhere |
 
 ---
 
@@ -488,7 +490,8 @@ so real shapes (category names, tags, hours) are only seen on live.
 | # | Answer |
 | - | ------ |
 | D1 | Recent searches on the phone. P6 skipped |
-| D2, D3, D4, D5 | **Wait on the client.** Not built; their chips are never served |
+| D2 | Sarwar (lead), 2026-11-04: **build Verified now**, an admin-set yes/no per salon (option B) |
+| D3, D4, D5 | Sarwar (lead), 2026-11-04: **DEFERRED (not this round)**. Regions, Mall Shops, Home Service, Metro Near, Membership Card, Offers (20 Pts) and 20pt Deals are not built; membership and rewards are future work |
 | D6 | Our curated list (`search_tag`) |
 | D7 | The Figma's rating chips, no 4.5 |
 | D8 | "Parking" = amenity or badge; "Free Parking" only from the `FREE_PARKING` badge |
@@ -508,7 +511,8 @@ so real shapes (category names, tags, hours) are only seen on live.
 | P2: N2 `/search/salons`, N3 `/search/services` | #62 (2806d92) | `SEARCH_RESULTS_V1` | on, proven |
 | P3: N1 `/search/options`, `quick` + `service_tags`, table `search_tag` (salons 0003, 0004) | #63 (4a8faea) | `SEARCH_OPTIONS_V1` | on, proven |
 | P5: N4 `/search/suggest`, throttled | #64 (d1e88b0) | `SEARCH_SUGGEST_V1` | on, proven |
-| P8: FE guides | this docs PR | none | `docs/MOBILE_DISCOVERY_FE.md` (all screens), `SEARCH_RESULTS_API.md`, `SEARCH_OPTIONS_API.md`, `SEARCH_SUGGEST_API.md`; older guides updated |
+| Verified salons (D2, Sarwar): table `salon_discovery_flag` (salons 0005), admin page, `verified=true` / `additional=verified` on 6 routes, `is_verified` on pins, cards and results | branch `feat/map-filter-verified` (not pushed yet) | `MAP_FILTER_VERIFIED_V1` | built, off |
+| P8: FE guides | #65 (c23e972) | none | `docs/MOBILE_DISCOVERY_FE.md` (all screens), `SEARCH_RESULTS_API.md`, `SEARCH_OPTIONS_API.md`, `SEARCH_SUGGEST_API.md`; older guides updated |
 | P4: regions | not built | | waits on D3 |
 | P6: recent searches on the server | not built | | skipped (D1) |
 | P7: Verified, Mall, Home Service, Metro, Membership, points | not built | | waits on D2, D4, D5 |
@@ -522,9 +526,10 @@ before today's opening it named tomorrow.
 | Status | Then | Now |
 | ------ | ---- | --- |
 | AVAILABLE | 16 | 30 |
-| PARTIAL | 12 | 3: 1.4 products (D12, later), 2.5 Verified (D2), 6.2 duration range (D15, later) |
+| PARTIAL | 12 | 2: 1.4 products (D12, later), 6.2 duration range (D15, later). 2.5 Verified is built (switch off) |
 | MISSING | 7 | 2: 3.1 and 3.2, recent searches, on the phone by D1 |
-| DATA MISSING | 7 | 7 (wait on D2 to D5) |
+| DATA MISSING | 7 | 0 |
+| DEFERRED (not this round) | 0 | 7: Mall Shops, Home Service, Offers (20 Pts), Regions tree, Membership Card, 20pt Deals, Metro Near (Sarwar, 2026-11-04) |
 
 ### 6.4 Seen in the live data (for the business, not code)
 
@@ -542,3 +547,24 @@ before today's opening it named tomorrow.
 - `bash scripts/stack-env-check.sh` on the server: it should print only `check done`.
 - `_grpc` and `_worker` still run an older image (fine for this work; update them with the
   next deploy so the purge from PR #60 is current).
+
+### 6.6 Open questions after Sarwar's decisions (2026-11-04)
+
+None of D1 to D15 is open any more. What stays for later rounds:
+
+| # | State |
+| - | ----- |
+| D3, D4, D5 | DEFERRED (not this round): decided "not now", to be asked again when membership and rewards start |
+| D12 | products in the search bar: later (Rafa) |
+| D15 | the duration range: later, changed everywhere at once (Rafa) |
+
+### 6.7 Note for the FE team
+
+**Hide these 6 chips for now; the API will not support them this round:**
+Regions / Major Hubs / Neighbourhood, Mall Shops, Home Service, Metro Near, Membership
+Card, Offers (20 Pts). 20pt Deals (the points amenity) is hidden with them. None of them
+is sent by `GET /search/options` or `GET /me/map/filters`, and no param filters on them.
+
+"Verified salons" (Map Filters full, Additional preferences) comes next, behind
+`MAP_FILTER_VERIFIED_V1`: the chip appears in the drawer and salons carry
+`is_verified` once the switch is on. Until then, hide it too.

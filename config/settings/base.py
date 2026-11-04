@@ -485,6 +485,16 @@ MAP_PIN_LOGO_V1 = env.bool("MAP_PIN_LOGO_V1", default=False)
 # MAP_FILTER_V1 on. OFF, the chips are as before: 3.0+, 4.0+, 4.5+, 5.0.
 MAP_RATING_FIGMA_V1 = env.bool("MAP_RATING_FIGMA_V1", default=False)
 
+# Verified salons (docs/SEARCH_DISCOVERY_AUDIT.md, D2, Sarwar 2026-11-04): our
+# staff mark a salon verified in the admin (our table salon_discovery_flag,
+# migration salons 0005). On: GET /me/map/filters offers "Verified salons" in
+# Additional; /discover/map, /discover, /services, /search/salons,
+# /search/services and /search/suggest take verified=true (and the map and the
+# search additional=verified); the map pins, the salon cards and the search
+# results carry is_verified. OFF, none of that: no chip, the params ignored
+# (additional=verified the 400 it was), no is_verified key, the SQL as before.
+MAP_FILTER_VERIFIED_V1 = env.bool("MAP_FILTER_VERIFIED_V1", default=False)
+
 # The currency of each service the search lists (docs/SEARCH_DISCOVERY_AUDIT.md,
 # X3): GET /services across salons (SEARCH_POPULAR_V1) also sends `currency`
 # after `price`, the branch's own when set, else the service's

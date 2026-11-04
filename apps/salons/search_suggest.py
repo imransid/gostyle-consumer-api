@@ -21,6 +21,7 @@ from django.db.models.functions import Coalesce, Concat
 
 from apps.platform_data.models import FileItem, Service, Storefront
 
+from . import verified as verified_rule
 from .geo import format_distance
 from .params import SEARCH_MAX_LENGTH, ParamError, _number, _text
 from .selectors import (
@@ -70,37 +71,48 @@ def _name_key(name):
     return " ".join((name or "").split()).casefold()
 
 
-def salon_query(q, latitude=None, longitude=None):
-    """The salons /discover?search= finds, names, logo and distance only (lazy, not capped)."""
+def salon_query(q, latitude=None, longitude=None, verified_only=False):
+    """
+    The salons /discover?search= finds, names, logo and distance only (lazy,
+    not capped). MAP_FILTER_VERIFIED_V1: their mark too, and with
+    `verified_only` only the verified ones.
+    """
     qs = filter_by_search(with_published_card_fields(discoverable_salons()), q)
     fields = ["id", "published_name", "branch_name", "logo_url"]
+    if verified_rule.is_on():
+        fields.append("is_verified")
+        if verified_only:
+            qs = qs.filter(is_verified=True)
     if latitude is not None:
         qs = with_distance(qs, latitude, longitude)
         fields.append("distance_km")
     return qs.order_by("id").values(*fields)
 
 
-def salons(q, latitude=None, longitude=None):
+def salons(q, latitude=None, longitude=None, verified_only=False):
     """
     Up to LIMIT salons, as [{id, name, logo_url, distance}]: the best match
     first, then the nearest (with a position), then by name.
     """
-    rows = list(salon_query(q, latitude, longitude)[:SCAN])
+    rows = list(salon_query(q, latitude, longitude, verified_only)[:SCAN])
 
     def key(row):
         name = row["published_name"] or row["branch_name"]
         km = row.get("distance_km")
         return (rank(name, q), km if km is not None else float("inf"), _name_key(name), str(row["id"]))
 
-    return [
-        {
+    found = []
+    for row in sorted(rows, key=key)[:LIMIT]:
+        salon = {
             "id": str(row["id"]),
             "name": row["published_name"] or row["branch_name"],
             "logo_url": row["logo_url"],
             "distance": format_distance(row.get("distance_km")),
         }
-        for row in sorted(rows, key=key)[:LIMIT]
-    ]
+        if verified_rule.is_on():
+            salon["is_verified"] = bool(row.get("is_verified"))
+        found.append(salon)
+    return found
 
 
 def services(q):
@@ -208,10 +220,10 @@ def stylists(q):
     return found[:LIMIT]
 
 
-def suggest(q, latitude=None, longitude=None):
-    """GET /search/suggest's body."""
+def suggest(q, latitude=None, longitude=None, verified_only=False):
+    """GET /search/suggest's body. `verified_only` (verified=true) narrows the salons only."""
     return {
-        "salons": salons(q, latitude, longitude),
+        "salons": salons(q, latitude, longitude, verified_only),
         "services": services(q),
         "stylists": stylists(q),
     }

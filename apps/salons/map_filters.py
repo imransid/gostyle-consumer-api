@@ -27,6 +27,7 @@ from django.db.models import Exists, OuterRef, Subquery, TextField
 from apps.platform_data.models import Branch, Service, ServiceBranchAvailability, Storefront
 
 from . import map_availability
+from . import verified as verified_rule
 from .menu import OTHER_CHIP, category_chip
 from .params import ParamError, _number, _raw
 from .selectors import (
@@ -54,10 +55,18 @@ RATING_OPTIONS_FIGMA = (("5", "5"), ("4", "4.0+"), ("3", "3.0+"), ("2", "2.0+"),
 RATING_IDS = ("1", "2", "3", "4", "4.5", "5")
 AVAILABILITY_OPTIONS = (("today", "Today"), ("tomorrow", "Tomorrow"), ("week", "This week"))
 DISTANCE_OPTIONS = (("5", "5 km"), ("10", "10 km"), ("20", "20 km"), ("100", "100 km"))
-# No "verified": no salon carries a "verified by Go Style" mark on the
-# platform yet, so the chip is left out and `additional=verified` is refused
-# like any other id the drawer does not offer (the FE doc's own rule).
+# "verified" only with MAP_FILTER_VERIFIED_V1 (additional_options): the
+# platform has no "verified by Go Style" mark, so it is our staff's
+# (verified.py). Off, the chip is left out and `additional=verified` is
+# refused like any other id the drawer does not offer (the FE doc's own rule).
 ADDITIONAL_OPTIONS = (("open_now", "Open now"),)
+
+
+def additional_options():
+    """The Additional section's (id, label) pairs, with the switches in force."""
+    if verified_rule.is_on():
+        return (*ADDITIONAL_OPTIONS, verified_rule.OPTION)
+    return ADDITIONAL_OPTIONS
 
 # Kept when its average rating is at least the pick (the FE doc, section 3):
 # "4" keeps 4.0 and up, "5" keeps 5.0 only. The plain average, not the pin's
@@ -234,7 +243,7 @@ def drawer():
                 "multiple": True,
                 # The drawer opens with "Open now" on (the FE doc, section 2).
                 "default": ["open_now"],
-                "options": _options(ADDITIONAL_OPTIONS, with_any=False),
+                "options": _options(additional_options(), with_any=False),
             },
         ]
     }
@@ -252,6 +261,8 @@ class MapFilters:
     distance_km: float | None = None
     origin: tuple | None = None
     open_now: bool = False
+    # MAP_FILTER_VERIFIED_V1: additional=verified, or verified=true.
+    verified: bool = False
 
     @property
     def active(self):
@@ -261,6 +272,7 @@ class MapFilters:
             or self.availability
             or self.distance_km is not None
             or self.open_now
+            or self.verified
         )
 
 
@@ -326,7 +338,7 @@ def parse_map_filters(params):
                 )
 
     additional = _multiple(params, "additional")
-    offered = [option_id for option_id, _ in ADDITIONAL_OPTIONS]
+    offered = [option_id for option_id, _ in additional_options()]
     for option_id in additional:
         if option_id not in offered:
             raise ParamError(
@@ -342,6 +354,9 @@ def parse_map_filters(params):
         distance_km=float(distance) if distance is not None else None,
         origin=(origin_latitude, origin_longitude) if distance is not None else None,
         open_now="open_now" in additional,
+        # The app's map contract sends additional=verified; verified=true is
+        # the same ask (MAP_FILTER_VERIFIED_V1; off, never true).
+        verified=verified_rule.OPTION[0] in additional or verified_rule.wanted(params),
     )
 
 
@@ -389,7 +404,12 @@ def filtered_map_venues(map_params, filters, now):
     qs, picked = filtered_queryset(map_params, filters)
     cap = map_venue_cap(map_params["limit"])
     if not filters.open_now and filters.availability is None:
-        if picked is None and filters.rating is None and filters.distance_km is None:
+        if (
+            picked is None
+            and filters.rating is None
+            and filters.distance_km is None
+            and not filters.verified
+        ):
             # Every category id unknown and nothing else: as if no param was
             # sent (the FE doc, section 6), so `count` as on a plain call.
             venues = list(qs[:cap])
@@ -450,6 +470,11 @@ def filtered_queryset(map_params, filters):
     if filters.rating is not None:
         # NULL (no review yet) fails `>=`, so an unrated salon is left out.
         qs = qs.filter(avg_rating__gte=RATING_FLOORS[filters.rating])
+
+    if filters.verified:
+        # map_venue_queryset carries is_verified while the switch is on; a
+        # salon with no flag row is not verified.
+        qs = qs.filter(is_verified=True)
 
     if filters.distance_km is not None:
         origin_latitude, origin_longitude = filters.origin
