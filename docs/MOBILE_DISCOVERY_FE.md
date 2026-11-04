@@ -15,6 +15,9 @@ notification count; send it when the customer is signed in.
 `SERVICE_CURRENCY_V1`, `CARD_NEXT_OPENING_V1`, `SEARCH_RESULTS_V1`, `SEARCH_OPTIONS_V1`,
 `SEARCH_SUGGEST_V1`, `NOTIFICATION_CENTER_V1`.
 
+**Coming with its own switch:** Verified salons (`MAP_FILTER_VERIFIED_V1`, section 3.1). Until
+the server team says it is on, hide the Verified chip and the badge.
+
 ---
 
 ## 0. Read this first
@@ -80,12 +83,28 @@ GET /discover/map?latitude=25.2048&longitude=55.2708&latitudeDelta=0.12&longitud
 | Rating | `rating` | `any`, `5`, `4`, `3`, `2`, `1` (labels 5, 4.0+, 3.0+, 2.0+, 1.0+) |
 | Availability | `availability` | `any`, `today`, `tomorrow`, `week` |
 | Distance | `distance` | `any`, `5`, `10`, `20`, `100` (km), sent with `origin_latitude`, `origin_longitude` |
-| Additional | `additional` | `open_now` (Verified is not sent: no data) |
+| Additional | `additional` | `open_now`; `verified` ("Verified salons") once `MAP_FILTER_VERIFIED_V1` is on |
 
 - **Rating changed on 2026-11-04** to the Figma's chips: `4.5` is gone and is now a 400.
 - **Show Results:** call `/discover/map` with the picks; `count` is every match, before
   `limit`.
 - **Clear Filters:** back to each section's `default` (Additional opens with `open_now` on).
+
+### 3.1 Verified salons (`MAP_FILTER_VERIFIED_V1`)
+
+Our staff mark salons verified in the admin. With the switch on:
+
+- The drawer's Additional section offers `{"id": "verified", "label": "Verified salons"}`.
+  Send it back as `additional=verified` (or `verified=true`, the same thing).
+- `verified=true` also works on `/discover`, `/services` (across salons),
+  `/search/salons`, `/search/services` and `/search/suggest` (its salons list).
+  `false`, anything else, or nothing: no filter.
+- Every salon says **`is_verified`** (`true` / `false`): the map pins, the salon cards
+  (`/discover`, `/discover/{id}`, the Salons tab), the Services tab's and `/services`'
+  `salon`, and the suggested salons. Show the badge when it is `true`.
+
+With the switch off none of this is there: no chip, no `is_verified` key, and
+`additional=verified` is a 400.
 
 ---
 
@@ -205,19 +224,20 @@ The usual envelope everywhere: `{detail, code, errors: [{field, code, message}]}
 
 ---
 
-## 8. Hidden: no data yet (never sent, do not show)
+## 8. Hidden: not this round (never sent, do not show)
+
+Decided by Sarwar (lead), 2026-11-04: **hide these 6 chips for now; the API will not
+support them this round.** Membership and rewards are future work.
 
 | Figma | Why |
 | ----- | --- |
-| Verified salons | no "verified by Go Style" mark exists yet |
-| Mall Shops, Home Service | no salon records it |
-| Metro Near, Membership Card | no salon records it |
-| Offers (20 Pts), 20pt Deals | points are per salon business, no app-wide points yet |
-| UAE Regions, Major Hubs, Neighbourhood | no region list yet |
-| Products in the search bar | not in the suggestions yet |
+| UAE Regions, Major Hubs, Neighbourhood | not this round (no region list) |
+| Mall Shops, Home Service | not this round (no salon records it) |
+| Metro Near, Membership Card | not this round (no salon records it) |
+| Offers (20 Pts) (and 20pt Deals) | not this round (points are per salon business) |
+| Products in the search bar | later |
 
-These wait on business answers. When one arrives, its chip appears in
-`/search/options` (or the drawer) with no app release.
+Verified salons is no longer in this list: see section 3.1.
 
 ---
 

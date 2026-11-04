@@ -68,7 +68,7 @@ Switches that matter here, as they are on live (from the deploy notes): `MAP_FIL
 | 2.2 | Map Filters | Rating: Any, 5, 4.0+, 3.0+, 2.0+, 1.0+ | PARTIAL |
 | 2.3 | Map Filters | Availability: Any, Today, Tomorrow, This Week | AVAILABLE |
 | 2.4 | Map Filters | Distance: Default, 5, 10, 20, 100 km | AVAILABLE |
-| 2.5 | Map Filters | Additional: Open now, Verified salons | PARTIAL (Verified: building, D2) |
+| 2.5 | Map Filters | Additional: Open now, Verified salons | AVAILABLE once `MAP_FILTER_VERIFIED_V1` is on (built, D2) |
 | 2.6 | Map Filters | Show Results count | AVAILABLE |
 | 2.7 | Map Filters | Clear Filters | AVAILABLE |
 | 3.1 | Search | Recent searches list | MISSING (on purpose) |
@@ -511,7 +511,8 @@ Decisions recorded 2026-11-04: Rafa's (D1, D6 to D15) and Sarwar's, the lead (D2
 | P2: N2 `/search/salons`, N3 `/search/services` | #62 (2806d92) | `SEARCH_RESULTS_V1` | on, proven |
 | P3: N1 `/search/options`, `quick` + `service_tags`, table `search_tag` (salons 0003, 0004) | #63 (4a8faea) | `SEARCH_OPTIONS_V1` | on, proven |
 | P5: N4 `/search/suggest`, throttled | #64 (d1e88b0) | `SEARCH_SUGGEST_V1` | on, proven |
-| P8: FE guides | this docs PR | none | `docs/MOBILE_DISCOVERY_FE.md` (all screens), `SEARCH_RESULTS_API.md`, `SEARCH_OPTIONS_API.md`, `SEARCH_SUGGEST_API.md`; older guides updated |
+| Verified salons (D2, Sarwar): table `salon_discovery_flag` (salons 0005), admin page, `verified=true` / `additional=verified` on 6 routes, `is_verified` on pins, cards and results | branch `feat/map-filter-verified` (not pushed yet) | `MAP_FILTER_VERIFIED_V1` | built, off |
+| P8: FE guides | #65 (c23e972) | none | `docs/MOBILE_DISCOVERY_FE.md` (all screens), `SEARCH_RESULTS_API.md`, `SEARCH_OPTIONS_API.md`, `SEARCH_SUGGEST_API.md`; older guides updated |
 | P4: regions | not built | | waits on D3 |
 | P6: recent searches on the server | not built | | skipped (D1) |
 | P7: Verified, Mall, Home Service, Metro, Membership, points | not built | | waits on D2, D4, D5 |
@@ -525,7 +526,7 @@ before today's opening it named tomorrow.
 | Status | Then | Now |
 | ------ | ---- | --- |
 | AVAILABLE | 16 | 30 |
-| PARTIAL | 12 | 3: 1.4 products (D12, later), 2.5 Verified (D2), 6.2 duration range (D15, later) |
+| PARTIAL | 12 | 2: 1.4 products (D12, later), 6.2 duration range (D15, later). 2.5 Verified is built (switch off) |
 | MISSING | 7 | 2: 3.1 and 3.2, recent searches, on the phone by D1 |
 | DATA MISSING | 7 | 0 |
 | DEFERRED (not this round) | 0 | 7: Mall Shops, Home Service, Offers (20 Pts), Regions tree, Membership Card, 20pt Deals, Metro Near (Sarwar, 2026-11-04) |

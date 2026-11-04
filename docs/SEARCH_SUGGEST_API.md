@@ -14,6 +14,7 @@ No token needed.
 | ----- | ----- |
 | `q` | what the customer typed, 2 to 100 characters |
 | `latitude`, `longitude` | optional, the phone's position, both or neither: gives each salon its `distance` |
+| `verified` | optional, `true`: only verified salons in `salons` (switch `MAP_FILTER_VERIFIED_V1`; each salon then also says `is_verified`) |
 
 ```
 GET /api/v1/search/suggest?q=fad&latitude=25.2048&longitude=55.2708

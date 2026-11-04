@@ -28,7 +28,8 @@ drawer's picks can be sent here as they are.
 | `rating` | an id of the drawer's Rating section | The salon's average is at least that (`5` = 5.0 only). Salons with no reviews are left out |
 | `availability` | `today`, `tomorrow`, `week` | The salon still has a free start in that window, as on the map |
 | `distance` | `5`, `10`, `20`, `100` (km) | Within that many km of `latitude`, `longitude` |
-| `additional` | `open_now` | Open right now, on the salon's own clock |
+| `additional` | `open_now`; `verified` with `MAP_FILTER_VERIFIED_V1` on | Open right now, on the salon's own clock; marked verified by our staff |
+| `verified` | `true` (switch `MAP_FILTER_VERIFIED_V1`) | Only verified salons. `false` or anything else: no filter. Each card and each result's `salon` then also says `is_verified` |
 | `amenities` | `parking`, `free_parking`, `packages`, comma separated | `parking`: the salon lists parking or shows the Free Parking badge. `free_parking`: only the badge (the only place that says free). `packages`: as `tab=packages`. With several, all must hold |
 | `quick`, `service_tags` | ids from `GET /search/options` | The Smart Search's word chips (switch `SEARCH_OPTIONS_V1`). See `docs/SEARCH_OPTIONS_API.md` |
 | `sort` | Salons: `distance`, `rating`, `popular`. Services: also `price` | See section 4 |
