@@ -17,11 +17,12 @@ from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_sche
 from rest_framework.exceptions import ErrorDetail, ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from config.pagination import ClientPageNumberPagination
 
-from . import map_availability, search_options, search_results
+from . import map_availability, search_options, search_results, search_suggest
 from .map_filters import ADDITIONAL_OPTIONS, AVAILABILITY_OPTIONS, DISTANCE_OPTIONS, RATING_IDS
 from .params import ParamError
 from .serializers import SalonCardSerializer
@@ -215,3 +216,43 @@ class SearchOptionsView(APIView):
         if not settings.SEARCH_OPTIONS_V1:
             raise Http404
         return Response(search_options.options())
+
+
+class SearchSuggestView(APIView):
+    """GET /api/v1/search/suggest: the type-ahead (SEARCH_SUGGEST_V1)."""
+
+    permission_classes = [AllowAny]
+    # Per address (per account with a token): SEARCH_SUGGEST_RATE, 429 past it.
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "search_suggest"
+
+    @extend_schema(
+        summary="Search suggestions while typing",
+        description=(
+            "SEARCH_SUGGEST_V1 (off: 404). Up to 5 of each: salons {id, name, logo_url, "
+            "distance} (name, branch name or city holds q), services {name, salons} (one "
+            "per name across every public salon, with how many offer it; tapping one runs "
+            "the search with that name), stylists {id, name, photo_url, salon {id, name}}. "
+            "The best match first (the name starts with q, then a word of it does). "
+            "Throttled per address: 429 past SEARCH_SUGGEST_RATE."
+        ),
+        parameters=[
+            OpenApiParameter("q", str, required=True, description="2 to 100 characters."),
+            OpenApiParameter("latitude", float, description="The phone's position, for the salons' distance."),
+            OpenApiParameter("longitude", float, description="With latitude."),
+        ],
+        responses={
+            200: OpenApiResponse(description="{salons, services, stylists}"),
+            404: ERRORS[404],
+            422: OpenApiResponse(description="q missing (required) or shorter than 2 (too_short); half a position."),
+            429: OpenApiResponse(description="Too many calls from this address: wait and type on."),
+        },
+    )
+    def get(self, request):
+        if not settings.SEARCH_SUGGEST_V1:
+            raise Http404
+        try:
+            q, latitude, longitude = search_suggest.parse(request.query_params)
+        except ParamError as exc:
+            raise ValidationError({exc.param: [ErrorDetail(exc.message, code=exc.code)]}) from exc
+        return Response(search_suggest.suggest(q, latitude, longitude))

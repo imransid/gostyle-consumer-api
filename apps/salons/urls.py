@@ -49,6 +49,8 @@ urlpatterns = [
     path("search/services", search_views.SearchServicesView.as_view(), name="search-services"),
     # The Smart Search's lists (SEARCH_OPTIONS_V1). Off, it is a 404.
     path("search/options", search_views.SearchOptionsView.as_view(), name="search-options"),
+    # The type-ahead (SEARCH_SUGGEST_V1). Off, it is a 404.
+    path("search/suggest", search_views.SearchSuggestView.as_view(), name="search-suggest"),
     path("discover/<uuid:pk>", SalonDiscoveryDetailView.as_view(), name="salon-discover-detail"),
     path("salon/<uuid:salon_id>", SalonProfileView.as_view(), name="salon-profile"),
     path("salon/<uuid:salon_id>/services", SalonServicesView.as_view(), name="salon-services"),
