@@ -63,6 +63,7 @@ from .customer_sync import NoUsablePhone, resolve_customer
 
 from . import packages as package_rules
 from . import map_availability, map_country, map_filters, roster, slots, timezones
+from . import verified as verified_rule
 from .service_search_views import service_search_response
 from .hours import resolve as resolve_hours
 from .hours import weekly_row as hours_row
@@ -185,6 +186,10 @@ class SalonListView(APIView):
         OpenApiParameter("sort", str, description="Sort order. 'distance' needs latitude/longitude.", enum=["distance", "rating"]),
         OpenApiParameter("city", str, description="Filter by city name, e.g. Dubai. Exact, case-insensitive."),
         OpenApiParameter("rating_min", float, description="Minimum average rating, e.g. 4.5."),
+        OpenApiParameter("verified", bool, description=(
+            "MAP_FILTER_VERIFIED_V1 (off: ignored). true: only the salons our staff "
+            "marked verified. false or anything else: no filter."
+        )),
         OpenApiParameter("total_amount", float, description="Booking total used to compute deposit.amount, e.g. 250"),
         OpenApiParameter(
             "is_popular", bool,
@@ -236,6 +241,9 @@ class SalonDiscoveryListView(ListAPIView):
                     qs, params["latitude"], params["longitude"], params["radius_km"]
                 )
 
+        # MAP_FILTER_VERIFIED_V1: the card query carries is_verified (verified.py).
+        if verified_rule.wanted(self.request.query_params):
+            qs = qs.filter(is_verified=True)
         if params["hijab_only"]:
             qs = qs.filter(hijab_certified=True)
         if params["is_top_rated"]:
@@ -723,6 +731,10 @@ class StylistListView(APIView):
             ),
         ),
         OpenApiParameter("page", int, description="Every salon's services only. From 1."),
+        OpenApiParameter("verified", bool, description=(
+            "Every salon's services only. MAP_FILTER_VERIFIED_V1 (off: ignored). true: only the "
+            "services of verified salons. false or anything else: no filter."
+        )),
         OpenApiParameter(
             "pageSize", int,
             description="Every salon's services only. 1 to 50, default 20, else 422.",
@@ -1181,7 +1193,13 @@ class DiscoverMapView(APIView):
             OpenApiParameter("additional", str, required=False,
                              description=(
                                  "MAP_FILTER_V1. Comma separated: open_now (open right now, "
-                                 "as is_open_now on /discover)."
+                                 "as is_open_now on /discover); verified (marked by our staff), "
+                                 "only with MAP_FILTER_VERIFIED_V1."
+                             )),
+            OpenApiParameter("verified", bool, required=False,
+                             description=(
+                                 "MAP_FILTER_V1 and MAP_FILTER_VERIFIED_V1 (off: ignored). "
+                                 "true: as additional=verified. false or anything else: no filter."
                              )),
             # The customer's country (MAP_COUNTRY_V1; off, they are ignored).
             OpenApiParameter("user_latitude", float, required=False,

@@ -24,6 +24,7 @@ from config.pagination import ClientPageNumberPagination
 
 from . import map_availability, search_options, search_results, search_suggest
 from .map_filters import ADDITIONAL_OPTIONS, AVAILABILITY_OPTIONS, DISTANCE_OPTIONS, RATING_IDS
+from . import verified as verified_rule
 from .params import ParamError
 from .serializers import SalonCardSerializer
 from .service_search_views import _pages_to_spread
@@ -58,7 +59,13 @@ PARAMETERS = [
     )),
     OpenApiParameter("availability", str, description=f"any, {_ids(AVAILABILITY_OPTIONS)}: a start left, as on the map."),
     OpenApiParameter("distance", str, description=f"any, {_ids(DISTANCE_OPTIONS)} (km from latitude, longitude)."),
-    OpenApiParameter("additional", str, description=f"Comma separated: {_ids(ADDITIONAL_OPTIONS)}."),
+    OpenApiParameter("additional", str, description=(
+        f"Comma separated: {_ids(ADDITIONAL_OPTIONS)}; with MAP_FILTER_VERIFIED_V1 on, verified too."
+    )),
+    OpenApiParameter("verified", bool, description=(
+        "MAP_FILTER_VERIFIED_V1 (off: ignored). true: only the salons our staff marked verified. "
+        "false or anything else: no filter."
+    )),
     OpenApiParameter("amenities", str, description=(
         f"Comma separated: {_ids(search_results.AMENITY_OPTIONS)}. parking: the profile lists "
         "parking or shows the Free Parking badge; free_parking: the badge only."
@@ -240,6 +247,9 @@ class SearchSuggestView(APIView):
             OpenApiParameter("q", str, required=True, description="2 to 100 characters."),
             OpenApiParameter("latitude", float, description="The phone's position, for the salons' distance."),
             OpenApiParameter("longitude", float, description="With latitude."),
+            OpenApiParameter("verified", bool, description=(
+                "MAP_FILTER_VERIFIED_V1 (off: ignored). true: only verified salons in `salons`."
+            )),
         ],
         responses={
             200: OpenApiResponse(description="{salons, services, stylists}"),
@@ -255,4 +265,6 @@ class SearchSuggestView(APIView):
             q, latitude, longitude = search_suggest.parse(request.query_params)
         except ParamError as exc:
             raise ValidationError({exc.param: [ErrorDetail(exc.message, code=exc.code)]}) from exc
-        return Response(search_suggest.suggest(q, latitude, longitude))
+        return Response(
+            search_suggest.suggest(q, latitude, longitude, verified_rule.wanted(request.query_params))
+        )

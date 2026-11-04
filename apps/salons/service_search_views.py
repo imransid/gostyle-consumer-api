@@ -16,6 +16,7 @@ from rest_framework.exceptions import ValidationError
 from config.pagination import ClientPageNumberPagination
 
 from . import service_search
+from . import verified as verified_rule
 from .params import ParamError, parse_service_search
 from .selectors import (
     BookingCountsUnavailable,
@@ -37,6 +38,10 @@ def service_search_response(request):
         raise ValidationError({exc.param: [exc.message]}) from exc
 
     salons = list(search_salons(params["latitude"], params["longitude"], params["radius_km"]))
+    # MAP_FILTER_VERIFIED_V1: verified=true keeps the services of verified
+    # salons only (search_salons reads their mark while the switch is on).
+    if verified_rule.wanted(request.query_params):
+        salons = [salon for salon in salons if salon.get("is_verified")]
     tenants = {salon["tenant_id"] for salon in salons}
     categories = categories_for_tenants(tenants)
 
@@ -73,9 +78,12 @@ def service_search_response(request):
     paginator = ClientPageNumberPagination()
     paginator.settled_page_size = page_size
     page = paginator.paginate_queryset(rows, request)
-    return paginator.get_paginated_response(
-        [service_search.result(row, categories, with_currency=with_currency) for row in page]
-    )
+    results = [service_search.result(row, categories, with_currency=with_currency) for row in page]
+    if verified_rule.is_on():
+        # The result's salon says whether it is verified, for the badge.
+        for row, result in zip(page, results):
+            result["salon"]["is_verified"] = bool(row.salon.get("is_verified"))
+    return paginator.get_paginated_response(results)
 
 
 def _booking_counts(salons):

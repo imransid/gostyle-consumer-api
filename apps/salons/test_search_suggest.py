@@ -196,7 +196,8 @@ class ViewTests(SimpleTestCase):
         with mock.patch.object(search_suggest, "suggest", return_value=body) as suggest:
             response = self.client.get(f"{URL}?q=fa&latitude=25.2&longitude=55.27")
         self.assertEqual((response.status_code, response.json()), (200, body))
-        suggest.assert_called_once_with("fa", 25.2, 55.27)
+        # The last one: verified=true (MAP_FILTER_VERIFIED_V1), not sent here.
+        suggest.assert_called_once_with("fa", 25.2, 55.27, False)
 
     @override_settings(SEARCH_SUGGEST_V1=True)
     def test_a_short_q_is_the_usual_422(self):

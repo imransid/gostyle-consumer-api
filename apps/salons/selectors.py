@@ -71,6 +71,7 @@ from .skills import (
     resolve as resolve_skills,
 )
 
+from . import verified as verified_rule
 from .geo import EARTH_RADIUS_KM, bounding_box, radius_box
 from .models import SalonCountry
 from .serializers import CATEGORY_ALIASES
@@ -1341,7 +1342,7 @@ def discoverable_salons():
 
     branch = Branch.objects.filter(id=OuterRef("branch_id"))
 
-    return (
+    qs = (
         Storefront.objects.filter(
             visibility="PUBLIC",
             deleted_at__isnull=True
@@ -1458,6 +1459,9 @@ def discoverable_salons():
             ),
         )
     )
+    # MAP_FILTER_VERIFIED_V1: `is_verified`, our staff's mark, in the same
+    # query (verified.py). Off, the card query is exactly what it was.
+    return verified_rule.annotate(qs)
 
 
 # ---------------------------------------------------------------------------
@@ -1611,6 +1615,8 @@ def map_venue_queryset(
     # own rule. Off, the marker query is exactly what it was.
     if settings.MAP_PIN_LOGO_V1:
         qs = qs.annotate(logo_url=logo_url_subquery())
+    # MAP_FILTER_VERIFIED_V1: the pin says whether the salon is verified.
+    qs = verified_rule.annotate(qs)
 
     # The customer's country first (MAP_COUNTRY_V1): before the box, the
     # filters and the cap, so the cap is never spent on a salon across a
@@ -2041,7 +2047,7 @@ def search_salons(latitude=None, longitude=None, radius_km=None):
         qs = qs.filter(lat__isnull=False, lng__isnull=False)
         if radius_km is not None:
             qs = filter_by_radius(qs, latitude, longitude, radius_km)
-    return qs.values(
+    fields = [
         "id",
         "tenant_id",
         "branch_id",
@@ -2050,7 +2056,11 @@ def search_salons(latitude=None, longitude=None, radius_km=None):
         "category",
         "avg_rating",
         "review_count",
-    )
+    ]
+    # MAP_FILTER_VERIFIED_V1: the salon's mark, for the result's salon.
+    if verified_rule.is_on():
+        fields.append("is_verified")
+    return qs.values(*fields)
 
 
 def menu_services(tenant_ids, term=None, label_ids=(), other_from=None, with_currency=False):

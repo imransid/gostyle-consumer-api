@@ -84,6 +84,12 @@ class SalonCardSerializer(serializers.Serializer):
     status_line = serializers.SerializerMethodField()
     cover_url = serializers.CharField(allow_null=True)
     hijab_certified = serializers.BooleanField()
+    is_verified = serializers.SerializerMethodField(
+        help_text=(
+            "MAP_FILTER_VERIFIED_V1 (absent while it is off). Our staff marked the "
+            "salon verified (verified.py): show the badge."
+        )
+    )
     deposit = serializers.SerializerMethodField()
     free_cancellation = serializers.SerializerMethodField()
 
@@ -338,6 +344,17 @@ class SalonCardSerializer(serializers.Serializer):
         hours = getattr(obj, "cancel_window_hours", None)
         return hours is not None and hours > 0
 
+    def get_is_verified(self, obj) -> bool:
+        # The query's own annotation (verified.annotate): no row, not verified.
+        return bool(getattr(obj, "is_verified", False))
+
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        # Off, the card is exactly what it always was: no key at all.
+        if not settings.MAP_FILTER_VERIFIED_V1:
+            data.pop("is_verified", None)
+        return data
+
 
 class MapVenueSerializer(serializers.Serializer):
     """Minimal marker shape for the map viewport endpoint."""
@@ -359,14 +376,23 @@ class MapVenueSerializer(serializers.Serializer):
             return None
         return round(float(obj.avg_rating), 1)
 
+    is_verified = serializers.SerializerMethodField(
+        help_text="MAP_FILTER_VERIFIED_V1 (absent while it is off). The salon is verified: badge the pin."
+    )
+
     def get_logo_url(self, obj) -> str | None:
         return getattr(obj, "logo_url", None)
+
+    def get_is_verified(self, obj) -> bool:
+        return bool(getattr(obj, "is_verified", False))
 
     def to_representation(self, obj):
         data = super().to_representation(obj)
         # Off, the venue is exactly what it always was: no key at all.
         if not settings.MAP_PIN_LOGO_V1:
             data.pop("logo_url")
+        if not settings.MAP_FILTER_VERIFIED_V1:
+            data.pop("is_verified")
         return data
 
 
