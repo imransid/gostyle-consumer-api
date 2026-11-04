@@ -133,6 +133,8 @@ services:
       SERVICE_CURRENCY_V1: ${SERVICE_CURRENCY_V1:-False}
       # A shut salon's card names its next opening: status_line, next_opening.
       CARD_NEXT_OPENING_V1: ${CARD_NEXT_OPENING_V1:-False}
+      # The Search Results tabs: GET /search/salons and GET /search/services.
+      SEARCH_RESULTS_V1: ${SEARCH_RESULTS_V1:-False}
 
       # Sessions' location from the IP (docs/DEVICE_SESSIONS_SERVER.md).
       # Empty: location stays null.

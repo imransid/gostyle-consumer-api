@@ -500,6 +500,14 @@ SERVICE_CURRENCY_V1 = env.bool("SERVICE_CURRENCY_V1", default=False)
 # and next_opening always started from tomorrow, even before today's opening.
 CARD_NEXT_OPENING_V1 = env.bool("CARD_NEXT_OPENING_V1", default=False)
 
+# The Search Results tabs (docs/SEARCH_RESULTS_API.md, the audit's P2): GET
+# /search/salons and GET /search/services, every Smart Search filter at once
+# (text, position, tab, gender, the map drawer's ids, amenities, sort). Only
+# availability reads booking-api's database (BOOKING_DB_NAME), as on the map.
+# OFF, both routes are a 404. /discover, /discover/map and /services are not
+# touched either way.
+SEARCH_RESULTS_V1 = env.bool("SEARCH_RESULTS_V1", default=False)
+
 # Account deletion's day 30 (docs/ACCOUNT_DELETION_FE.md): the notification
 # worker purges, every hour, the accounts whose date has passed, after
 # cancelling their bookings still to come as the customer's own cancel
