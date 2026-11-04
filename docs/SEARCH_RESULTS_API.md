@@ -30,6 +30,7 @@ drawer's picks can be sent here as they are.
 | `distance` | `5`, `10`, `20`, `100` (km) | Within that many km of `latitude`, `longitude` |
 | `additional` | `open_now` | Open right now, on the salon's own clock |
 | `amenities` | `parking`, `free_parking`, `packages`, comma separated | `parking`: the salon lists parking or shows the Free Parking badge. `free_parking`: only the badge (the only place that says free). `packages`: as `tab=packages`. With several, all must hold |
+| `quick`, `service_tags` | ids from `GET /search/options` | The Smart Search's word chips (switch `SEARCH_OPTIONS_V1`). See `docs/SEARCH_OPTIONS_API.md` |
 | `sort` | Salons: `distance`, `rating`, `popular`. Services: also `price` | See section 4 |
 | `page`, `pageSize` | `page` from 1; `pageSize` 1 to 50, default 20 | |
 
@@ -129,8 +130,8 @@ Same envelope as every other route: `{detail, code, errors: [{field, code, messa
 
 ## 6. Not here yet
 
-- The Smart Search option lists (tabs, quick chips, sub tags, amenities, labels) come
-  with `GET /api/v1/search/options` in the next step. Until then use the ids above.
+- The Smart Search option lists (tabs, quick chips, sub tags, amenities, labels) are
+  `GET /api/v1/search/options`: see `docs/SEARCH_OPTIONS_API.md`.
 - Regions, hubs and neighbourhoods, Mall Shops, Home Service, Metro Near, Membership
   Card, points offers and "Verified" have no data yet. Do not show those chips.
 - Recent searches stay on the phone.

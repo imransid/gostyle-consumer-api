@@ -16,11 +16,12 @@ from django.http import Http404
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework.exceptions import ErrorDetail, ValidationError
 from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from config.pagination import ClientPageNumberPagination
 
-from . import map_availability, search_results
+from . import map_availability, search_options, search_results
 from .map_filters import ADDITIONAL_OPTIONS, AVAILABILITY_OPTIONS, DISTANCE_OPTIONS, RATING_IDS
 from .params import ParamError
 from .serializers import SalonCardSerializer
@@ -60,6 +61,14 @@ PARAMETERS = [
     OpenApiParameter("amenities", str, description=(
         f"Comma separated: {_ids(search_results.AMENITY_OPTIONS)}. parking: the profile lists "
         "parking or shows the Free Parking badge; free_parking: the badge only."
+    )),
+    OpenApiParameter("quick", str, description=(
+        "SEARCH_OPTIONS_V1. One quick chip id from GET /search/options: a salon with a "
+        "service that matches it (Services tab: the service matches it). A gone id is ignored."
+    )),
+    OpenApiParameter("service_tags", str, description=(
+        "SEARCH_OPTIONS_V1. Sub tag ids from GET /search/options, comma separated: a "
+        "service that matches any of them. A gone id is ignored."
     )),
     OpenApiParameter("page", int, description="From 1."),
     OpenApiParameter("pageSize", int, description="1 to 50, default 20."),
@@ -184,3 +193,25 @@ class SearchServicesView(_SearchView):
             [search_results.service_result(row, categories, images) for row in page]
         )
 
+
+class SearchOptionsView(APIView):
+    """GET /api/v1/search/options: the Smart Search's lists (SEARCH_OPTIONS_V1)."""
+
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        summary="The Smart Search's lists",
+        description=(
+            "SEARCH_OPTIONS_V1 (off: 404). The map drawer's shape: sections, each with "
+            "`key` (the param GET /search/salons and /search/services take), `title`, "
+            "`multiple`, `default` and `options` [{id, label}] (the quick chips and sub "
+            "tags add `icon`, null when none). service_tags has `groups` [{key, title, "
+            "options}] instead of options. Only chips with data are sent: one no public "
+            "salon could match is left out. Cached 60 s."
+        ),
+        responses={200: OpenApiResponse(description="{sections: [...]}"), 404: ERRORS[404]},
+    )
+    def get(self, request):
+        if not settings.SEARCH_OPTIONS_V1:
+            raise Http404
+        return Response(search_options.options())

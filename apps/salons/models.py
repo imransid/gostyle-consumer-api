@@ -1,3 +1,6 @@
+import uuid
+
+from django.core.exceptions import ValidationError
 from django.db import models
 
 
@@ -62,3 +65,61 @@ class SalonCountry(models.Model):
 
     def __str__(self):
         return f"{self.branch_id}: {self.country_code or '-'}"
+
+
+class SearchTag(models.Model):
+    """
+    One chip of the Smart Search that picks services by WORDS (audit D6,
+    docs/SEARCH_OPTIONS_API.md): the quick chips ("Cuts & Fade") and the
+    service sub tags ("Fade", "Hot Towel", "Keratin").
+
+    A curated list of ours, because salons name their own services and
+    categories, and the platform's service.tags are free text per salon: no
+    fixed chip can be read off either. A service matches a tag when one of
+    its `match_terms` is in the service's name, its category chip's label
+    or one of its tags, case ignored (search_tags.matches). The list is
+    edited in the admin; the app reads it from GET /search/options, so a
+    new chip needs no app release.
+
+    `slug` is the id the app sends back (quick=..., service_tags=...), so it
+    is unique across every group and never renamed once the app has it.
+    """
+
+    class Group(models.TextChoices):
+        QUICK = "quick", "Quick chips"
+        CUTS_STYLING = "cuts_styling", "Cuts & Styling"
+        BEARD_SHAVE = "beard_shave", "Beard & Shave"
+        COLOR_TREATMENTS = "color_treatments", "Color & Treatments"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    group = models.CharField(max_length=20, choices=Group.choices)
+    slug = models.SlugField(max_length=40, unique=True, help_text="The id the app sends. Never rename it.")
+    label_en = models.CharField(max_length=60)
+    label_ar = models.CharField(max_length=60, blank=True, default="")
+    icon = models.CharField(max_length=40, blank=True, default="", help_text="An icon key, as the platform's (lucide names).")
+    # A JSON list of words, ["fade", "skin fade"]: no array column, so the
+    # service needs no django.contrib.postgres.
+    match_terms = models.JSONField(
+        default=list,
+        help_text='A list of words, like ["fade", "skin fade"]. A service matches when one is in its name, category or tags.',
+    )
+    sort_order = models.PositiveSmallIntegerField(default=0)
+    active = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "search_tag"
+        ordering = ("group", "sort_order", "slug")
+
+    def __str__(self):
+        return f"{self.group}: {self.label_en}"
+
+    def clean(self):
+        terms = self.match_terms
+        if (
+            not isinstance(terms, list)
+            or not terms
+            or not all(isinstance(term, str) and term.strip() for term in terms)
+        ):
+            raise ValidationError({"match_terms": 'A list of one or more words, like ["fade"].'})
+        self.match_terms = [" ".join(term.split()) for term in terms]
