@@ -674,7 +674,9 @@ class StylistListView(APIView):
         "services from every salon, for the search over the map, in /discover's "
         "page shape `{count, next, previous, results}`. Each result: id, name, "
         "description, price, duration_min, duration_max, category `{id, label}` and "
-        "salon `{id, name, category}`. See docs/SEARCH_POPULAR_API.md."
+        "salon `{id, name, category}`. With SERVICE_CURRENCY_V1 on, `currency` "
+        "(\"AED\") right after price: the currency that price is in. See "
+        "docs/SEARCH_POPULAR_API.md."
     ),
     parameters=[
         OpenApiParameter(

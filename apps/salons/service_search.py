@@ -15,7 +15,7 @@ import types
 from collections import Counter
 from datetime import timedelta
 
-from .menu import OTHER_CHIP, category_chip, service_row
+from .menu import OTHER_CHIP, category_chip, service_currency, service_row
 from .selectors import BRANCH_AVAILABILITY_ENABLED
 from .serializers import card_category
 
@@ -83,8 +83,9 @@ def matches(row, categories, term):
 def listing(salons, services, branch_rows):
     """
     One row per salon and service of its tenant: a namespace holding the
-    `salon` and `service` dicts and `branch_price_minor`, the salon's own
-    branch price (menu.service_price's rule).
+    `salon` and `service` dicts, `branch_price_minor`, the salon's own
+    branch price (menu.service_price's rule), and `branch_currency`, that
+    price's currency (None unless SERVICE_CURRENCY_V1 read it).
 
     `salons` are selectors.search_salons, `services` selectors.menu_services,
     `branch_rows` selectors.branch_service_rows.
@@ -106,6 +107,7 @@ def listing(salons, services, branch_rows):
                     salon=salon,
                     service=service,
                     branch_price_minor=own.get("price_minor"),
+                    branch_currency=own.get("currency"),
                 )
             )
     return rows
@@ -183,11 +185,26 @@ def spread(rows, page_size, pages, per_salon=PER_SALON):
     return out + pending
 
 
-def result(row, categories):
+def _after(fields, key, new_key, value):
+    """`fields` with `new_key` placed right after `key`, the rest in their order."""
+    out = {}
+    for name, held in fields.items():
+        out[name] = held
+        if name == key:
+            out[new_key] = value
+    return out
+
+
+def result(row, categories, with_currency=False):
     """
     One result, the doc's 2.2 fields: the service as on the salon's Services
     tab (menu.service_row: the same price and durations), its category as on
     the Service Detail screen (the tab's chip, { id, label }), and the salon.
+
+    With `with_currency` (SERVICE_CURRENCY_V1), `currency` follows `price`:
+    the currency that price is in, by menu.service_currency's rule (the
+    branch's own when set, else the service's). The rows must then carry
+    it (selectors.menu_services and branch_service_rows, with_currency).
     """
     service = row.service
     svc = types.SimpleNamespace(
@@ -197,11 +214,16 @@ def result(row, categories):
         price_minor=service["price_minor"],
         branch_price_minor=row.branch_price_minor,
         duration_minutes=service["duration_minutes"],
+        currency=service.get("currency"),
+        branch_currency=getattr(row, "branch_currency", None),
     )
     chip = category_chip(categories, service["category_0_id"])
     salon = row.salon
+    shown = service_row(svc)
+    if with_currency:
+        shown = _after(shown, "price", "currency", service_currency(svc))
     return {
-        **service_row(svc),
+        **shown,
         "category": {"id": chip["id"], "label": chip["label"]},
         "salon": {
             "id": str(salon["id"]),

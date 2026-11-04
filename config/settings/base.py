@@ -485,6 +485,13 @@ MAP_PIN_LOGO_V1 = env.bool("MAP_PIN_LOGO_V1", default=False)
 # MAP_FILTER_V1 on. OFF, the chips are as before: 3.0+, 4.0+, 4.5+, 5.0.
 MAP_RATING_FIGMA_V1 = env.bool("MAP_RATING_FIGMA_V1", default=False)
 
+# The currency of each service the search lists (docs/SEARCH_DISCOVERY_AUDIT.md,
+# X3): GET /services across salons (SEARCH_POPULAR_V1) also sends `currency`
+# after `price`, the branch's own when set, else the service's
+# (menu.service_currency). The Popular Services cards print "AED 180". OFF,
+# the results are exactly as before, and the currency columns are not read.
+SERVICE_CURRENCY_V1 = env.bool("SERVICE_CURRENCY_V1", default=False)
+
 # Account deletion's day 30 (docs/ACCOUNT_DELETION_FE.md): the notification
 # worker purges, every hour, the accounts whose date has passed, after
 # cancelling their bookings still to come as the customer's own cancel
