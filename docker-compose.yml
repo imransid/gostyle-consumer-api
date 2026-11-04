@@ -125,6 +125,14 @@ services:
       SEARCH_POPULAR_V1: ${SEARCH_POPULAR_V1:-False}
       # The map shows only the customer's country: user_latitude, user_longitude, country.
       MAP_COUNTRY_V1: ${MAP_COUNTRY_V1:-False}
+      # The map pin's logo: logo_url on every /discover/map venue.
+      MAP_PIN_LOGO_V1: ${MAP_PIN_LOGO_V1:-False}
+      # The drawer's Rating chips as the Figma: 5, 4, 3, 2, 1.
+      MAP_RATING_FIGMA_V1: ${MAP_RATING_FIGMA_V1:-False}
+      # The currency of each service on GET /services across salons.
+      SERVICE_CURRENCY_V1: ${SERVICE_CURRENCY_V1:-False}
+      # A shut salon's card names its next opening: status_line, next_opening.
+      CARD_NEXT_OPENING_V1: ${CARD_NEXT_OPENING_V1:-False}
 
       # Sessions' location from the IP (docs/DEVICE_SESSIONS_SERVER.md).
       # Empty: location stays null.

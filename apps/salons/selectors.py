@@ -899,18 +899,7 @@ def salon_cards_for_refs(salon_refs):
             # The same LOGO rule the discover card uses: public, approved,
             # newest first. A second spelling of it here is how one screen
             # starts showing a logo the other has already moderated away.
-            logo_url=Subquery(
-                StorefrontMedia.objects.filter(
-                    storefront_id=OuterRef("pk"),
-                    deleted_at__isnull=True,
-                    is_public=True,
-                    moderation_status="APPROVED",
-                    kind="LOGO",
-                )
-                .order_by("-created_at")
-                .values("url")[:1],
-                output_field=TextField(),
-            ),
+            logo_url=logo_url_subquery(),
             cancel_window_hours=Subquery(
                 StorefrontPolicy.objects.filter(
                     storefront_id=OuterRef("pk")
@@ -1322,6 +1311,28 @@ def filter_by_search(qs, term):
     )
 
 
+def logo_url_subquery():
+    """
+    The salon's logo, by the one rule every card uses: its newest LOGO
+    photo that is public, approved and not deleted. The card
+    (discoverable_salons), the cards by ref (salon_cards_for_refs) and the
+    map pin (MAP_PIN_LOGO_V1, map_venue_queryset) all read it from here, so
+    a pin and the card one tap later cannot show two logos.
+    """
+    return Subquery(
+        StorefrontMedia.objects.filter(
+            storefront_id=OuterRef("pk"),
+            deleted_at__isnull=True,
+            is_public=True,
+            moderation_status="APPROVED",
+            kind="LOGO",
+        )
+        .order_by("-created_at")
+        .values("url")[:1],
+        output_field=TextField(),
+    )
+
+
 def discoverable_salons():
     published_reviews = StorefrontReview.objects.filter(
         storefront_id=OuterRef("pk"),
@@ -1380,18 +1391,7 @@ def discoverable_salons():
                 .values("url")[:1],
                 output_field=TextField(),
             ),
-            logo_url=Subquery(
-                StorefrontMedia.objects.filter(
-                    storefront_id=OuterRef("pk"),
-                    deleted_at__isnull=True,
-                    is_public=True,
-                    moderation_status="APPROVED",
-                    kind="LOGO",
-                )
-                .order_by("-created_at")
-                .values("url")[:1],
-                output_field=TextField(),
-            ),
+            logo_url=logo_url_subquery(),
             hijab_certified=Exists(
                 StorefrontCertification.objects.filter(
                     storefront_id=OuterRef("pk"),
@@ -1606,6 +1606,11 @@ def map_venue_queryset(
             ),
         )
     )
+
+    # MAP_PIN_LOGO_V1: the pin also carries the salon's logo, by the card's
+    # own rule. Off, the marker query is exactly what it was.
+    if settings.MAP_PIN_LOGO_V1:
+        qs = qs.annotate(logo_url=logo_url_subquery())
 
     # The customer's country first (MAP_COUNTRY_V1): before the box, the
     # filters and the cap, so the cap is never spent on a salon across a
@@ -2048,7 +2053,7 @@ def search_salons(latitude=None, longitude=None, radius_km=None):
     )
 
 
-def menu_services(tenant_ids, term=None, label_ids=(), other_from=None):
+def menu_services(tenant_ids, term=None, label_ids=(), other_from=None, with_currency=False):
     """
     Every service on these tenants' menus, as dicts (lazy): the Services
     tab's three rules (salon_services: published, not deleted, open to
@@ -2059,6 +2064,10 @@ def menu_services(tenant_ids, term=None, label_ids=(), other_from=None):
     under one of `label_ids`, the categories whose chip label holds it. And
     when the term is in "Other" too, `other_from` is every live category id:
     a service under none of them is filed under the tab's "Other".
+
+    With `with_currency` (SERVICE_CURRENCY_V1), each also holds `currency`,
+    the service's own (menu.service_currency's fallback). Without it, the
+    columns are exactly what they were.
     """
     tenant_ids = list(tenant_ids)
     if not tenant_ids:
@@ -2076,7 +2085,7 @@ def menu_services(tenant_ids, term=None, label_ids=(), other_from=None):
             found |= Q(category_0_id__isnull=True) | ~Q(category_0_id__in=list(other_from))
         qs = qs.filter(found)
 
-    return qs.values(
+    fields = [
         "id",
         "tenant_id",
         "name",
@@ -2085,22 +2094,30 @@ def menu_services(tenant_ids, term=None, label_ids=(), other_from=None):
         "duration_minutes",
         "category_0_id",
         "created_at",
-    )
+    ]
+    if with_currency:
+        fields.append("currency")
+    return qs.values(*fields)
 
 
-def branch_service_rows(branch_ids):
+def branch_service_rows(branch_ids, with_currency=False):
     """
     These branches' own rows for their services
     (service_branch_availability), as {(service_id, branch_id): row} with
     `price_minor` and `available`: branch_price_minor and the tab's
     BRANCH_AVAILABILITY_ENABLED filter, read for many salons in one query.
+
+    With `with_currency` (SERVICE_CURRENCY_V1), each row also holds
+    `currency`, the branch's own, which wins over the service's when set
+    (menu.service_currency).
     """
     branch_ids = list(branch_ids)
     if not branch_ids:
         return {}
-    rows = ServiceBranchAvailability.objects.filter(branch_id__in=branch_ids).values(
-        "service_id", "branch_id", "price_minor", "available"
-    )
+    fields = ["service_id", "branch_id", "price_minor", "available"]
+    if with_currency:
+        fields.append("currency")
+    rows = ServiceBranchAvailability.objects.filter(branch_id__in=branch_ids).values(*fields)
     return {(row["service_id"], row["branch_id"]): row for row in rows}
 
 

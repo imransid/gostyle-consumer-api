@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from django.conf import settings
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
@@ -7,7 +8,13 @@ from . import timezones, translate
 from .geo import format_distance
 from .menu import is_on_menu
 from .money import major
-from .hours import next_opening_at, resolve as resolve_hours
+from .hours import (
+    next_opening_at,
+    next_opening_from_now,
+    opening_at,
+    opening_line,
+    resolve as resolve_hours,
+)
 from .snapshot import field as snap_field
 from .snapshot import items as snap_items
 
@@ -106,7 +113,31 @@ class SalonCardSerializer(serializers.Serializer):
                 now_hhmm=now.strftime("%H:%M"),
             )
             obj._resolved_hours = cached
+            # The same instant for the next opening (CARD_NEXT_OPENING_V1),
+            # so "Closed" and "Opens at ..." are read off one clock.
+            obj._resolved_at = now
         return cached
+
+    def _next_open(self, obj):
+        """
+        CARD_NEXT_OPENING_V1: (days_ahead, "HH:MM") of the next opening
+        from now, later today included (hours.next_opening_from_now), and
+        the instant it was read at.
+        """
+        self._hours(obj)
+        now = getattr(obj, "_resolved_at", None)
+        if now is None:
+            tz = timezones.resolve(getattr(obj, "branch_timezone", None), obj.pk)
+            now = datetime.now(tz)
+        published = getattr(obj, "published_hours", None) or {}
+        found = next_opening_from_now(
+            published.get("weekly"),
+            now.weekday(),
+            now.strftime("%H:%M"),
+            # Shut by hand today: its published opening does not happen.
+            shut_today=getattr(obj, "manual_state", None) == "CLOSED",
+        )
+        return found, now
 
     def get_next_opening(self, obj) -> str | None:
         """
@@ -128,6 +159,13 @@ class SalonCardSerializer(serializers.Serializer):
         """
         if self._hours(obj)["is_open"] is not False:
             return None
+
+        if settings.CARD_NEXT_OPENING_V1:
+            # From now, later today included: before a 9:00 opening it is
+            # today's 9:00, not tomorrow's (hours.next_opening_from_now).
+            found, now = self._next_open(obj)
+            when = opening_at(found, now)
+            return when.isoformat() if when else None
 
         published = getattr(obj, "published_hours", None) or {}
         tz = timezones.resolve(getattr(obj, "branch_timezone", None), obj.pk)
@@ -177,8 +215,17 @@ class SalonCardSerializer(serializers.Serializer):
         This is what `closes_at` used to hold. It moved here when `closes_at`
         became an actual closing time, because one key cannot mean both a time
         and a sentence about a different time.
+
+        CARD_NEXT_OPENING_V1: a shut salon's line names its NEXT opening,
+        never one already gone: "Opens at 9:00 AM" later today, "Opens
+        tomorrow at 10:00 AM", "Opens Sunday at 10:00 AM" (hours.opening_line).
+        Off, after closing time it said today's opening, already past.
         """
-        return self._hours(obj)["status_line"]
+        resolved = self._hours(obj)
+        if settings.CARD_NEXT_OPENING_V1 and resolved["is_open"] is False:
+            found, now = self._next_open(obj)
+            return opening_line(found, now.weekday())
+        return resolved["status_line"]
 
     def get_gallery(self, obj) -> list[str]:
         """
@@ -300,11 +347,27 @@ class MapVenueSerializer(serializers.Serializer):
     lng = serializers.FloatField()
     rating = serializers.SerializerMethodField()
     salon_profile_image = serializers.CharField(source="photo_url", allow_null=True)
+    logo_url = serializers.SerializerMethodField(
+        help_text=(
+            "MAP_PIN_LOGO_V1 (absent while it is off). The salon's logo, by the "
+            "card's own rule (selectors.logo_url_subquery). null: no logo."
+        )
+    )
 
     def get_rating(self, obj) -> float | None:
         if obj.avg_rating is None:
             return None
         return round(float(obj.avg_rating), 1)
+
+    def get_logo_url(self, obj) -> str | None:
+        return getattr(obj, "logo_url", None)
+
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        # Off, the venue is exactly what it always was: no key at all.
+        if not settings.MAP_PIN_LOGO_V1:
+            data.pop("logo_url")
+        return data
 
 
 class SalonProfileSerializer(serializers.Serializer):

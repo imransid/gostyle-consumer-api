@@ -107,6 +107,70 @@ def next_opening_at(weekly, now):
     return datetime(day.year, day.month, day.day, hour, minute, tzinfo=now.tzinfo)
 
 
+# The days as status_line names them. English, like the rest of that line.
+DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def next_opening_from_now(weekly, weekday_index, now_hhmm, shut_today=False):
+    """
+    When the salon next opens, looking from NOW, as (days_ahead, "HH:MM"):
+    days_ahead 0 is later today. None when it opens on no day of the week.
+    The card reads it with CARD_NEXT_OPENING_V1 on.
+
+    TODAY COUNTS, which is what next_opening (from tomorrow, always) got
+    wrong: at 07:00 before a 09:00 opening it named tomorrow. Today counts
+    when its opening is still ahead and the salon is not shut for the day:
+    a closed weekday, or closed by hand (`shut_today`, the manual CLOSED).
+
+    After today's closing time it is the next open day, never today's
+    opening, which is already gone: the old status_line said "Opens at
+    9:00 AM" at 11 PM.
+    """
+    if not shut_today:
+        row = weekly_row(weekly, weekday_index)
+        if row and not row.get("closed"):
+            opens, now = _minutes(row.get("open")), _minutes(now_hhmm)
+            if opens is not None and now is not None and now < opens:
+                return 0, row["open"]
+    return next_opening(weekly, weekday_index)
+
+
+def opening_line(found, weekday_index):
+    """
+    status_line for a shut salon, from next_opening_from_now's answer:
+    "Opens at 9:00 AM" (later today), "Opens tomorrow at 10:00 AM", or
+    "Opens Sunday at 10:00 AM". None when there is no next opening, or its
+    time cannot be read.
+    """
+    if found is None:
+        return None
+    days_ahead, hhmm = found
+    when = _pretty(hhmm)
+    if when is None:
+        return None
+    if days_ahead == 0:
+        return f"Opens at {when}"
+    if days_ahead == 1:
+        return f"Opens tomorrow at {when}"
+    return f"Opens {DAY_NAMES[(weekday_index + days_ahead) % 7]} at {when}"
+
+
+def opening_at(found, now):
+    """
+    next_opening_from_now's answer as a datetime in the salon's timezone
+    (`now`'s). None for None, or a time that cannot be read.
+    """
+    if found is None:
+        return None
+    days_ahead, hhmm = found
+    total = _minutes(hhmm)
+    if total is None:
+        return None
+    day = now.date() + timedelta(days=days_ahead)
+    hour, minute = divmod(total, 60)
+    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=now.tzinfo)
+
+
 def is_within(open_hhmm, close_hhmm, now_hhmm):
     """
     Is now inside the window? Handles OVERNIGHT windows.

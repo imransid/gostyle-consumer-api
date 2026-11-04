@@ -9,6 +9,7 @@ category_id here. The rules are service_search.py's; this reads the rows.
 
 import logging
 
+from django.conf import settings
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -39,15 +40,24 @@ def service_search_response(request):
     tenants = {salon["tenant_id"] for salon in salons}
     categories = categories_for_tenants(tenants)
 
+    # SERVICE_CURRENCY_V1: each result also says the currency of its price.
+    # Off, the currency columns are not even read.
+    with_currency = settings.SERVICE_CURRENCY_V1
+
     term = params["search"]
     services = menu_services(
         tenants,
         term=term,
         label_ids=service_search.label_ids(categories, term) if term else (),
         other_from=list(categories) if term and service_search.finds_other(term) else None,
+        with_currency=with_currency,
     )
     rows = service_search.listing(
-        salons, services, branch_service_rows({salon["branch_id"] for salon in salons})
+        salons,
+        services,
+        branch_service_rows(
+            {salon["branch_id"] for salon in salons}, with_currency=with_currency
+        ),
     )
     if term:
         # The query only narrowed the services down; this is the rule.
@@ -64,7 +74,7 @@ def service_search_response(request):
     paginator.settled_page_size = page_size
     page = paginator.paginate_queryset(rows, request)
     return paginator.get_paginated_response(
-        [service_search.result(row, categories) for row in page]
+        [service_search.result(row, categories, with_currency=with_currency) for row in page]
     )
 
 

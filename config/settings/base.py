@@ -472,6 +472,34 @@ SEARCH_POPULAR_V1 = env.bool("SEARCH_POPULAR_V1", default=False)
 # `country`, as before.
 MAP_COUNTRY_V1 = env.bool("MAP_COUNTRY_V1", default=False)
 
+# The map pin's logo (docs/SEARCH_DISCOVERY_AUDIT.md, X1): every venue of GET
+# /discover/map also sends `logo_url`, the salon's logo by the card's own rule
+# (selectors.logo_url_subquery). OFF, the venues are exactly as before, with
+# no such key.
+MAP_PIN_LOGO_V1 = env.bool("MAP_PIN_LOGO_V1", default=False)
+
+# The map drawer's Rating chips as the Figma shows them (docs/
+# SEARCH_DISCOVERY_AUDIT.md, X2, D7): 5, 4.0+, 3.0+, 2.0+, 1.0+. GET
+# /me/map/filters offers them and GET /discover/map takes rating=5|4|3|2|1;
+# 4.5 is then refused like any id the drawer does not offer. Only with
+# MAP_FILTER_V1 on. OFF, the chips are as before: 3.0+, 4.0+, 4.5+, 5.0.
+MAP_RATING_FIGMA_V1 = env.bool("MAP_RATING_FIGMA_V1", default=False)
+
+# The currency of each service the search lists (docs/SEARCH_DISCOVERY_AUDIT.md,
+# X3): GET /services across salons (SEARCH_POPULAR_V1) also sends `currency`
+# after `price`, the branch's own when set, else the service's
+# (menu.service_currency). The Popular Services cards print "AED 180". OFF,
+# the results are exactly as before, and the currency columns are not read.
+SERVICE_CURRENCY_V1 = env.bool("SERVICE_CURRENCY_V1", default=False)
+
+# A shut salon's card names its NEXT opening (docs/SEARCH_DISCOVERY_AUDIT.md,
+# X4, D10). `status_line`: "Opens at 9:00 AM" later today, "Opens tomorrow at
+# 10:00 AM", "Opens Sunday at 10:00 AM"; and `next_opening` counts later today
+# too. Every salon card (/discover, /discover/{id}, favourites). OFF, as
+# before: after closing time status_line said today's opening (already past),
+# and next_opening always started from tomorrow, even before today's opening.
+CARD_NEXT_OPENING_V1 = env.bool("CARD_NEXT_OPENING_V1", default=False)
+
 # Account deletion's day 30 (docs/ACCOUNT_DELETION_FE.md): the notification
 # worker purges, every hour, the accounts whose date has passed, after
 # cancelling their bookings still to come as the customer's own cancel
