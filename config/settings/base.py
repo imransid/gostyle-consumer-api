@@ -517,6 +517,12 @@ SEARCH_RESULTS_V1 = env.bool("SEARCH_RESULTS_V1", default=False)
 # ignored.
 SEARCH_OPTIONS_V1 = env.bool("SEARCH_OPTIONS_V1", default=False)
 
+# The type-ahead under the search bar (docs/SEARCH_SUGGEST_API.md, the audit's
+# P5): GET /search/suggest, up to 5 salons, service names and stylists that
+# match the letters typed, names only. Throttled per address
+# (SEARCH_SUGGEST_RATE, default 120/min). OFF, it is a 404.
+SEARCH_SUGGEST_V1 = env.bool("SEARCH_SUGGEST_V1", default=False)
+
 # Account deletion's day 30 (docs/ACCOUNT_DELETION_FE.md): the notification
 # worker purges, every hour, the accounts whose date has passed, after
 # cancelling their bookings still to come as the customer's own cancel
@@ -560,6 +566,9 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_THROTTLE_RATES": {
         "login": "10/min",
+        # GET /search/suggest, per address: generous, as one customer types a
+        # few calls a second, and one carrier address can be many phones.
+        "search_suggest": env("SEARCH_SUGGEST_RATE", default="120/min"),
     },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PAGINATION_CLASS": "config.pagination.ClientPageNumberPagination",

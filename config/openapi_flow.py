@@ -85,6 +85,7 @@ FLOW = (
             ("GET", "/api/v1/me/map/filters", "The map's Filters drawer (MAP_FILTER_V1)"),
             ("GET", "/api/v1/discover/map", "Salons on the map (with the drawer's filters)"),
             ("GET", "/api/v1/search/options", "The Smart Search's lists (SEARCH_OPTIONS_V1)"),
+            ("GET", "/api/v1/search/suggest", "Suggestions while typing (SEARCH_SUGGEST_V1)"),
             ("GET", "/api/v1/search/salons", "Search results: salons (SEARCH_RESULTS_V1)"),
             ("GET", "/api/v1/search/services", "Search results: services (SEARCH_RESULTS_V1)"),
             ("GET", "/api/v1/discover/story", "Salons with a story right now"),
