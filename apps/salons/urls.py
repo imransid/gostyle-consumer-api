@@ -8,6 +8,7 @@ from . import (
     map_views,
     package_detail_views,
     routine_views,
+    search_views,
     series_views,
     service_detail_views,
     single_views,
@@ -43,6 +44,9 @@ urlpatterns = [
     path("discover/map", DiscoverMapView.as_view(), name="salon-discover-map"),
     # The map's Filters drawer (MAP_FILTER_V1). Off, it is a 404.
     path("me/map/filters", map_views.MapFiltersView.as_view(), name="map-filters"),
+    # The Search Results tabs (SEARCH_RESULTS_V1). Off, both are a 404.
+    path("search/salons", search_views.SearchSalonsView.as_view(), name="search-salons"),
+    path("search/services", search_views.SearchServicesView.as_view(), name="search-services"),
     path("discover/<uuid:pk>", SalonDiscoveryDetailView.as_view(), name="salon-discover-detail"),
     path("salon/<uuid:salon_id>", SalonProfileView.as_view(), name="salon-profile"),
     path("salon/<uuid:salon_id>/services", SalonServicesView.as_view(), name="salon-services"),
