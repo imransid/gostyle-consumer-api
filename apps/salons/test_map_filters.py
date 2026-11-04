@@ -1032,7 +1032,8 @@ class DrawerViewTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), map_filters.drawer())
 
-    @override_settings(MAP_FILTER_V1=True)
+    # As on live: the example shows the Figma's rating chips.
+    @override_settings(MAP_FILTER_V1=True, MAP_RATING_FIGMA_V1=True)
     def test_the_swagger_example_is_what_the_view_answers(self):
         catalog = {
             map_filters.category_option_id(name): {
@@ -1062,6 +1063,14 @@ class GuideTests(SimpleTestCase):
     def test_the_drawer_example_is_the_view_s_own(self):
         self.assertEqual(self.json_blocks()[0], map_views.EXAMPLE)
 
+    @override_settings(MAP_RATING_FIGMA_V1=True)
+    def test_the_example_s_rating_chips_are_live_s(self):
+        # The guide and the example show the drawer as live has it: the
+        # Figma's chips (MAP_RATING_FIGMA_V1 on since 2026-11-04).
+        (rating,) = [s for s in map_views.EXAMPLE["sections"] if s["key"] == "rating"]
+        self.assertEqual(rating["options"], map_filters._options(map_filters.rating_options(), with_any=True))
+
+    @override_settings(MAP_RATING_FIGMA_V1=True)
     def test_the_error_example_is_the_real_message(self):
         error = self.json_blocks()[1]["errors"][0]
         with self.assertRaises(ParamError) as caught:
