@@ -472,6 +472,12 @@ SEARCH_POPULAR_V1 = env.bool("SEARCH_POPULAR_V1", default=False)
 # `country`, as before.
 MAP_COUNTRY_V1 = env.bool("MAP_COUNTRY_V1", default=False)
 
+# The map pin's logo (docs/SEARCH_DISCOVERY_AUDIT.md, X1): every venue of GET
+# /discover/map also sends `logo_url`, the salon's logo by the card's own rule
+# (selectors.logo_url_subquery). OFF, the venues are exactly as before, with
+# no such key.
+MAP_PIN_LOGO_V1 = env.bool("MAP_PIN_LOGO_V1", default=False)
+
 # Account deletion's day 30 (docs/ACCOUNT_DELETION_FE.md): the notification
 # worker purges, every hour, the accounts whose date has passed, after
 # cancelling their bookings still to come as the customer's own cancel

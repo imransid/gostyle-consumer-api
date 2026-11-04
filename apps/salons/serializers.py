@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from django.conf import settings
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
@@ -300,11 +301,27 @@ class MapVenueSerializer(serializers.Serializer):
     lng = serializers.FloatField()
     rating = serializers.SerializerMethodField()
     salon_profile_image = serializers.CharField(source="photo_url", allow_null=True)
+    logo_url = serializers.SerializerMethodField(
+        help_text=(
+            "MAP_PIN_LOGO_V1 (absent while it is off). The salon's logo, by the "
+            "card's own rule (selectors.logo_url_subquery). null: no logo."
+        )
+    )
 
     def get_rating(self, obj) -> float | None:
         if obj.avg_rating is None:
             return None
         return round(float(obj.avg_rating), 1)
+
+    def get_logo_url(self, obj) -> str | None:
+        return getattr(obj, "logo_url", None)
+
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        # Off, the venue is exactly what it always was: no key at all.
+        if not settings.MAP_PIN_LOGO_V1:
+            data.pop("logo_url")
+        return data
 
 
 class SalonProfileSerializer(serializers.Serializer):

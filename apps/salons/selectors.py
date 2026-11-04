@@ -899,18 +899,7 @@ def salon_cards_for_refs(salon_refs):
             # The same LOGO rule the discover card uses: public, approved,
             # newest first. A second spelling of it here is how one screen
             # starts showing a logo the other has already moderated away.
-            logo_url=Subquery(
-                StorefrontMedia.objects.filter(
-                    storefront_id=OuterRef("pk"),
-                    deleted_at__isnull=True,
-                    is_public=True,
-                    moderation_status="APPROVED",
-                    kind="LOGO",
-                )
-                .order_by("-created_at")
-                .values("url")[:1],
-                output_field=TextField(),
-            ),
+            logo_url=logo_url_subquery(),
             cancel_window_hours=Subquery(
                 StorefrontPolicy.objects.filter(
                     storefront_id=OuterRef("pk")
@@ -1322,6 +1311,28 @@ def filter_by_search(qs, term):
     )
 
 
+def logo_url_subquery():
+    """
+    The salon's logo, by the one rule every card uses: its newest LOGO
+    photo that is public, approved and not deleted. The card
+    (discoverable_salons), the cards by ref (salon_cards_for_refs) and the
+    map pin (MAP_PIN_LOGO_V1, map_venue_queryset) all read it from here, so
+    a pin and the card one tap later cannot show two logos.
+    """
+    return Subquery(
+        StorefrontMedia.objects.filter(
+            storefront_id=OuterRef("pk"),
+            deleted_at__isnull=True,
+            is_public=True,
+            moderation_status="APPROVED",
+            kind="LOGO",
+        )
+        .order_by("-created_at")
+        .values("url")[:1],
+        output_field=TextField(),
+    )
+
+
 def discoverable_salons():
     published_reviews = StorefrontReview.objects.filter(
         storefront_id=OuterRef("pk"),
@@ -1380,18 +1391,7 @@ def discoverable_salons():
                 .values("url")[:1],
                 output_field=TextField(),
             ),
-            logo_url=Subquery(
-                StorefrontMedia.objects.filter(
-                    storefront_id=OuterRef("pk"),
-                    deleted_at__isnull=True,
-                    is_public=True,
-                    moderation_status="APPROVED",
-                    kind="LOGO",
-                )
-                .order_by("-created_at")
-                .values("url")[:1],
-                output_field=TextField(),
-            ),
+            logo_url=logo_url_subquery(),
             hijab_certified=Exists(
                 StorefrontCertification.objects.filter(
                     storefront_id=OuterRef("pk"),
@@ -1606,6 +1606,11 @@ def map_venue_queryset(
             ),
         )
     )
+
+    # MAP_PIN_LOGO_V1: the pin also carries the salon's logo, by the card's
+    # own rule. Off, the marker query is exactly what it was.
+    if settings.MAP_PIN_LOGO_V1:
+        qs = qs.annotate(logo_url=logo_url_subquery())
 
     # The customer's country first (MAP_COUNTRY_V1): before the box, the
     # filters and the cap, so the cap is never spent on a salon across a
