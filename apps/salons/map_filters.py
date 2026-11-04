@@ -20,6 +20,7 @@ import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 
+from django.conf import settings
 from django.core.cache import cache
 from django.db.models import Exists, OuterRef, Subquery, TextField
 
@@ -45,6 +46,12 @@ ANY = "any"
 
 # (id, label) in the order the drawer shows them.
 RATING_OPTIONS = (("3", "3.0+"), ("4", "4.0+"), ("4.5", "4.5+"), ("5", "5.0"))
+# MAP_RATING_FIGMA_V1: the Figma's chips, highest first (audit D7). No "4.5":
+# with the switch on, an app that still sends it gets the 400 any id the
+# drawer does not offer gets.
+RATING_OPTIONS_FIGMA = (("5", "5"), ("4", "4.0+"), ("3", "3.0+"), ("2", "2.0+"), ("1", "1.0+"))
+# Every rating id either set offers, for the docs' enum.
+RATING_IDS = ("1", "2", "3", "4", "4.5", "5")
 AVAILABILITY_OPTIONS = (("today", "Today"), ("tomorrow", "Tomorrow"), ("week", "This week"))
 DISTANCE_OPTIONS = (("5", "5 km"), ("10", "10 km"), ("20", "20 km"), ("100", "100 km"))
 # No "verified": no salon carries a "verified by Go Style" mark on the
@@ -54,8 +61,16 @@ ADDITIONAL_OPTIONS = (("open_now", "Open now"),)
 
 # Kept when its average rating is at least the pick (the FE doc, section 3):
 # "4" keeps 4.0 and up, "5" keeps 5.0 only. The plain average, not the pin's
-# rounded one: 3.96 shows "4.0" on its pin and does NOT pass "4".
-RATING_FLOORS = {rating_id: float(rating_id) for rating_id, _ in RATING_OPTIONS}
+# rounded one: 3.96 shows "4.0" on its pin and does NOT pass "4". Every id of
+# either set: which ones may be sent is the parser's job (rating_options).
+RATING_FLOORS = {rating_id: float(rating_id) for rating_id in RATING_IDS}
+
+
+def rating_options():
+    """The Rating section's (id, label) pairs, with the switch in force."""
+    if settings.MAP_RATING_FIGMA_V1:
+        return RATING_OPTIONS_FIGMA
+    return RATING_OPTIONS
 
 # The distance from the customer, beside the map's own `distance_km` (from
 # the map's centre, for `radius`).
@@ -197,7 +212,7 @@ def drawer():
                 "title": "Rating",
                 "multiple": False,
                 "default": [ANY],
-                "options": _options(RATING_OPTIONS, with_any=True),
+                "options": _options(rating_options(), with_any=True),
             },
             {
                 "key": "availability",
@@ -290,7 +305,7 @@ def parse_map_filters(params):
     drawer, so an unknown one is dropped later (`filtered_map_venues`), never
     refused.
     """
-    rating = _single(params, "rating", RATING_OPTIONS)
+    rating = _single(params, "rating", rating_options())
     availability = _single(params, "availability", AVAILABILITY_OPTIONS)
     distance = _single(params, "distance", DISTANCE_OPTIONS)
 

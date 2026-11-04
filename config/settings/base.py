@@ -478,6 +478,13 @@ MAP_COUNTRY_V1 = env.bool("MAP_COUNTRY_V1", default=False)
 # no such key.
 MAP_PIN_LOGO_V1 = env.bool("MAP_PIN_LOGO_V1", default=False)
 
+# The map drawer's Rating chips as the Figma shows them (docs/
+# SEARCH_DISCOVERY_AUDIT.md, X2, D7): 5, 4.0+, 3.0+, 2.0+, 1.0+. GET
+# /me/map/filters offers them and GET /discover/map takes rating=5|4|3|2|1;
+# 4.5 is then refused like any id the drawer does not offer. Only with
+# MAP_FILTER_V1 on. OFF, the chips are as before: 3.0+, 4.0+, 4.5+, 5.0.
+MAP_RATING_FIGMA_V1 = env.bool("MAP_RATING_FIGMA_V1", default=False)
+
 # Account deletion's day 30 (docs/ACCOUNT_DELETION_FE.md): the notification
 # worker purges, every hour, the accounts whose date has passed, after
 # cancelling their bookings still to come as the customer's own cancel

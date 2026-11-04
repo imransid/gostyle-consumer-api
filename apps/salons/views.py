@@ -1154,9 +1154,11 @@ class DiscoverMapView(APIView):
             OpenApiParameter("rating", str, required=False,
                              description=(
                                  "MAP_FILTER_V1. The salon's rating is at least this (5: "
-                                 "5.0 only). Unrated salons are left out."
+                                 "5.0 only). Unrated salons are left out. The ids are the "
+                                 "drawer's: 3, 4, 4.5, 5; with MAP_RATING_FIGMA_V1 on, "
+                                 "5, 4, 3, 2, 1 (4.5 is then a 400)."
                              ),
-                             enum=["any", *[o for o, _ in map_filters.RATING_OPTIONS]]),
+                             enum=["any", *map_filters.RATING_IDS]),
             OpenApiParameter("availability", str, required=False,
                              description=(
                                  "MAP_FILTER_V1. A start a customer can still book, on the "

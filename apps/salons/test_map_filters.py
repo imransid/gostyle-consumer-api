@@ -366,8 +366,10 @@ class FilteredQuerysetTests(SimpleTestCase):
             )
 
     def test_the_rating_floor_is_the_pick_itself_not_the_pin_s_rounding(self):
+        # Every id of both chip sets (MAP_RATING_FIGMA_V1 adds 2 and 1).
         self.assertEqual(
-            map_filters.RATING_FLOORS, {"3": 3.0, "4": 4.0, "4.5": 4.5, "5": 5.0}
+            map_filters.RATING_FLOORS,
+            {"1": 1.0, "2": 2.0, "3": 3.0, "4": 4.0, "4.5": 4.5, "5": 5.0},
         )
 
     def test_distance_measures_from_the_origin_under_its_own_name(self):
