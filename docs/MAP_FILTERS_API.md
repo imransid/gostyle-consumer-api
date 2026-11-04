@@ -16,6 +16,8 @@ really does. Two calls:
 Behind the switch `MAP_FILTER_V1`. Off, `/me/map/filters` is `404` and
 `/discover/map` ignores the new params, exactly as today.
 
+**Update 2026-11-04:** the Rating chips are now the Figma's: `5`, `4`, `3`, `2`, `1` (labels 5, 4.0+, 3.0+, 2.0+, 1.0+), switch `MAP_RATING_FIGMA_V1`, on. `4.5` is gone and is a `400 invalid_choice`. The examples below show the new chips. The whole Discovery flow, screen by screen, is `docs/MOBILE_DISCOVERY_FE.md`.
+
 ---
 
 ## Notes on your draft
@@ -78,10 +80,11 @@ GET /api/v1/me/map/filters
       "default": ["any"],
       "options": [
         { "id": "any", "label": "Any" },
-        { "id": "3", "label": "3.0+" },
+        { "id": "5", "label": "5" },
         { "id": "4", "label": "4.0+" },
-        { "id": "4.5", "label": "4.5+" },
-        { "id": "5", "label": "5.0" }
+        { "id": "3", "label": "3.0+" },
+        { "id": "2", "label": "2.0+" },
+        { "id": "1", "label": "1.0+" }
       ]
     },
     {
@@ -221,7 +224,7 @@ All in the usual envelope:
   "detail": "Please correct the highlighted fields.",
   "code": "validation_error",
   "errors": [
-    { "field": "rating", "code": "invalid_choice", "message": "Expected one of: any, 3, 4, 4.5, 5. Got '7'." }
+    { "field": "rating", "code": "invalid_choice", "message": "Expected one of: any, 5, 4, 3, 2, 1. Got '7'." }
   ]
 }
 ```

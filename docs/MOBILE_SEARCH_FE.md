@@ -13,6 +13,8 @@ both.
 
 **LIVE since 2026-11-03** (server switch `SEARCH_POPULAR_V1` is on).
 
+**Update 2026-11-04:** while the customer types, use the one light call `GET /search/suggest?q=` (`docs/SEARCH_SUGGEST_API.md`) instead of the two lists of section 6; press Search (or tap a suggested service) to open the Results screen, `GET /search/salons` and `GET /search/services` (`docs/SEARCH_RESULTS_API.md`). Popular Services results now carry `currency`. The whole Discovery flow, screen by screen, is `docs/MOBILE_DISCOVERY_FE.md`.
+
 ---
 
 ## 0. Read this first
@@ -97,7 +99,8 @@ type SearchService = {
   id: string;                    // the service's id (uuid)
   name: string;
   description: string | null;    // can also be ""
-  price: number;                 // AED, one visit, this salon's own price (180, 180.5)
+  price: number;                 // one visit, this salon's own price (180, 180.5)
+  currency: string;              // the currency of price: "AED", "BDT" (2026-11-04)
   duration_min: number;          // minutes; the same as duration_max today
   duration_max: number;
   category: { id: string; label: string }; // id is a uuid, or "other". Never null.

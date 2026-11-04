@@ -30,11 +30,13 @@ EXAMPLE = {
             "multiple": False,
             "default": ["any"],
             "options": [
+                # As on live: MAP_RATING_FIGMA_V1 is on (2026-11-04).
                 {"id": "any", "label": "Any"},
-                {"id": "3", "label": "3.0+"},
+                {"id": "5", "label": "5"},
                 {"id": "4", "label": "4.0+"},
-                {"id": "4.5", "label": "4.5+"},
-                {"id": "5", "label": "5.0"},
+                {"id": "3", "label": "3.0+"},
+                {"id": "2", "label": "2.0+"},
+                {"id": "1", "label": "1.0+"},
             ],
         },
         {

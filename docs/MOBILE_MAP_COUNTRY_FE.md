@@ -14,6 +14,8 @@ three.
 
 **LIVE since 2026-11-03** (server switch `MAP_COUNTRY_V1` is on).
 
+**Update 2026-11-04:** each pin also sends `logo_url`, the salon's logo (switch `MAP_PIN_LOGO_V1`, on): draw the pin with it. `salon_profile_image` stays the cover photo. The whole Discovery flow, screen by screen, is `docs/MOBILE_DISCOVERY_FE.md`.
+
 ---
 
 ## 0. Read this first
@@ -91,13 +93,14 @@ flowchart TD
 ## 3. TypeScript types (copy these)
 
 ```ts
-/** One pin: unchanged. */
+/** One pin. */
 type MapVenue = {
   id: string;                          // the salon's id, for GET /salon/{id}
   lat: number;
   lng: number;
   rating: number | null;               // 4.5; null when nobody reviewed it
   salon_profile_image: string | null;  // cover photo URL
+  logo_url: string | null;             // the salon's logo, for the pin (2026-11-04)
 };
 
 /** NEW: the country the pins were limited to. */
@@ -270,7 +273,8 @@ then `limit`. So `limit` is never spent on a salon across the border.
       "lat": 25.205047,
       "lng": 55.274148,
       "rating": null,
-      "salon_profile_image": "https://entity-blob-storage.s3.eu-north-1.amazonaws.com/.../95pb503hrvw.jpg"
+      "salon_profile_image": "https://entity-blob-storage.s3.eu-north-1.amazonaws.com/.../95pb503hrvw.jpg",
+      "logo_url": "https://entity-blob-storage.s3.eu-north-1.amazonaws.com/.../71y7vby1tm4.png"
     }
   ],
   "country": {

@@ -16,6 +16,8 @@ Behind the switch `SEARCH_POPULAR_V1`. Off, `GET /services` without
 `tenant_id` is the `422` it is today, and `/discover` ignores `is_popular` and
 `pageSize`. We tell you when it is on.
 
+**Update 2026-11-04:** each `/services` result also sends `currency` right after `price` ("AED", "BDT"), switch `SERVICE_CURRENCY_V1`, on. The "while typing" lists now have their own light call, `GET /search/suggest` (`docs/SEARCH_SUGGEST_API.md`). The whole Discovery flow, screen by screen, is `docs/MOBILE_DISCOVERY_FE.md`.
+
 ---
 
 ## Notes on your doc
@@ -77,6 +79,7 @@ them, `GET /services` is one salon's menu, the old answer, as before.
       "name": "The Gentleman's Cut",
       "description": "A classic haircut tailored to your preferences, including a wash.",
       "price": 180.0,
+      "currency": "AED",
       "duration_min": 30,
       "duration_max": 30,
       "category": { "id": "55555555-5555-5555-5555-555555555551", "label": "Haircut & Styling" },
@@ -95,7 +98,8 @@ them, `GET /services` is one salon's menu, the old answer, as before.
 | `id` | string | The service's id, as on `GET /salon/:id/services` |
 | `name` | string | |
 | `description` | string or null | |
-| `price` | number | One visit, AED, the salon's own price: the same number as its Services tab and the Service Detail screen |
+| `price` | number | One visit, the salon's own price, in `currency`: the same number as its Services tab and the Service Detail screen |
+| `currency` | string | The currency of `price` ("AED", "BDT"): the branch's own when set, else the service's |
 | `duration_min`, `duration_max` | number | Minutes. The same number today (note 5) |
 | `category` | `{ id, label }` | The chip the salon's Services tab files it under. Never null |
 | `salon.id` | string | For `GET /salon/:salon_id/service/:service_id` |

@@ -122,6 +122,13 @@ Three fields changed meaning or type.
 The old `closes_at` sentence now lives in **`status_line`**, which also
 carries `"Opens at 9:00 AM"` when the salon is shut.
 
+**Update 2026-11-04** (switch `CARD_NEXT_OPENING_V1`, on): a shut salon's
+`status_line` names its NEXT opening, never one already gone: "Opens at 9:00 AM"
+(later today), "Opens tomorrow at 10:00 AM", "Opens Sunday at 10:00 AM". And
+`next_opening` looks from now, later today included (before, it always named
+tomorrow). Build your own "Opens tomorrow at ..." from `next_opening`, read in
+the salon's offset: `docs/MOBILE_DISCOVERY_FE.md` section 6.1.
+
 `name` is now the name the salon **published**, falling back to the branch
 name. The profile screen always used the published name; the card used the
 branch name, so one salon could appear under two names one tap apart.
