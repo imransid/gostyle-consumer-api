@@ -78,6 +78,9 @@ DAY = 86400
 CODE_TTL_SECONDS = 600
 SETUP_TTL_SECONDS = 600  # an authenticator's pending setup
 TOKEN_TTL_SECONDS = 300
+# Set a password's token (docs/GOOGLE_SIGN_IN_API.md section 5): the brief
+# for it gives 600.
+PASSWORD_SET_TOKEN_TTL_SECONDS = 600
 RESEND_SECONDS = 30
 
 # 5.4: wrong codes per account, across every call that checks one.
@@ -126,6 +129,12 @@ _NOTICES = {
     SIGN_IN_ALERTS_OFF: (
         "Go Style: sign-in alerts turned off",
         "Sign-in alerts were turned off for your Go Style account",
+    ),
+    # An account made with Google adds a password (POST /auth/password/set):
+    # a new way in, so its owner hears of it (docs/GOOGLE_SIGN_IN_API.md).
+    TwoFactorPurpose.PASSWORD_SET: (
+        "Go Style: a password was added to your account",
+        "A password was added to your Go Style account",
     ),
 }
 TOKEN_PREFIX = "vt_"
@@ -355,15 +364,20 @@ def verify(user, sid, method, purpose, code):
         check_authenticator_code(user, code)
     else:
         check_code(user, method, purpose, code)
+    ttl = (
+        PASSWORD_SET_TOKEN_TTL_SECONDS
+        if purpose == TwoFactorPurpose.PASSWORD_SET
+        else TOKEN_TTL_SECONDS
+    )
     raw = TOKEN_PREFIX + secrets.token_urlsafe(32)
     VerificationToken.objects.create(
         token_hash=_hash(raw),
         user=user,
         session_id=sid,
         purpose=purpose,
-        expires_at=timezone.now() + timedelta(seconds=TOKEN_TTL_SECONDS),
+        expires_at=timezone.now() + timedelta(seconds=ttl),
     )
-    return {"verification_token": raw, "expires_in": TOKEN_TTL_SECONDS}
+    return {"verification_token": raw, "expires_in": ttl}
 
 
 def spend_token(user, sid, purpose, raw):
@@ -431,8 +445,8 @@ def set_sign_in_alerts(user, on):
 
 def notify(user, sid, change):
     """Email the account that `change` (two_step_on, two_step_off,
-    authenticator_add, authenticator_remove or sign_in_alerts_off) was just
-    made, from the device and place of the
+    authenticator_add, authenticator_remove, sign_in_alerts_off or
+    password_set) was just made, from the device and place of the
     session `sid`: "2-step verification was turned off for your Go Style
     account on iPhone 15 in Dubai, UAE." Sent once the change is committed.
 

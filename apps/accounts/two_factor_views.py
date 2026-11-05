@@ -36,14 +36,26 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import sessions, two_factor
+from . import google, sessions, two_factor
 from .models import TwoFactorPurpose
 from .session_views import UAE
 
 _SIX_DIGITS = re.compile(r"[0-9]{6}")
 
 # Verify it's you's purposes. sign_in is the sign-in challenge's own.
-_PURPOSES = [p for p in TwoFactorPurpose.values if p != TwoFactorPurpose.SIGN_IN]
+_PURPOSES = [
+    p
+    for p in TwoFactorPurpose.values
+    if p not in (TwoFactorPurpose.SIGN_IN, TwoFactorPurpose.PASSWORD_SET)
+]
+
+
+def _purposes():
+    """password_set (POST /auth/password/set) only while Google sign-in is
+    on: off, it is the invalid_choice any unknown purpose is."""
+    if google.enabled():
+        return [*_PURPOSES, TwoFactorPurpose.PASSWORD_SET]
+    return _PURPOSES
 
 
 def _uae(value):
@@ -79,14 +91,17 @@ class _CodeSerializer(serializers.Serializer):
 class VerifySendSerializer(serializers.Serializer):
     method = serializers.CharField(help_text="email or phone")
     purpose = serializers.CharField(
-        help_text="two_step_on, two_step_off, authenticator_add or authenticator_remove"
+        help_text=(
+            "two_step_on, two_step_off, authenticator_add or authenticator_remove; "
+            "password_set while Google sign-in is on"
+        )
     )
 
     def validate_method(self, value):
         return _one_of(value, ("email", "phone"))
 
     def validate_purpose(self, value):
-        return _one_of(value, _PURPOSES)
+        return _one_of(value, _purposes())
 
 
 class VerifySerializer(_CodeSerializer, VerifySendSerializer):
@@ -386,7 +401,7 @@ class VerifyView(_SecurityView):
         description=(
             "Checks a code from 3.1, or the authenticator app's current one. "
             "Answers a verification token for `purpose`: this session only, "
-            "5 minutes, used once."
+            "5 minutes (10 for `password_set`), used once."
         ),
         responses={
             200: inline_serializer(

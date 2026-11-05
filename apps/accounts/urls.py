@@ -1,5 +1,6 @@
 from django.urls import path
 from .device_token_views import DeviceTokensView
+from .google_views import GoogleSignInView, PasswordSetView
 from .notification_views import NotificationPreferencesView
 from .privacy_views import PrivacyView
 from .session_views import SessionDetailView, SessionsView, SessionTokenRefreshView
@@ -40,6 +41,9 @@ urlpatterns = [
     path("auth/otp/verify", OtpVerifyView.as_view()),
     path("auth/register", RegisterView.as_view()),
     path("auth/login", LoginView.as_view()),
+    # Sign in with Google (GOOGLE_SIGN_IN_V1). Off, both are 404.
+    path("auth/google", GoogleSignInView.as_view(), name="google-sign-in"),
+    path("auth/password/set", PasswordSetView.as_view(), name="password-set"),
     path("auth/2fa/send", SignInSendView.as_view(), name="sign-in-2fa-send"),
     path("auth/2fa/verify", SignInVerifyView.as_view(), name="sign-in-2fa-verify"),
     path("auth/logout", LogoutView.as_view()),

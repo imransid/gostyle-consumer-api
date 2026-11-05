@@ -27,6 +27,7 @@ FLOW = (
         (
             ("POST", "/api/v1/auth/register", "Create an account"),
             ("POST", "/api/v1/auth/login", "Log in, get the tokens"),
+            ("POST", "/api/v1/auth/google", "Continue with Google: sign in or sign up"),
             ("POST", "/api/v1/auth/2fa/send", "2-step verification on: send the sign-in code"),
             ("POST", "/api/v1/auth/2fa/verify", "2-step verification on: check it, get the tokens"),
             ("POST", "/api/v1/auth/otp/request", "Send a code to confirm my phone or email"),
@@ -55,6 +56,7 @@ FLOW = (
             ("PATCH", "/api/v1/auth/me", "Change part of my profile"),
             ("PUT", "/api/v1/auth/me", "Replace my profile"),
             ("POST", "/api/v1/auth/password/change", "Change my password"),
+            ("POST", "/api/v1/auth/password/set", "Set a password (an account made with Google)"),
             ("GET", "/api/v1/auth/me/delete/summary", "What deleting my account removes"),
             ("POST", "/api/v1/auth/me/delete", "Schedule my account for deletion"),
             ("POST", "/api/v1/auth/me/delete/cancel", "Cancel my account deletion"),
