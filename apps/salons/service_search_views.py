@@ -15,7 +15,7 @@ from rest_framework.exceptions import ValidationError
 
 from config.pagination import ClientPageNumberPagination
 
-from . import service_search
+from . import service_images, service_search
 from . import verified as verified_rule
 from .params import ParamError, parse_service_search
 from .selectors import (
@@ -78,7 +78,17 @@ def service_search_response(request):
     paginator = ClientPageNumberPagination()
     paginator.settled_page_size = page_size
     page = paginator.paginate_queryset(rows, request)
-    results = [service_search.result(row, categories, with_currency=with_currency) for row in page]
+    # SERVICE_IMAGES_V1: each result's photos, two queries for the page.
+    images = service_images.for_rows(page) if service_images.is_on() else None
+    results = [
+        service_search.result(
+            row,
+            categories,
+            with_currency=with_currency,
+            images=None if images is None else images[(row.salon["id"], row.service["id"])],
+        )
+        for row in page
+    ]
     if verified_rule.is_on():
         # The result's salon says whether it is verified, for the badge.
         for row, result in zip(page, results):

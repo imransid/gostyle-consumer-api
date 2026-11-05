@@ -553,6 +553,14 @@ SEARCH_OPTIONS_V1 = env.bool("SEARCH_OPTIONS_V1", default=False)
 # (SEARCH_SUGGEST_RATE, default 120/min). OFF, it is a 404.
 SEARCH_SUGGEST_V1 = env.bool("SEARCH_SUGGEST_V1", default=False)
 
+# The photos of each service on the service lists (docs/SERVICE_IMAGES_API.md):
+# `images`, up to 4 URLs after `duration_max`, on the Services tab (GET
+# /salon/{id}/services and the old GET /services?tenant_id=), GET /services
+# across salons, the Expert Profile's service_groups and the Packages tab's
+# bundle services. Service Detail's photos, in its order (service_images.py).
+# OFF, those rows are exactly as before and no photo is read.
+SERVICE_IMAGES_V1 = env.bool("SERVICE_IMAGES_V1", default=False)
+
 # Account deletion's day 30 (docs/ACCOUNT_DELETION_FE.md): the notification
 # worker purges, every hour, the accounts whose date has passed, after
 # cancelling their bookings still to come as the customer's own cancel

@@ -338,25 +338,33 @@ def includes(package_lines):
     ]
 
 
-def tab_services(package_lines):
+def tab_services(package_lines, images=None):
     """
     A Packages tab bundle's own services: one row per line, in the
     package's order, in the Services tab's row shape plus `quantity`.
     `price` is ONE of it at this branch's price and the minutes are one of
     it, both the line's own, so they agree with `includes` and `timeline`.
+
+    `images` (SERVICE_IMAGES_V1): {service id: its photos}
+    (service_images.for_salon); every row then has `images` after
+    `duration_max`, as on the Services tab, `[]` for a service not in it.
+    None: no key.
     """
-    return [
-        {
+    rows = []
+    for line in package_lines:
+        row = {
             "id": str(line["service_id"]),
             "name": line["name"],
             "description": line["description"],
             "price": major(line["unit_minor"]),
             "duration_min": line["minutes"],
             "duration_max": line["minutes"],
-            "quantity": line["quantity"],
         }
-        for line in package_lines
-    ]
+        if images is not None:
+            row["images"] = images.get(line["service_id"], [])
+        row["quantity"] = line["quantity"]
+        rows.append(row)
+    return rows
 
 
 def timeline(package_lines, scheduling):
@@ -400,11 +408,11 @@ def detail(salon, pkg, content, package_lines, complete):
     }
 
 
-def tab_row(pkg, content, package_lines):
+def tab_row(pkg, content, package_lines, images=None):
     """
     One bundle on the Packages tab (PACKAGES_LIVE_RULES_V1 on): the tab's
     keys, from the same numbers the detail screen shows, and its own
-    services (`tab_services`).
+    services (`tab_services`, with `images` when given).
     """
     money = saving(content["price_minor"], package_lines)
     return {
@@ -417,5 +425,5 @@ def tab_row(pkg, content, package_lines):
         "price_before": money["price_before"],
         "save_amount": money["save_amount"],
         "theme": pkg.color_theme,
-        "services": tab_services(package_lines),
+        "services": tab_services(package_lines, images),
     }

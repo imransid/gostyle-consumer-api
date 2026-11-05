@@ -17,7 +17,7 @@ from django.db.models import Exists
 from django.http import QueryDict
 from django.test import SimpleTestCase, override_settings
 
-from apps.salons import map_availability, map_filters, search_results, search_views
+from apps.salons import map_availability, map_filters, search_results, search_views, service_images
 from apps.salons.params import ParamError
 from apps.salons.search_results import SALON_SORTS, SERVICE_SORTS, SearchQuery, parse_search
 
@@ -365,8 +365,8 @@ class ImagesTests(SimpleTestCase):
 
     def test_two_queries_for_a_page(self):
         rows = [row(A, service_dict(CUT, TENANT_A, "Cut"))]
-        with mock.patch.object(search_results.ServiceMedia, "objects") as own, \
-                mock.patch.object(search_results.StorefrontMedia, "objects") as linked:
+        with mock.patch.object(service_images.ServiceMedia, "objects") as own, \
+                mock.patch.object(service_images.StorefrontMedia, "objects") as linked:
             own.filter.return_value.order_by.return_value.values_list.return_value = [
                 (CUT, TENANT_A, "own-1"), (CUT, TENANT_B, "someone-else"), (CUT, TENANT_A, "own-2"),
             ]
@@ -379,7 +379,7 @@ class ImagesTests(SimpleTestCase):
         self.assertEqual(linked.filter.call_args.kwargs["moderation_status"], "APPROVED")
 
     def test_an_empty_page_reads_nothing(self):
-        with mock.patch.object(search_results.ServiceMedia, "objects") as own:
+        with mock.patch.object(service_images.ServiceMedia, "objects") as own:
             self.assertEqual(search_results.images_for([]), {})
         own.filter.assert_not_called()
 

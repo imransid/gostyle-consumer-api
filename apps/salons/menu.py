@@ -76,16 +76,20 @@ def category_chip(categories, category_id):
     return {"id": str(chip["id"]), "label": chip["name_en"], "icon": chip.get("icon")}
 
 
-def service_row(svc):
+def service_row(svc, images=None):
     """
     One service as a row of the Services tab. The Expert Profile's
     `service_groups` sends the same rows, so one renderer serves both.
+
+    `images` (SERVICE_IMAGES_V1): the service's photos
+    (service_images.images_for), sent after `duration_max`. None: no key,
+    the row as before the switch.
     """
     # duration_min and duration_max are the SAME number. A real range needs
     # service_variant rows with differing durations; until the app reads
     # those, sending one value twice is honest and lets the app collapse
     # "20 - 20 mins" to "20 mins" itself.
-    return {
+    row = {
         "id": str(svc.id),
         "name": svc.name,
         "description": svc.description,
@@ -95,9 +99,12 @@ def service_row(svc):
         "duration_min": svc.duration_minutes,
         "duration_max": svc.duration_minutes,
     }
+    if images is not None:
+        row["images"] = images
+    return row
 
 
-def service_groups(services, categories):
+def service_groups(services, categories, images=None):
     """
     The Services tab's grouping, as `(chips, groups)`.
 
@@ -110,6 +117,10 @@ def service_groups(services, categories):
 
     chips: the chip of each group (`category_chip`: the parent, else the
     category itself), each once, in the order first seen.
+
+    `images` (SERVICE_IMAGES_V1): {service id: its photos}
+    (service_images.for_salon); every row then has `images`, `[]` for a
+    service not in it. None: no row has the key.
     """
     # category_0_id, not category_id: the service table has a legacy text
     # column already named `category`, so inspectdb renamed the real foreign
@@ -139,7 +150,10 @@ def service_groups(services, categories):
             "id": str(cat["id"]) if cat else OTHER_CHIP["id"],
             "category_id": chip["id"],
             "name": cat["name_en"] if cat else OTHER_CHIP["label"],
-            "services": [service_row(s) for s in svcs],
+            "services": [
+                service_row(s, None if images is None else images.get(s.id, []))
+                for s in svcs
+            ],
         })
 
     return list(chips.values()), groups

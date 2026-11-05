@@ -143,6 +143,8 @@ services:
       SEARCH_OPTIONS_V1: ${SEARCH_OPTIONS_V1:-False}
       # The type-ahead: GET /search/suggest.
       SEARCH_SUGGEST_V1: ${SEARCH_SUGGEST_V1:-False}
+      # The photos of each service on the service lists: images.
+      SERVICE_IMAGES_V1: ${SERVICE_IMAGES_V1:-False}
 
       # Sessions' location from the IP (docs/DEVICE_SESSIONS_SERVER.md).
       # Empty: location stays null.
