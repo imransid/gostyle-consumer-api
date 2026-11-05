@@ -561,6 +561,13 @@ SEARCH_SUGGEST_V1 = env.bool("SEARCH_SUGGEST_V1", default=False)
 # OFF, those rows are exactly as before and no photo is read.
 SERVICE_IMAGES_V1 = env.bool("SERVICE_IMAGES_V1", default=False)
 
+# The photo on each bundle of the Packages tab (docs/PACKAGE_IMAGES_API.md):
+# `image_url` right after `theme` on GET /salon/{id}/packages, the bundle's
+# main photo as the salon uploaded it to the package (service_package_media,
+# package_images.py), or null. OFF, the bundles are exactly as before and no
+# photo is read.
+PACKAGE_IMAGE_V1 = env.bool("PACKAGE_IMAGE_V1", default=False)
+
 # Account deletion's day 30 (docs/ACCOUNT_DELETION_FE.md): the notification
 # worker purges, every hour, the accounts whose date has passed, after
 # cancelling their bookings still to come as the customer's own cancel

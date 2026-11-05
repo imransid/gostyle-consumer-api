@@ -1016,12 +1016,14 @@ def services_by_ids(service_ids):
         return Service.objects.none()
 
     # The primary image, else the first by sort order. `-is_primary` puts True
-    # first; `created_at` is the tie-break so the same row wins every time
-    # rather than whichever the planner happened to return.
+    # first; `created_at`, then `id`, are the tie-breaks so the same row wins
+    # every time rather than whichever the planner happened to return. A
+    # blank URL is no image. The same rule and order as `images` on the
+    # service lists (service_images.py), so `image_url` is their first.
     primary_media = ServiceMedia.objects.filter(
         service_id=OuterRef("pk"),
         deleted_at__isnull=True,
-    ).order_by("-is_primary", "sort_order", "created_at")
+    ).exclude(url="").order_by("-is_primary", "sort_order", "created_at", "id")
 
     # A service belongs to a TENANT; there is no salon column to read. What
     # the app calls a salon is a storefront, one per branch, so it is resolved
