@@ -23,7 +23,9 @@ One PR, `feat/google-sign-in`, base `main`.
   the purpose `password_set` to Django's list of choices: no SQL. It runs
   when the container starts.
 - **No new package, no secret, no setting to fill.** The two Google client
-  IDs from the mobile team are the default of `GOOGLE_CLIENT_IDS`. An ID
+  IDs from the mobile team (web `...g4grmqc4...`, iOS `...ks6giaqd...`; the web
+  one corrected on 2026-11-05) are the default of `GOOGLE_CLIENT_IDS`, and
+  the same value is set on the api service and in stack.env. An ID
   token is checked with Google's public keys only (PyJWT, already in), so
   no client secret exists for us to keep.
 - **The server must reach `https://www.googleapis.com`** to read Google's

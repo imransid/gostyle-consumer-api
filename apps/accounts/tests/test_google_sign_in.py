@@ -35,7 +35,8 @@ from apps.accounts.models import (
 
 from .test_two_factor import IPAD, IPHONE, FakeSender
 
-WEB = "1002425773215-llauqr34tk3qdnld4ucn56vlqt2tsfpb.apps.googleusercontent.com"
+WEB = "1002425773215-g4grmqc4as5dut3cncd19lkd7ai5qk0d.apps.googleusercontent.com"
+ANDROID = "1002425773215-llauqr34tk3qdnld4ucn56vlqt2tsfpb.apps.googleusercontent.com"
 IOS = "1002425773215-ks6giaqd84uoiuljlqc12qr971fiqedr.apps.googleusercontent.com"
 SUB = "109876543210987654321"
 OTHER_SUB = "100000000000000000001"
@@ -128,7 +129,7 @@ class VerifyTests(SimpleTestCase):
             "expired": mint(iat=now - 7200, exp=now - 60),
             "expired a second ago": mint(iat=now - 3601, exp=now - 1),
             "another app": mint(aud="1234-other.apps.googleusercontent.com"),
-            "the android client": mint(aud="1002425773215-android.apps.googleusercontent.com"),
+            "the android client": mint(aud=ANDROID),
             "not Google": mint(iss="https://evil.example.com"),
             "no sub": mint(sub=None),
             "an empty sub": mint(sub=""),
@@ -753,6 +754,12 @@ class DeleteTests(GoogleTestCase):
                 )
         self.owner.refresh_from_db()
         self.assertIsNone(self.owner.purge_at)
+
+    def test_the_same_two_client_ids_as_sign_in(self):
+        for aud, status_code in ((ANDROID, 401), (IOS, 200)):
+            with self.subTest(aud=aud):
+                resp = self.delete({"id_token": mint(aud=aud)})
+                self.assertEqual(resp.status_code, status_code, resp.content)
 
     def test_another_google_account(self):
         resp = self.delete({"id_token": mint(sub=OTHER_SUB)})

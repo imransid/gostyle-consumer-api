@@ -440,13 +440,14 @@ TWO_FACTOR_V1 = env.bool("TWO_FACTOR_V1", default=False)
 # token, so it works only while TWO_FACTOR_V1 and DEVICE_SESSIONS_V1 are on.
 GOOGLE_SIGN_IN_V1 = env.bool("GOOGLE_SIGN_IN_V1", default=False)
 # The only `aud` a Google ID token may carry, comma separated: the web client
-# (every token from the app carries it) and the iOS one, from the mobile
-# team's brief (Google Cloud project 1002425773215). Not secret: no client
-# secret is needed to check an ID token, only Google's public keys.
+# and the iOS one, as the mobile team gave them (Google Cloud project
+# 1002425773215; the web id corrected 2026-11-05: ...llauqr34... is their
+# Android client, never an aud). Not secret: no client secret is needed to
+# check an ID token, only Google's public keys.
 GOOGLE_CLIENT_IDS = env(
     "GOOGLE_CLIENT_IDS",
     default=(
-        "1002425773215-llauqr34tk3qdnld4ucn56vlqt2tsfpb.apps.googleusercontent.com,"
+        "1002425773215-g4grmqc4as5dut3cncd19lkd7ai5qk0d.apps.googleusercontent.com,"
         "1002425773215-ks6giaqd84uoiuljlqc12qr971fiqedr.apps.googleusercontent.com"
     ),
 )

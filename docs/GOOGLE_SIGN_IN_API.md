@@ -23,10 +23,11 @@ The error bodies on this page are the real ones: a test
    exactly what they are today. So your Settings rows stay hidden until we
    turn it on. We tell you when it is on.
 3. **Our client IDs are built in.** A token is accepted only when its `aud`
-   is the web client (`1002425773215-llauqr34...`) or the iOS one
-   (`1002425773215-ks6giaqd...`), exactly the two in your brief. Ask Google
-   for the ID token with the **web client ID** as the server client ID, as
-   you wrote, on Android and iOS.
+   is the web client (`1002425773215-g4grmqc4...`) or the iOS one
+   (`1002425773215-ks6giaqd...`), exactly the two you gave us. Changed on
+   2026-11-05, as you asked: `1002425773215-llauqr34...` is your Android
+   client and is not accepted as `aud`. The same two on `/auth/google` and
+   on `/auth/me/delete` with `id_token`.
 4. **Ask Google for the `email` and `profile` scopes.** We read `email`,
    `email_verified` and `name` from the token. Without `profile` there is no
    `name`, and a new account is named after its email (the part before the
