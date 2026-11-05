@@ -408,14 +408,18 @@ def detail(salon, pkg, content, package_lines, complete):
     }
 
 
-def tab_row(pkg, content, package_lines, images=None):
+def tab_row(pkg, content, package_lines, images=None, covers=None):
     """
     One bundle on the Packages tab (PACKAGES_LIVE_RULES_V1 on): the tab's
     keys, from the same numbers the detail screen shows, and its own
     services (`tab_services`, with `images` when given).
+
+    `covers` (PACKAGE_IMAGE_V1): {package id: its photo URL or None}
+    (package_images.for_packages); the bundle then has `image_url` right
+    after `theme`, null for a package not in it. None: no key.
     """
     money = saving(content["price_minor"], package_lines)
-    return {
+    row = {
         "id": str(pkg.id),
         "name": content["name"],
         "description": content["description"],
@@ -425,5 +429,8 @@ def tab_row(pkg, content, package_lines, images=None):
         "price_before": money["price_before"],
         "save_amount": money["save_amount"],
         "theme": pkg.color_theme,
-        "services": tab_services(package_lines, images),
     }
+    if covers is not None:
+        row["image_url"] = covers.get(pkg.id)
+    row["services"] = tab_services(package_lines, images)
+    return row

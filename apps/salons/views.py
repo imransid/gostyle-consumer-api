@@ -62,7 +62,7 @@ from apps.accounts.models import Favourite, FavouriteStylist
 from .customer_sync import NoUsablePhone, resolve_customer
 
 from . import packages as package_rules
-from . import map_availability, map_country, map_filters, roster, service_images, slots, timezones
+from . import map_availability, map_country, map_filters, package_images, roster, service_images, slots, timezones
 from . import verified as verified_rule
 from .service_search_views import service_search_response
 from .hours import resolve as resolve_hours
@@ -905,6 +905,10 @@ class SalonPackagesView(APIView):
     rules: packages.can_book on the platform's, and false on the old ones,
     whose bundles show the draft row's price, not the published one
     booking-api charges. Off: no key.
+
+    PACKAGE_IMAGE_V1 on: each bundle carries `image_url` right after
+    `theme`, under either rules: its photo (package_images.py), or null.
+    Off: no key, and no photo read.
     """
 
     permission_classes = [AllowAny]
@@ -915,14 +919,20 @@ class SalonPackagesView(APIView):
             raise Http404("Salon not found")
 
         if settings.PACKAGES_LIVE_RULES_V1:
-            return Response({"my_packages": [], "bundles": self.live_bundles(salon)})
+            return Response({"my_packages": [], "bundles": self.live_bundles(salon, photos=True)})
+
+        rows = list(salon_packages(salon))
+        # PACKAGE_IMAGE_V1: every listed bundle's photo, one query for the tab.
+        covers = None
+        if package_images.is_on():
+            covers = package_images.for_packages(salon, [pkg.id for pkg in rows])
 
         bundles = []
-        for pkg in salon_packages(salon):
+        for pkg in rows:
             sum_minor = pkg.sum_minor or 0
             save_minor = max(sum_minor - pkg.price_minor, 0)
 
-            bundles.append({
+            bundle = {
                 "id": str(pkg.id),
                 "name": pkg.name,
                 "description": pkg.description,
@@ -937,7 +947,10 @@ class SalonPackagesView(APIView):
                 "price_before": major(sum_minor) if save_minor else None,
                 "save_amount": major(save_minor) if save_minor else None,
                 "theme": pkg.color_theme,
-            })
+            }
+            if covers is not None:
+                bundle["image_url"] = covers.get(pkg.id)
+            bundles.append(bundle)
 
         if settings.PACKAGE_BOOKING_V1:
             # NEVER BOOKABLE FROM THESE ROWS. They are the drafts: the name,
@@ -955,13 +968,18 @@ class SalonPackagesView(APIView):
         return Response({"my_packages": [], "bundles": bundles})
 
     @staticmethod
-    def live_bundles(salon):
+    def live_bundles(salon, photos=False):
         """
         The bundles on the platform's rules (PACKAGES_LIVE_RULES_V1): the
         reads and the numbers of GET /salon/<id>/package/<id>, so a bundle
         listed here opens there as active, at the same price. Its
         `services` are its own lines from those same reads (tab_row), so
         the tab costs no query per bundle.
+
+        `photos`: the tab's own answer, with its photos (`images` on the
+        services, `image_url` on the bundles, each by its switch). Off for
+        the searches' "lists a package" (search_results.tab_has_packages),
+        which asks this for every salon and shows no photo.
         """
         rows = list(live_salon_packages(salon))
         reads = package_lines(salon, rows)
@@ -972,13 +990,18 @@ class SalonPackagesView(APIView):
         # SERVICE_IMAGES_V1: the photos of every listed bundle's services,
         # two queries for the tab.
         images = None
-        if service_images.is_on():
+        if photos and service_images.is_on():
             images = service_images.for_salon(
                 salon, {line["service_id"] for _, _, lines, _ in active for line in lines}
             )
+        # PACKAGE_IMAGE_V1: every listed bundle's own photo, one query for
+        # the tab.
+        covers = None
+        if photos and package_images.is_on():
+            covers = package_images.for_packages(salon, [row.id for row, *_ in active])
         bundles = []
         for row, content, lines, complete in active:
-            bundle = package_rules.tab_row(row, content, lines, images)
+            bundle = package_rules.tab_row(row, content, lines, images, covers)
             if settings.PACKAGE_BOOKING_V1:
                 bundle["can_book"] = package_rules.can_book(row, content, lines, complete)
             bundles.append(bundle)
