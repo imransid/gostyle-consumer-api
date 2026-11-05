@@ -23,9 +23,9 @@ from django.core.cache import cache
 from django.db.models import Exists, F, OuterRef, Q
 from django.utils import timezone
 
-from apps.platform_data.models import Service, ServiceMedia, Storefront, StorefrontMedia, StorefrontVersion
+from apps.platform_data.models import Service, Storefront, StorefrontVersion
 
-from . import map_availability, map_filters, service_search
+from . import map_availability, map_filters, service_images, service_search
 from . import verified as verified_rule
 from .geo import format_distance
 from .map_filters import (
@@ -471,9 +471,6 @@ SERVICE_FIELDS = (
     "tags",
 )
 
-# At most this many photos on a result (the Figma's collage).
-IMAGES = 4
-
 
 def menu_rows(tenant_ids, query, categories, category_ids):
     """
@@ -624,45 +621,12 @@ def service_list(query, now=None):
 
 def images_for(rows):
     """
-    {(salon id, service id): up to IMAGES photo URLs} for a page of rows: the
-    service's own photos, then this salon's gallery photos tagged with it
-    (Service Detail's order, selectors.service_photo_urls), in two queries
-    for the whole page.
+    {(salon id, service id): its photos} for a page of rows: the service's
+    own photos, then this salon's gallery photos tagged with it, at most 4
+    (service_images: Service Detail's order, the rule of every service list),
+    in two queries for the whole page.
     """
-    if not rows:
-        return {}
-    service_ids = {row.service["id"] for row in rows}
-    salon_ids = {row.salon["id"] for row in rows}
-
-    own = {}
-    for service_id, tenant_id, url in (
-        ServiceMedia.objects.filter(service_id__in=service_ids, deleted_at__isnull=True)
-        .order_by("-is_primary", "sort_order", "created_at", "id")
-        .values_list("service_id", "tenant_id", "url")
-    ):
-        own.setdefault((tenant_id, service_id), []).append(url)
-
-    linked = {}
-    for salon_id, service_id, url in (
-        StorefrontMedia.objects.filter(
-            storefront_id__in=salon_ids,
-            linked_service_id__in=service_ids,
-            kind="GALLERY",
-            is_public=True,
-            moderation_status="APPROVED",
-            deleted_at__isnull=True,
-        )
-        .order_by("sort_order", "created_at", "id")
-        .values_list("storefront_id", "linked_service_id", "url")
-    ):
-        linked.setdefault((salon_id, service_id), []).append(url)
-
-    found = {}
-    for row in rows:
-        salon_id, service_id = row.salon["id"], row.service["id"]
-        urls = own.get((row.salon["tenant_id"], service_id), []) + linked.get((salon_id, service_id), [])
-        found[(salon_id, service_id)] = urls[:IMAGES]
-    return found
+    return service_images.for_rows(rows)
 
 
 def service_result(row, categories, images):

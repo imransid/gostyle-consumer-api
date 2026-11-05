@@ -35,7 +35,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import menu
+from . import menu, service_images
 from .expert_profile import core_fields, media, salon_block, service_groups
 from .expert_profile_serializers import EXAMPLE, SalonExpertProfileResponseSerializer
 from .params import path_uuid
@@ -168,7 +168,16 @@ class SalonExpertProfileView(APIView):
         if not covered:
             return []
 
+        # SERVICE_IMAGES_V1: the photos of the services this stylist does
+        # (the tab's own rule and rows), two queries.
+        images = None
+        if service_images.is_on():
+            does = {str(service_id) for service_id in covered}
+            images = service_images.for_salon(
+                salon, [service.id for service in services if str(service.id) in does]
+            )
+
         # The whole menu as the tab groups it, then narrowed: the tab's
         # groups, order, rows and branch prices.
-        _, groups = menu.service_groups(services, salon_categories(salon.tenant_id))
+        _, groups = menu.service_groups(services, salon_categories(salon.tenant_id), images)
         return service_groups(groups, covered)

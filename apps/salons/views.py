@@ -62,7 +62,7 @@ from apps.accounts.models import Favourite, FavouriteStylist
 from .customer_sync import NoUsablePhone, resolve_customer
 
 from . import packages as package_rules
-from . import map_availability, map_country, map_filters, roster, slots, timezones
+from . import map_availability, map_country, map_filters, roster, service_images, slots, timezones
 from . import verified as verified_rule
 from .service_search_views import service_search_response
 from .hours import resolve as resolve_hours
@@ -436,7 +436,13 @@ class SalonServicesView(APIView):
         # Profile screen (its service_groups are these groups, narrowed to
         # one stylist), so the two screens show one menu.
         categories = salon_categories(salon.tenant_id)
-        chips, groups = service_groups(salon_services(salon), categories)
+        services = list(salon_services(salon))
+        # SERVICE_IMAGES_V1: each row's photos, two queries for the menu.
+        images = (
+            service_images.for_salon(salon, [s.id for s in services])
+            if service_images.is_on() else None
+        )
+        chips, groups = service_groups(services, categories, images)
 
         return Response({
             "service_categories": [{"id": "all", "label": "All"}] + chips,
@@ -684,7 +690,10 @@ class StylistListView(APIView):
         "description, price, duration_min, duration_max, category `{id, label}` and "
         "salon `{id, name, category}`. With SERVICE_CURRENCY_V1 on, `currency` "
         "(\"AED\") right after price: the currency that price is in. See "
-        "docs/SEARCH_POPULAR_API.md."
+        "docs/SEARCH_POPULAR_API.md.\n\n"
+        "With SERVICE_IMAGES_V1 on, every service row of both answers also "
+        "has `images` right after duration_max: up to 4 photo URLs, `[]` "
+        "when none. See docs/SERVICE_IMAGES_API.md."
     ),
     parameters=[
         OpenApiParameter(
@@ -956,14 +965,23 @@ class SalonPackagesView(APIView):
         """
         rows = list(live_salon_packages(salon))
         reads = package_lines(salon, rows)
+        active = [
+            (row, *reads[row.id]) for row in rows
+            if package_rules.is_active(row, reads[row.id][1], reads[row.id][2])
+        ]
+        # SERVICE_IMAGES_V1: the photos of every listed bundle's services,
+        # two queries for the tab.
+        images = None
+        if service_images.is_on():
+            images = service_images.for_salon(
+                salon, {line["service_id"] for _, _, lines, _ in active for line in lines}
+            )
         bundles = []
-        for row in rows:
-            content, lines, complete = reads[row.id]
-            if package_rules.is_active(row, lines, complete):
-                bundle = package_rules.tab_row(row, content, lines)
-                if settings.PACKAGE_BOOKING_V1:
-                    bundle["can_book"] = package_rules.can_book(row, content, lines, complete)
-                bundles.append(bundle)
+        for row, content, lines, complete in active:
+            bundle = package_rules.tab_row(row, content, lines, images)
+            if settings.PACKAGE_BOOKING_V1:
+                bundle["can_book"] = package_rules.can_book(row, content, lines, complete)
+            bundles.append(bundle)
         # By the name the customer sees (the published one), then the id, so
         # the order never changes between two calls.
         bundles.sort(key=lambda bundle: (bundle["name"].casefold(), bundle["id"]))

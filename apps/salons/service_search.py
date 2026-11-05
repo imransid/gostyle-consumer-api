@@ -195,7 +195,7 @@ def _after(fields, key, new_key, value):
     return out
 
 
-def result(row, categories, with_currency=False):
+def result(row, categories, with_currency=False, images=None):
     """
     One result, the doc's 2.2 fields: the service as on the salon's Services
     tab (menu.service_row: the same price and durations), its category as on
@@ -205,6 +205,10 @@ def result(row, categories, with_currency=False):
     the currency that price is in, by menu.service_currency's rule (the
     branch's own when set, else the service's). The rows must then carry
     it (selectors.menu_services and branch_service_rows, with_currency).
+
+    `images` (SERVICE_IMAGES_V1): this result's photos
+    (service_images.for_rows), after `duration_max`, as on the tab's row.
+    None: no key.
     """
     service = row.service
     svc = types.SimpleNamespace(
@@ -219,7 +223,7 @@ def result(row, categories, with_currency=False):
     )
     chip = category_chip(categories, service["category_0_id"])
     salon = row.salon
-    shown = service_row(svc)
+    shown = service_row(svc, images)
     if with_currency:
         shown = _after(shown, "price", "currency", service_currency(svc))
     return {
