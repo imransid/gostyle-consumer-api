@@ -221,6 +221,9 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
         self.verification_codes.all().delete()
         self.verification_tokens.all().delete()
         self.login_challenges.all().delete()
+        # The Google account linked to it: its id there and its address.
+        # Gone, the same Google account makes a new account next time.
+        self.social_identities.all().delete()
         if old_contacts:
             OtpCode.objects.filter(
                 destination__in=old_contacts, consumed_at__isnull=True
@@ -656,6 +659,9 @@ class TwoFactorPurpose(models.TextChoices):
     AUTHENTICATOR_ADD = "authenticator_add", "authenticator_add"
     AUTHENTICATOR_REMOVE = "authenticator_remove", "authenticator_remove"
     SIGN_IN = "sign_in", "sign_in"
+    # Settings' "Set a password", for an account made with Google
+    # (POST /auth/password/set, GOOGLE_SIGN_IN_V1).
+    PASSWORD_SET = "password_set", "password_set"
 
 
 class TwoFactorMethod(models.TextChoices):
@@ -791,3 +797,46 @@ class LoginChallenge(models.Model):
 
     def __str__(self):
         return f"Sign-in challenge for {self.user_id}"
+
+
+class SocialIdentity(models.Model):
+    """
+    A Google account linked to one of ours (docs/GOOGLE_SIGN_IN_API.md,
+    apps/accounts/google.py): "Continue with Google" finds the account by it.
+
+    `subject` is Google's own id for the person (the ID token's `sub`). It
+    never changes, while their email can, so an account is found by it and
+    never by email once linked. `email` is the Google account's own address,
+    refreshed at every Google sign-in: it can differ from the account's
+    email after a contact change. The ID token itself is never stored.
+
+    One Google account per account, and one account per Google account.
+    `provider` leaves room for Sign in with Apple, which is not built yet.
+    """
+
+    class Provider(models.TextChoices):
+        GOOGLE = "google", "google"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    account = models.ForeignKey(
+        ConsumerAccount, on_delete=models.CASCADE, related_name="social_identities"
+    )
+    provider = models.CharField(max_length=20, choices=Provider.choices)
+    subject = models.CharField(max_length=255)
+    email = models.EmailField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "social_identity"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["provider", "subject"], name="social_identity_provider_subject_uniq"
+            ),
+            models.UniqueConstraint(
+                fields=["account", "provider"], name="social_identity_account_provider_uniq"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.provider} sign-in for {self.account_id}"

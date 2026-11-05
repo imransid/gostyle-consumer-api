@@ -31,7 +31,7 @@ from .serializers import (
 
 from .models import Favourite
 
-from . import ratelimit, services, sessions, two_factor
+from . import google, ratelimit, services, sessions, two_factor
 from .notifications import (
     send_deletion_cancelled_notice,
     send_deletion_scheduled_notice,
@@ -40,6 +40,7 @@ from .notifications import (
 from .permissions import IsVerified
 from .serializers import (
     DeleteAccountSerializer,
+    DeleteAccountWithGoogleSerializer,
     DeletionScheduledSerializer,
     DeletionSummarySerializer,
     DetailSerializer,
@@ -273,9 +274,16 @@ class LoginView(APIView):
             "a device that has not passed it gets a challenge instead of the "
             "tokens: `{two_factor_required, challenge_token, expires_in, "
             "methods}`. The code then goes to /auth/2fa/send and /auth/2fa/verify "
-            "(docs/TWO_FACTOR_API.md section 6)."
+            "(docs/TWO_FACTOR_API.md section 6). With Google sign-in on, an "
+            "account made with Google that has no password yet answers 401 "
+            "`password_not_set` (docs/GOOGLE_SIGN_IN_API.md section 4)."
         ),
-        responses={200: TokenPairSerializer},
+        responses={
+            200: TokenPairSerializer,
+            401: OpenApiResponse(
+                description="`password_not_set`: this account signs in with Google."
+            ),
+        },
     )
     def post(self, request):
         s = LoginSerializer(data=request.data)
@@ -284,6 +292,15 @@ class LoginView(APIView):
         destination_type, destination = data["destination_type"], data["destination"]
 
         account = services.find_account(destination, destination_type)
+        if (
+            account is not None
+            and google.enabled()
+            and not account.has_usable_password()
+            and google.linked(account) is not None
+        ):
+            # Made with Google and no password set yet: say so, so the app
+            # can offer Continue with Google (docs/GOOGLE_SIGN_IN_API.md 4).
+            raise google.PasswordNotSet()
         if account is None or not account.check_password(data["password"]):
             raise ValidationError({"detail": "Invalid credentials."})
         if not account.is_active:
@@ -513,14 +530,39 @@ class DeleteAccountView(APIView):
     throttle_classes = []
 
     @extend_schema(
-        request=DeleteAccountSerializer,
-        responses={200: DeletionScheduledSerializer},
+        request=DeleteAccountWithGoogleSerializer,
+        description=(
+            "The proof is the password. With Google sign-in on, an account "
+            "linked to Google may send `id_token` instead: a Google ID token "
+            "taken in the last 10 minutes, of the linked Google account "
+            "(docs/GOOGLE_SIGN_IN_API.md section 6). Exactly one of the two."
+        ),
+        responses={
+            200: DeletionScheduledSerializer,
+            401: OpenApiResponse(
+                description="`id_token` `invalid_token`: bad, expired, or older than 10 minutes."
+            ),
+            403: OpenApiResponse(
+                description="`password` `wrong_password`, or `id_token` `wrong_google_account`."
+            ),
+            422: OpenApiResponse(description="`password` `required`: neither sent, or both."),
+        },
     )
     def post(self, request):
-        s = DeleteAccountSerializer(data=request.data)
+        with_google = google.enabled()
+        serializer_class = (
+            DeleteAccountWithGoogleSerializer if with_google else DeleteAccountSerializer
+        )
+        s = serializer_class(data=request.data)
         s.is_valid(raise_exception=True)
 
-        if not request.user.check_password(s.validated_data["password"]):
+        if with_google and s.validated_data.get("id_token"):
+            # Confirm with Google: a fresh token of the linked Google account.
+            google_user = google.verify_fresh(s.validated_data["id_token"])
+            link = google.linked(request.user)
+            if link is None or link.subject != google_user.subject:
+                google.wrong_google_account()
+        elif not request.user.check_password(s.validated_data["password"]):
             raise PermissionDenied(
                 {
                     "password": [

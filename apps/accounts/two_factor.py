@@ -127,6 +127,12 @@ _NOTICES = {
         "Go Style: sign-in alerts turned off",
         "Sign-in alerts were turned off for your Go Style account",
     ),
+    # An account made with Google adds a password (POST /auth/password/set):
+    # a new way in, so its owner hears of it (docs/GOOGLE_SIGN_IN_API.md).
+    TwoFactorPurpose.PASSWORD_SET: (
+        "Go Style: a password was added to your account",
+        "A password was added to your Go Style account",
+    ),
 }
 TOKEN_PREFIX = "vt_"
 _NONCE_BYTES = 12
@@ -431,8 +437,8 @@ def set_sign_in_alerts(user, on):
 
 def notify(user, sid, change):
     """Email the account that `change` (two_step_on, two_step_off,
-    authenticator_add, authenticator_remove or sign_in_alerts_off) was just
-    made, from the device and place of the
+    authenticator_add, authenticator_remove, sign_in_alerts_off or
+    password_set) was just made, from the device and place of the
     session `sid`: "2-step verification was turned off for your Go Style
     account on iPhone 15 in Dubai, UAE." Sent once the change is committed.
 

@@ -1,6 +1,7 @@
 import re
 from datetime import date
 
+from django.conf import settings
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
@@ -16,6 +17,7 @@ from .models import (
     Gender,
     NotificationPreference,
     Purpose,
+    SocialIdentity,
 )
 from .notification_serializers import StrictBooleanField
 
@@ -165,6 +167,13 @@ class ProfileSerializer(serializers.ModelSerializer):
     )
     account_number = serializers.SerializerMethodField()
 
+    # How the account signs in (docs/GOOGLE_SIGN_IN_API.md section 3). Sent
+    # only while GOOGLE_SIGN_IN_V1 is on (to_representation): the app keeps
+    # its Google rows hidden until they come.
+    has_password = serializers.SerializerMethodField()
+    sign_in_methods = serializers.SerializerMethodField()
+    google_email = serializers.SerializerMethodField()
+
     # Live/derived values — NOT stored on the profile, exposed read-only.
     points = serializers.SerializerMethodField()
     tier_level = serializers.SerializerMethodField()
@@ -193,6 +202,10 @@ class ProfileSerializer(serializers.ModelSerializer):
             "date_of_birth",
             "gender",
             "whatsapp_booking_updates",
+            # how the account signs in (read-only, GOOGLE_SIGN_IN_V1)
+            "has_password",
+            "sign_in_methods",
+            "google_email",
             # live / derived (read-only)
             "points",
             "tier_level",
@@ -266,7 +279,34 @@ class ProfileSerializer(serializers.ModelSerializer):
         # "" is how the column says "not set"; the app reads that as null.
         data["gender"] = data["gender"] or None
         data["display_name"] = data["display_name"] or None
+        if not settings.GOOGLE_SIGN_IN_V1:
+            for name in ("has_password", "sign_in_methods", "google_email"):
+                data.pop(name, None)
         return data
+
+    def _google(self, obj):
+        """The account's Google link, or None: read once per answer."""
+        if getattr(self, "_google_for", None) != obj.pk:
+            self._google_for = obj.pk
+            self._google_link = SocialIdentity.objects.filter(
+                account=obj, provider=SocialIdentity.Provider.GOOGLE
+            ).first()
+        return self._google_link
+
+    def get_has_password(self, obj) -> bool:
+        # False for an account made with Google that has not set one.
+        return obj.has_usable_password()
+
+    def get_sign_in_methods(self, obj) -> list[str]:
+        methods = ["password"] if obj.has_usable_password() else []
+        if self._google(obj) is not None:
+            methods.append("google")
+        return methods
+
+    def get_google_email(self, obj) -> str | None:
+        # The Google account's own address: it can differ from `email`.
+        link = self._google(obj)
+        return (link.email or None) if link is not None else None
 
     def get_account_number(self, obj) -> str:
         return account_numbers.ensure(obj)
@@ -394,6 +434,33 @@ class DeleteAccountSerializer(serializers.Serializer):
     # The model keeps 1000 characters. Refused here rather than cut there, so
     # the user is told instead of losing the end of what they wrote.
     note = serializers.CharField(max_length=1000, required=False, allow_blank=True)
+
+
+class DeleteAccountWithGoogleSerializer(DeleteAccountSerializer):
+    """POST /auth/me/delete while Google sign-in is on: the password, or a
+    Google ID token taken just now (docs/GOOGLE_SIGN_IN_API.md section 6).
+    Exactly one of the two: neither, or both, is `password` `required`."""
+
+    password = serializers.CharField(max_length=128, write_only=True, required=False)
+    id_token = serializers.CharField(
+        max_length=8192,
+        write_only=True,
+        required=False,
+        help_text="Confirm with Google: a Google ID token taken in the last 10 minutes.",
+    )
+
+    def validate(self, attrs):
+        if bool(attrs.get("password")) == bool(attrs.get("id_token")):
+            raise serializers.ValidationError(
+                {
+                    "password": [
+                        serializers.ErrorDetail(
+                            "Enter your password, or confirm with Google.", code="required"
+                        )
+                    ]
+                }
+            )
+        return attrs
 
 
 class DeletionScheduledSerializer(serializers.Serializer):

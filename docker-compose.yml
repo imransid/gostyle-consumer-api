@@ -111,6 +111,8 @@ services:
       TWO_FACTOR_V1: ${TWO_FACTOR_V1:-False}
       # The authenticator secrets' key. The value lives in stack.env.
       TWO_FACTOR_ENCRYPTION_KEY: ${TWO_FACTOR_ENCRYPTION_KEY:-}
+      # Sign in with Google: POST /auth/google, /auth/password/set, the /auth/me fields.
+      GOOGLE_SIGN_IN_V1: ${GOOGLE_SIGN_IN_V1:-False}
       # The Notification Center. Turn on only while the worker service runs.
       NOTIFICATION_CENTER_V1: ${NOTIFICATION_CENTER_V1:-False}
       # Email and SMS switches on the preferences screen, email from the center.

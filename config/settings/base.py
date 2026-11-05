@@ -422,6 +422,26 @@ DEVICE_SESSIONS_V1 = env.bool("DEVICE_SESSIONS_V1", default=False)
 # an account that turned 2-step on while it was ON.
 TWO_FACTOR_V1 = env.bool("TWO_FACTOR_V1", default=False)
 
+# Sign in with Google (docs/GOOGLE_SIGN_IN_API.md, GOOGLE_SIGN_IN_SERVER.md):
+# POST /auth/google, POST /auth/password/set, the Verify it's you purpose
+# password_set, has_password / sign_in_methods / google_email on /auth/me,
+# 401 password_not_set on /auth/login for an account made with Google, and
+# id_token on POST /auth/me/delete. OFF, the two routes are 404 and every
+# other call is exactly what it was. Setting a password needs a verification
+# token, so it works only while TWO_FACTOR_V1 and DEVICE_SESSIONS_V1 are on.
+GOOGLE_SIGN_IN_V1 = env.bool("GOOGLE_SIGN_IN_V1", default=False)
+# The only `aud` a Google ID token may carry, comma separated: the web client
+# (every token from the app carries it) and the iOS one, from the mobile
+# team's brief (Google Cloud project 1002425773215). Not secret: no client
+# secret is needed to check an ID token, only Google's public keys.
+GOOGLE_CLIENT_IDS = env(
+    "GOOGLE_CLIENT_IDS",
+    default=(
+        "1002425773215-llauqr34tk3qdnld4ucn56vlqt2tsfpb.apps.googleusercontent.com,"
+        "1002425773215-ks6giaqd84uoiuljlqc12qr971fiqedr.apps.googleusercontent.com"
+    ),
+)
+
 # The Notification Center (docs/NOTIFICATION_CENTER_API.md): GET
 # /notifications and its read, read-all and unread-count calls, and the
 # sign-in alert's push going through it (kept in the center, sent by the
@@ -576,6 +596,8 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_THROTTLE_RATES": {
         "login": "10/min",
+        # POST /auth/google, per address, as login.
+        "google_sign_in": "10/min",
         # GET /search/suggest, per address: generous, as one customer types a
         # few calls a second, and one carrier address can be many phones.
         "search_suggest": env("SEARCH_SUGGEST_RATE", default="120/min"),

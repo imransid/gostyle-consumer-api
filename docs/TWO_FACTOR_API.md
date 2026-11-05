@@ -111,6 +111,7 @@ Authorization: Bearer <access_token>
 | `two_step_off` | Turning 2-step verification off |
 | `authenticator_add` | Adding an authenticator app |
 | `authenticator_remove` | Removing the authenticator app |
+| `password_set` | Setting a password on an account made with Google (docs/GOOGLE_SIGN_IN_API.md section 5). Only while Google sign-in is on |
 
 ### 3.1 POST /me/security/verify/send
 
@@ -422,6 +423,7 @@ place of the phone that made it:
 | Adding an authenticator | Go Style: authenticator app added | An authenticator app was added to your Go Style account on iPhone 15 in Dubai, UAE. |
 | Removing it | Go Style: authenticator app removed | The authenticator app was removed from your Go Style account on iPhone 15 in Dubai, UAE. |
 | Turning sign-in alerts off (docs/SIGN_IN_ALERTS_API.md) | Go Style: sign-in alerts turned off | Sign-in alerts were turned off for your Go Style account on iPhone 15 in Dubai, UAE. |
+| Adding a password to an account made with Google (docs/GOOGLE_SIGN_IN_API.md) | Go Style: a password was added to your account | A password was added to your Go Style account on iPhone 15 in Dubai, UAE. |
 
 Then: "If this was not you, reset your password and contact support
 straight away."
