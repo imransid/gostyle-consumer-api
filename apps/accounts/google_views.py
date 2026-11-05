@@ -48,9 +48,9 @@ class PasswordSetSerializer(serializers.Serializer):
         return value
 
     def validate(self, attrs):
-        # As at sign-up: the two differ is an error on the confirmation.
+        # The brief: too short, too weak, or the two differ, all on new_password.
         if attrs["new_password"] != attrs["confirm_password"]:
-            raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
+            raise serializers.ValidationError({"new_password": "Passwords do not match."})
         return attrs
 
 
@@ -121,9 +121,9 @@ class GoogleSignInView(_GoogleView):
                 answer = {**answer, "is_new_user": False}
             return Response(answer, status=status.HTTP_200_OK)
 
-        # A new account's first session is no news for the sign-in alert,
-        # as at register.
-        tokens = services.tokens_for(account, request, sign_in=not outcome.is_new_user)
+        # Everything else as a password sign-in: the session, the new
+        # sign-in alert, the device.
+        tokens = services.tokens_for(account, request)
         return Response({**tokens, "is_new_user": outcome.is_new_user}, status=status.HTTP_200_OK)
 
 
@@ -148,7 +148,8 @@ class PasswordSetView(_GoogleView):
             ),
             409: OpenApiResponse(description="`password_already_set`: use Change password."),
             422: OpenApiResponse(
-                description="`new_password`: the sign-up rules. `confirm_password`: the two differ."
+                description="`new_password`: too short, too weak (the sign-up rules), "
+                "or the two differ."
             ),
         },
     )

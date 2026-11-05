@@ -21,7 +21,7 @@ from drf_spectacular.utils import (
 )
 from rest_framework.exceptions import ErrorDetail, NotFound, PermissionDenied, ValidationError
 from rest_framework.exceptions import PermissionDenied
-from .models import DeletionReason, Purpose
+from .models import DeletionReason, DestinationType, Purpose
 from .serializers import (
     ContactChangeConfirmSerializer,
     ContactChangeProofSerializer,
@@ -274,8 +274,8 @@ class LoginView(APIView):
             "a device that has not passed it gets a challenge instead of the "
             "tokens: `{two_factor_required, challenge_token, expires_in, "
             "methods}`. The code then goes to /auth/2fa/send and /auth/2fa/verify "
-            "(docs/TWO_FACTOR_API.md section 6). With Google sign-in on, an "
-            "account made with Google that has no password yet answers 401 "
+            "(docs/TWO_FACTOR_API.md section 6). With Google sign-in on, the "
+            "email of an account that has no password answers 401 "
             "`password_not_set` (docs/GOOGLE_SIGN_IN_API.md section 4)."
         ),
         responses={
@@ -293,12 +293,12 @@ class LoginView(APIView):
 
         account = services.find_account(destination, destination_type)
         if (
-            account is not None
-            and google.enabled()
+            google.enabled()
+            and destination_type == DestinationType.EMAIL
+            and account is not None
             and not account.has_usable_password()
-            and google.linked(account) is not None
         ):
-            # Made with Google and no password set yet: say so, so the app
+            # The email of an account with no password: say so, so the app
             # can offer Continue with Google (docs/GOOGLE_SIGN_IN_API.md 4).
             raise google.PasswordNotSet()
         if account is None or not account.check_password(data["password"]):

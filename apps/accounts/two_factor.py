@@ -78,6 +78,9 @@ DAY = 86400
 CODE_TTL_SECONDS = 600
 SETUP_TTL_SECONDS = 600  # an authenticator's pending setup
 TOKEN_TTL_SECONDS = 300
+# Set a password's token (docs/GOOGLE_SIGN_IN_API.md section 5): the brief
+# for it gives 600.
+PASSWORD_SET_TOKEN_TTL_SECONDS = 600
 RESEND_SECONDS = 30
 
 # 5.4: wrong codes per account, across every call that checks one.
@@ -361,15 +364,20 @@ def verify(user, sid, method, purpose, code):
         check_authenticator_code(user, code)
     else:
         check_code(user, method, purpose, code)
+    ttl = (
+        PASSWORD_SET_TOKEN_TTL_SECONDS
+        if purpose == TwoFactorPurpose.PASSWORD_SET
+        else TOKEN_TTL_SECONDS
+    )
     raw = TOKEN_PREFIX + secrets.token_urlsafe(32)
     VerificationToken.objects.create(
         token_hash=_hash(raw),
         user=user,
         session_id=sid,
         purpose=purpose,
-        expires_at=timezone.now() + timedelta(seconds=TOKEN_TTL_SECONDS),
+        expires_at=timezone.now() + timedelta(seconds=ttl),
     )
-    return {"verification_token": raw, "expires_in": TOKEN_TTL_SECONDS}
+    return {"verification_token": raw, "expires_in": ttl}
 
 
 def spend_token(user, sid, purpose, raw):

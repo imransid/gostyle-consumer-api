@@ -14,8 +14,9 @@ The error bodies on this page are the real ones: a test
 
 ## 0. Read this first
 
-1. **Built as your brief asks**: the same routes, fields, codes and rules.
-   Section 9 lists every difference, all small.
+1. **Built same to same with your brief**: the same routes, fields, codes,
+   numbers, rules and emails. Where your brief says nothing, section 9 says
+   what we do.
 2. **Behind one server switch, `GOOGLE_SIGN_IN_V1`, off for now.** While it
    is off, `POST /auth/google` and `POST /auth/password/set` answer `404`,
    `/auth/me` does not send the three new fields, and login and delete are
@@ -64,9 +65,9 @@ No `Authorization` header: this is a sign-in. The same call from Login and
 from Register. A stale bearer token, if the app sends one, is ignored.
 
 We check the token against Google's public keys: the signature, `iss`
-(`accounts.google.com` or `https://accounts.google.com`), `aud` (one of our
-two client IDs), `exp` not passed. No client secret is involved. We never
-store or log the ID token.
+(`accounts.google.com` or `https://accounts.google.com`), `exp` not passed,
+`aud` (one of our two client IDs). Those checks and no others. No client
+secret is involved. We never store or log the ID token.
 
 `200 OK`:
 
@@ -77,9 +78,8 @@ store or log the ID token.
 - `is_new_user: true` when this call made the account: show the welcome you
   show after a normal sign-up.
 - Everything else is as after a password sign-in: a session in "Where
-  you're signed in", the new sign-in alert for a new device, the device
-  headers. A brand-new account gets no new sign-in alert for its very first
-  session (as after register); it gets the usual welcome email instead.
+  you're signed in", the new sign-in alert (for a new account too), the
+  device headers.
 
 ### 2.1 Which account
 
@@ -92,9 +92,8 @@ In this order:
    - Its email was already verified on our side: linked as it is. **Its
      password keeps working.**
    - Its email was never verified: we mark it verified now, **remove its
-     password**, and **end its other sessions** (and its push
-     registrations). Someone may have signed up with this address before
-     its owner did.
+     password**, and **end its other sessions**. Someone may have signed up
+     with this address before its owner did.
    - Either way, the account's email is told (section 7).
 3. **Neither**: a new account. `full_name` from Google's `name` (else the
    part of the email before the `@`), the email marked verified, no
@@ -170,7 +169,7 @@ No `id_token`:
 | Status | `code` | When | `detail` |
 | --- | --- | --- | --- |
 | 401 | `invalid_token` | The token is bad, expired, or not for our client IDs | We couldn’t sign you in with Google. Please try again. |
-| 409 | `email_in_use` | Google did not verify the email and an account uses it (also section 9, item 1) | An account already uses this email. Sign in with your password instead. |
+| 409 | `email_in_use` | Google did not verify the email and an account uses it | An account already uses this email. Sign in with your password instead. |
 | 409 | `google_already_linked` | The matching account is linked to a different Google account | This account is already linked to a different Google account. |
 | 422 | `required` (field `id_token`) | No `id_token` | This field is required. |
 | 422 | `validation_error` (field null) | The account is disabled, as `/auth/login` answers it | Account disabled. |
@@ -199,8 +198,8 @@ The same three fields come on `PATCH /auth/me` answers.
 
 ## 4. Email + password on an account with no password
 
-`POST /auth/login` with the email (or phone) of an account linked to
-Google that has no password, `401`:
+`POST /auth/login` with the email of an account that has no password,
+`401`:
 
 ```json
 {"detail": "This account signs in with Google. Continue with Google, or set a password in Settings.", "code": "password_not_set", "errors": []}
@@ -240,8 +239,8 @@ Content-Type: application/json
 {"method": "email", "purpose": "password_set", "code": "123456"}
 ```
 
-answers `{"verification_token": "vt_...", "expires_in": 300}`: for this
-phone's session, this purpose, 5 minutes, used once (the 2-step guide's
+answers `{"verification_token": "vt_...", "expires_in": 600}`: for this
+phone's session, this purpose, 10 minutes, used once (the 2-step guide's
 rules; `method` may also be `phone` or `authenticator`). Then:
 
 ```http
@@ -266,18 +265,17 @@ signed in.
 ```
 
 ```json
-{"detail": "Please correct the highlighted fields.", "code": "validation_error", "errors": [{"field": "confirm_password", "code": "invalid", "message": "Passwords do not match."}]}
+{"detail": "Please correct the highlighted fields.", "code": "validation_error", "errors": [{"field": "new_password", "code": "invalid", "message": "Passwords do not match."}]}
 ```
 
 | Status | `field` / `code` | When |
 | --- | --- | --- |
 | 409 | `password_already_set` | The account already has one: Change password is the way |
 | 403 | `verification_token` / `invalid` | No token, or a wrong, used, expired or other-purpose one |
-| 422 | `new_password` / the sign-up rules | Too short, too weak (the same rules and messages as at sign-up) |
-| 422 | `confirm_password` / `invalid` | The two differ (as at sign-up) |
+| 422 | `new_password` / the sign-up rules | Too short, too weak (the same rules and messages as at sign-up), or the two differ |
 
 A refused password does not use the token up: fix it and send again within
-the 5 minutes.
+the 10 minutes.
 
 ---
 
@@ -339,8 +337,7 @@ To the account's verified email, once the change is saved:
 
 Then: "If this was not you, ..." and what to do. The device is the
 `X-Device-Name` header, and the place is the one the Sessions list shows,
-each only when known. A new account made with Google
-gets the usual "Welcome to GoStyle" email.
+each only when known.
 
 ---
 
@@ -363,32 +360,26 @@ gets the usual "Welcome to GoStyle" email.
 
 ---
 
-## 9. What differs from your brief
+## 9. Where your brief says nothing: what we do
 
-1. **`409 email_in_use` also in one case the brief does not name**: the
-   matching account's email was never verified, but its **phone** was. That
-   account is in use by whoever proved the phone; taking it over would hand
-   their bookings to the Google account's owner. They keep signing in with
-   the phone. Very rare.
-2. **"The two differ" is on `confirm_password`**, as at sign-up, not on
-   `new_password`. The weak-password errors are on `new_password`.
-3. **`503 service_unavailable`** when Google's public keys cannot be read.
-   Not in the brief; not the token's fault.
-4. **A disabled account** answers what `/auth/login` answers it:
-   `422`, "Account disabled.".
-5. **The 2-step challenge is the full one login answers**
-   (`two_factor_required`, `challenge_token`, `expires_in`, `methods` with
-   hints), not the short example in the brief.
-6. **The 401 on delete has `invalid_token` as its top-level code**, so it
-   never looks like the session ending.
-7. **`password_not_set` only for an account linked to Google.** An account
-   with no password and no Google link (none made by the app) answers
-   "Invalid credentials." as today.
-8. **The takeover in 2.1 also removes the old push registrations**, so the
-   person who signed up first gets none of the account's notifications.
-9. **A new account's first session sends no new sign-in alert** (as after
-   register), and the account gets the usual welcome email.
-10. **10 seconds of grace on the token's times**, for clocks that differ a
-    little between Google, the phone and us.
-11. **No `account_delete` code by email** (your alternative in section 6):
-    we built "Confirm with Google", your suggestion.
+Nothing here changes anything your brief asks for.
+
+1. **Google's public keys cannot be read** (our side, rare):
+   `503 service_unavailable`, "Google sign-in isn’t available right now.
+   Please try again." Not the token's fault.
+2. **A disabled account** answers what `/auth/login` answers it: `422`,
+   "Account disabled.".
+3. **More than 10 calls a minute from one address**: `429`, as
+   `/auth/login`.
+4. **The 2-step challenge** is exactly what `/auth/login` answers, as your
+   2.2 says: `two_factor_required`, `challenge_token`, `expires_in` and
+   `methods` with hints (your example there is shortened).
+5. **The 401 on delete** has `invalid_token` as its top-level `code` too, as
+   the 2-step errors do, so it never looks like the session ending.
+6. **A refused new password** does not use the verification token up.
+7. **`password_not_set` by phone**: your section 4 is about the email, so a
+   phone login on an account with no password answers "Invalid
+   credentials." as today.
+8. **The code by email for deleting** (your alternative, purpose
+   `account_delete`) is not built: we built "Confirm with Google", your
+   suggestion.

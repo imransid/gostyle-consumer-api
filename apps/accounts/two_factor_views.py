@@ -401,7 +401,7 @@ class VerifyView(_SecurityView):
         description=(
             "Checks a code from 3.1, or the authenticator app's current one. "
             "Answers a verification token for `purpose`: this session only, "
-            "5 minutes, used once."
+            "5 minutes (10 for `password_set`), used once."
         ),
         responses={
             200: inline_serializer(

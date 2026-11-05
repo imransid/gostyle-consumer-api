@@ -115,5 +115,5 @@ server cannot reach googleapis.com (step 2 above).
 
 ## Checked locally (2026-11-05)
 
-`apps.accounts.tests.test_google_sign_in`: 57 tests, with tokens signed by a
-test RSA key in place of Google's. Full suite: 2792 tests, all pass.
+`apps.accounts.tests.test_google_sign_in`: 59 tests, with tokens signed by a
+test RSA key in place of Google's. Full suite: 2794 tests, all pass.

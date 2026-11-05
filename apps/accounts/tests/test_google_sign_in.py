@@ -27,7 +27,6 @@ from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 from apps.accounts import google, push_api, two_factor
 from apps.accounts.models import (
     ConsumerAccount,
-    Device,
     SocialIdentity,
     TwoFactorPurpose,
     UserSession,
@@ -127,10 +126,10 @@ class VerifyTests(SimpleTestCase):
         bad = {
             "another key": mint(key=OTHER_KEY),
             "expired": mint(iat=now - 7200, exp=now - 60),
+            "expired a second ago": mint(iat=now - 3601, exp=now - 1),
             "another app": mint(aud="1234-other.apps.googleusercontent.com"),
             "the android client": mint(aud="1002425773215-android.apps.googleusercontent.com"),
             "not Google": mint(iss="https://evil.example.com"),
-            "from the future": mint(iat=now + 600, exp=now + 4200),
             "no sub": mint(sub=None),
             "an empty sub": mint(sub=""),
             "no expiry": mint(exp=None),
@@ -156,10 +155,16 @@ class VerifyTests(SimpleTestCase):
     def test_the_audiences_are_exactly_the_two_from_the_brief(self):
         self.assertEqual(google.client_ids(), [WEB, IOS])
 
+    def test_only_the_briefs_checks_iat_is_not_one_of_them(self):
+        now = int(time.time())
+        for claims in ({"iat": now + 600}, {"iat": None}):
+            with self.subTest(claims=claims):
+                self.assertEqual(google.verify(mint(**claims)).subject, SUB)
+
     def test_a_fresh_token_is_one_from_the_last_10_minutes(self):
         now = int(time.time())
         self.assertEqual(google.verify_fresh(mint(iat=now - 590)).subject, SUB)
-        for token in (mint(iat=now - 610), mint(key=OTHER_KEY)):
+        for token in (mint(iat=now - 610), mint(iat=None), mint(key=OTHER_KEY)):
             with self.assertRaises(google.StaleIdToken):
                 google.verify_fresh(token)
 
@@ -264,8 +269,8 @@ class NewAccountTests(GoogleTestCase):
         # A real session, as a password sign-in has.
         session = UserSession.objects.get(pk=AccessToken(body["access"])["sid"])
         self.assertEqual((session.user, session.device_name), (account, "iPhone 15"))
-        # The welcome a new verified account gets; no new sign-in alert.
-        self.assertEqual(self.subjects(), ["Welcome to GoStyle"])
+        # As a password sign-in: the new sign-in alert. No other email.
+        self.assertEqual(self.subjects(), ["Go Style: new sign-in to your account"])
 
     def test_the_name_falls_back_to_the_email_before_the_at(self):
         self.google(mint(name=None))
@@ -382,7 +387,6 @@ class SameEmailTests(GoogleTestCase):
         squatter = self.post("/api/v1/auth/register", body, IPAD)
         self.assertEqual(squatter.status_code, 201, squatter.content)
         account = ConsumerAccount.objects.get()
-        Device.objects.create(account=account, push_token="squatter-token", platform="ios")
 
         resp = self.google()
         self.assertEqual(resp.status_code, 200, resp.content)
@@ -391,7 +395,6 @@ class SameEmailTests(GoogleTestCase):
         self.assertIsNotNone(account.email_verified_at)
         self.assertFalse(account.has_usable_password())
         self.assertIsNone(account.password_changed_at)
-        self.assertFalse(Device.objects.exists())
 
         # The squatter's session is over, and its tokens no longer work.
         old = UserSession.objects.get(device_id=IPAD["HTTP_X_DEVICE_ID"])
@@ -416,14 +419,17 @@ class SameEmailTests(GoogleTestCase):
             outstanding.count() - 1,  # all but the Google sign-in's own
         )
 
-    def test_an_unverified_email_on_an_account_with_a_verified_phone_is_refused(self):
+    def test_an_unverified_email_is_taken_over_even_with_a_verified_phone(self):
         account = self.account(phone=PHONE, verified=False)
         account.phone_verified_at = timezone.now()
         account.save()
-        self.assertRefusal(self.google(), 409, "email_in_use")
+        resp = self.google()
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertIs(resp.json()["is_new_user"], False)
         account.refresh_from_db()
-        self.assertTrue(account.check_password(PASSWORD))
-        self.assertFalse(SocialIdentity.objects.exists())
+        self.assertIsNotNone(account.email_verified_at)
+        self.assertFalse(account.has_usable_password())
+        self.assertEqual(SocialIdentity.objects.get().account, account)
 
     def test_google_did_not_verify_the_email_and_an_account_has_it(self):
         self.account()
@@ -584,9 +590,16 @@ class LoginTests(GoogleTestCase):
         resp = self.login(password="wrong")
         self.assertEqual((resp.status_code, resp.json()["detail"]), (422, "Invalid credentials."))
 
-    def test_no_password_but_no_google_either_is_invalid_credentials(self):
+    def test_any_account_with_no_password_says_so_by_its_email(self):
         self.account(password=None)
-        self.assertEqual(self.login().json()["detail"], "Invalid credentials.")
+        self.assertRefusal(self.login(), 401, "password_not_set")
+
+    def test_by_phone_it_is_invalid_credentials_as_today(self):
+        account = self.account(phone=PHONE, password=None)
+        account.phone_verified_at = timezone.now()
+        account.save()
+        resp = self.login(destination=PHONE, kind="phone")
+        self.assertEqual((resp.status_code, resp.json()["detail"]), (422, "Invalid credentials."))
 
     def test_forgot_password_works_for_an_account_made_with_google(self):
         self.google()
@@ -627,6 +640,8 @@ class PasswordSetTests(GoogleTestCase):
         body = {"method": "email", "purpose": purpose, "code": self.outbox[-1][1]}
         resp = self.post(VERIFY, body, client=self.phone)
         self.assertEqual(resp.status_code, 200, resp.content)
+        expected = 600 if purpose == "password_set" else 300
+        self.assertEqual(resp.json()["expires_in"], expected)
         return resp.json()["verification_token"]
 
     def set(self, token, new=NEW_PASSWORD, confirm=None):
@@ -691,7 +706,7 @@ class PasswordSetTests(GoogleTestCase):
         differ = self.set(token, new=NEW_PASSWORD, confirm=NEW_PASSWORD + "x")
         self.assertEqual(
             [(e["field"], e["message"]) for e in differ.json()["errors"]],
-            [("confirm_password", "Passwords do not match.")],
+            [("new_password", "Passwords do not match.")],
         )
         # A refused password does not spend the token.
         self.assertEqual(self.set(token).status_code, 204)

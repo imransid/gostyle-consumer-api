@@ -32,7 +32,7 @@ from rest_framework.exceptions import APIException, ErrorDetail, PermissionDenie
 
 from . import geoip, services, sessions
 from .models import ConsumerAccount, SocialIdentity, UserSession
-from .notifications import send_security_notice, send_welcome_email, verified_email
+from .notifications import send_security_notice, verified_email
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +43,6 @@ KEYS_URL = "https://www.googleapis.com/oauth2/v3/certs"
 # How long Google's public keys are kept before they are read again. A token
 # signed with a key not in the cache makes PyJWKClient read them at once.
 KEYS_SECONDS = 3600
-# Clocks differ by a few seconds between Google, the phone and us: a token
-# issued "now" by Google's clock must not be refused as from the future.
-LEEWAY_SECONDS = 10
 # Delete Account's "Confirm with Google": the token must be this fresh.
 FRESH_SECONDS = 600
 
@@ -169,7 +166,7 @@ class GoogleUser:
     email: str
     email_verified: bool
     name: str
-    issued_at: int
+    issued_at: int | None
 
 
 _key_client = None
@@ -192,9 +189,9 @@ def _true(value):
 
 def verify(id_token):
     """
-    Check a Google ID token and return its GoogleUser: Google's signature,
-    `iss` Google, `aud` one of our two client ids, `exp` not passed (and
-    `iat` not in the future). Anything off is InvalidToken; Google's keys
+    Check a Google ID token and return its GoogleUser, the brief's checks
+    and only those: Google's signature, `iss` Google, `exp` not passed, `aud`
+    one of our two client ids. Anything off is InvalidToken; Google's keys
     unreadable is GoogleUnavailable.
     """
     try:
@@ -204,8 +201,7 @@ def verify(id_token):
             signing_key.key,
             algorithms=["RS256"],
             audience=client_ids(),
-            leeway=LEEWAY_SECONDS,
-            options={"require": ["iss", "sub", "aud", "exp", "iat"]},
+            options={"require": ["iss", "sub", "aud", "exp"], "verify_iat": False},
         )
     except jwt.PyJWKClientConnectionError as exc:
         logger.error("google sign-in: Google's keys could not be read: %s", exc)
@@ -217,12 +213,13 @@ def verify(id_token):
     if claims["iss"] not in ISSUERS or not str(claims["sub"]).strip():
         raise InvalidToken()
     email = claims.get("email")
+    iat = claims.get("iat")
     return GoogleUser(
         subject=str(claims["sub"]),
         email=email.strip().lower() if isinstance(email, str) else "",
         email_verified=_true(claims.get("email_verified")),
         name=(claims.get("name") or "").strip() if isinstance(claims.get("name"), str) else "",
-        issued_at=int(claims["iat"]),
+        issued_at=iat if isinstance(iat, int) and not isinstance(iat, bool) else None,
     )
 
 
@@ -233,7 +230,7 @@ def verify_fresh(id_token):
         google_user = verify(id_token)
     except InvalidToken as exc:
         raise StaleIdToken() from exc
-    if time.time() - google_user.issued_at > FRESH_SECONDS:
+    if google_user.issued_at is None or time.time() - google_user.issued_at > FRESH_SECONDS:
         raise StaleIdToken()
     return google_user
 
@@ -302,12 +299,6 @@ def _sign_in(google_user, request):
         if SocialIdentity.objects.filter(account=match, provider=GOOGLE).exists():
             raise GoogleAlreadyLinked()
         if match.email_verified_at is None:
-            if match.phone_verified_at is not None:
-                # Not in the brief: someone proved the phone on this account
-                # and uses it, with an email nobody proved. Taking it over
-                # would hand their bookings to whoever owns the Google
-                # account. They sign in with the phone, as before.
-                raise EmailInUse()
             take_over(match)
         _link(match, google_user, now)
         _tell_linked(match, request)
@@ -336,9 +327,9 @@ def take_over(account):
     """
     Section 2.1, an email never verified. Someone may have signed up with
     this address before its owner did; Google has just proved who owns it.
-    The email is verified, a password its owner never chose stops working,
-    and every session, refresh token and push registration on the account
-    ends. The new sign-in's session starts after this.
+    The email is verified now, its password is removed, and its other
+    sessions end (their refresh tokens revoked). The new sign-in's session
+    starts after this.
     """
     now = timezone.now()
     account.email_verified_at = now
@@ -355,9 +346,6 @@ def take_over(account):
         ]
     )
     services._blacklist_all_refresh_tokens(account)
-    # Push tokens the app registered for this account: none may keep
-    # getting its bookings' news.
-    account.devices.all().delete()
     ended = list(
         UserSession.objects.filter(user=account, ended_at__isnull=True).values_list("pk", flat=True)
     )
@@ -405,9 +393,6 @@ def _create(google_user, now):
         account.account_verified = True
     account.set_unusable_password()
     account.save()
-    if account.email_verified_at:
-        # The welcome a new account gets once its email is verified.
-        transaction.on_commit(lambda: send_welcome_email(account))
     return account
 
 

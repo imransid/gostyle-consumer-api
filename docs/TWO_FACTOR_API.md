@@ -111,7 +111,7 @@ Authorization: Bearer <access_token>
 | `two_step_off` | Turning 2-step verification off |
 | `authenticator_add` | Adding an authenticator app |
 | `authenticator_remove` | Removing the authenticator app |
-| `password_set` | Setting a password on an account made with Google (docs/GOOGLE_SIGN_IN_API.md section 5). Only while Google sign-in is on |
+| `password_set` | Setting a password on an account made with Google (docs/GOOGLE_SIGN_IN_API.md section 5). Only while Google sign-in is on. Its token lasts 10 minutes (`expires_in: 600`), as that brief asks |
 
 ### 3.1 POST /me/security/verify/send
 
