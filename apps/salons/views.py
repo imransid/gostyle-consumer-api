@@ -70,6 +70,8 @@ from .hours import weekly_row as hours_row
 from .menu import service_groups, service_row
 from .money import major
 from .selectors import (
+    followers_count,
+    is_following,
     average_salon_rating,
     booking_route,
     discoverable_salons,
@@ -420,7 +422,10 @@ class SalonProfileView(APIView):
         if salon is None:
             raise Http404("Salon not found")
 
-        return Response(salon_profile_data(salon))
+        data = salon_profile_data(salon)
+        data["is_following"] = is_following(request.user, salon.id)
+        data["followers_count"] = followers_count(salon.id)
+        return Response(data)
 
 
 class SalonServicesView(APIView):

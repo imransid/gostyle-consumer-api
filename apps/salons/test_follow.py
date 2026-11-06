@@ -94,6 +94,27 @@ class FollowTests(FollowTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.rows(), 0)
 
+    def test_post_toggles_follow_and_unfollow(self):
+        first = self.client.post(url())
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json(), {"is_following": True, "followers_count": 1})
+        self.assertEqual(self.rows(), 1)
+
+        second = self.client.post(url())
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json(), {"is_following": False, "followers_count": 0})
+        self.assertEqual(self.rows(), 0)
+
+    def test_post_guest_gets_401(self):
+        self.client.credentials()
+        self.assertEqual(self.client.post(url()).status_code, 401)
+
+    def test_post_bad_id_or_missing_salon_is_404(self):
+        self.assertEqual(self.client.post("/api/v1/salon/abc/follow").status_code, 404)
+        self.salon_lookup.return_value = None
+        self.assertEqual(self.client.post(url()).status_code, 404)
+        self.assertEqual(self.rows(), 0)
+
 
 class FollowCountTests(FollowTestCase):
     def test_two_customers_make_two_followers(self):

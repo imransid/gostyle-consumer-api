@@ -91,3 +91,34 @@ class SalonFollowView(APIView):
         # No look at the salon: unfollowing a salon that has gone must still work.
         SalonFollow.objects.filter(account=request.user, storefront_id=salon_uuid).delete()
         return _state(False, salon_uuid)
+
+    @extend_schema(
+        summary="Toggle follow on a salon",
+        description=(
+            "One tap follows, the next tap unfollows. The answer has the new "
+            "is_following and the new follower count."
+        ),
+        parameters=[_SALON_ID],
+        responses={
+            200: SalonFollowStateSerializer,
+            404: OpenApiResponse(
+                response=_OUR_ENVELOPE,
+                description="The salon is not available, or the id is not a UUID.",
+            ),
+            **_COMMON_ERRORS,
+        },
+    )
+    def post(self, request, salon_id):
+        salon_uuid = path_uuid(salon_id)
+        if salon_uuid is None:
+            raise NotFound(NO_SALON)
+
+        existing = SalonFollow.objects.filter(account=request.user, storefront_id=salon_uuid)
+        if existing.exists():
+            existing.delete()
+            return _state(False, salon_uuid)
+
+        if salon_profile(salon_uuid) is None:
+            raise NotFound(NO_SALON)
+        SalonFollow.objects.get_or_create(account=request.user, storefront_id=salon_uuid)
+        return _state(True, salon_uuid)
