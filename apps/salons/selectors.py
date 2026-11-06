@@ -24,7 +24,7 @@ from django.db.models.fields.json import KeyTextTransform, KeyTransform
 from apps.platform_data.models import StorefrontStory, StorefrontVersion
 
 from django.db.models import Value, BooleanField
-from apps.accounts.models import Favourite, FavouriteStylist
+from apps.accounts.models import Favourite, FavouriteStylist, SalonFollow
 
 
 from apps.platform_data.models import (
@@ -1172,6 +1172,24 @@ def is_favourite_stylist(user, staff_id):
         return False
     return FavouriteStylist.objects.filter(account=user, staff_id=staff_id).exists()
 
+
+
+def is_following(user, storefront_id):
+    """Does this customer follow this salon? False for a guest, with no query."""
+    if user is None or not user.is_authenticated:
+        return False
+    return SalonFollow.objects.filter(
+        account=user, storefront_id=storefront_id
+    ).exists()
+
+
+def followers_count(storefront_id):
+    """How many real people follow this salon. Deleted or pending-deletion accounts are left out."""
+    return SalonFollow.objects.filter(
+        storefront_id=storefront_id,
+        account__deleted_at__isnull=True,
+        account__purge_at__isnull=True,
+    ).count()
 
 def with_is_favorite(qs, user):
     if user is None or not user.is_authenticated:

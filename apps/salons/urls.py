@@ -36,8 +36,14 @@ from .views import (
     BookingDetailView,
     ProductDetailView,
 )
+from .follow_views import SalonFollowView
+
+
+
+
 
 urlpatterns = [
+    path("salon/<str:salon_id>/follow", SalonFollowView.as_view(), name="salon-follow"),
     path("products/<uuid:product_id>", ProductDetailView.as_view(), name="product-detail"), 
     path("salons/", SalonListView.as_view()),
     path("discover", SalonDiscoveryListView.as_view(), name="salon-discover"),

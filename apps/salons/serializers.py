@@ -631,3 +631,9 @@ class ServiceDetailSerializer(serializers.Serializer):
         # the row is here at all: an old booking or a stale basket has to be
         # describable, not a gap.
         return is_on_menu(obj)
+
+class SalonFollowStateSerializer(serializers.Serializer):
+    """The answer of PUT and DELETE /salon/{id}/follow."""
+
+    is_following = serializers.BooleanField()
+    followers_count = serializers.IntegerField()

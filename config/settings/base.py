@@ -12,7 +12,6 @@ DEBUG = False
 ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS", default=[])
 CSRF_TRUSTED_ORIGINS = env.list("DJANGO_CSRF_TRUSTED_ORIGINS", default=[])
 
-
 # Application definition
 
 INSTALLED_APPS = [
@@ -620,6 +619,7 @@ REST_FRAMEWORK = {
         "login": "10/min",
         # POST /auth/google, per address, as login.
         "google_sign_in": "10/min",
+        "follow": "15/min",
         # GET /search/suggest, per address: generous, as one customer types a
         # few calls a second, and one carrier address can be many phones.
         "search_suggest": env("SEARCH_SUGGEST_RATE", default="120/min"),

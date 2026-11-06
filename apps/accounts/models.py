@@ -840,3 +840,25 @@ class SocialIdentity(models.Model):
 
     def __str__(self):
         return f"{self.provider} sign-in for {self.account_id}"
+
+
+
+class SalonFollow(models.Model):
+
+    id = models.BigAutoField(primary_key=True)
+    account = models.ForeignKey(
+        ConsumerAccount,
+        on_delete=models.CASCADE,
+        related_name="salon_follows",
+    )
+    storefront_id = models.UUIDField(db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "salon_follow"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["account", "storefront_id"],
+                name="salon_follow_account_storefront_unique",
+            )
+        ]
