@@ -4,6 +4,9 @@ The Service Detail answer, described for the OpenAPI page.
 Documentation only: the view writes plain dicts (service_detail.py), and
 nothing here validates or renders. Names start with SalonServiceDetail so
 they never collide with services-details' own ServiceDetail component.
+
+The shape and EXAMPLE are the answer with SERVICE_DETAIL_REDESIGN_V1 on.
+Off, `group`, `images` and `included_items` are not sent.
 """
 
 from rest_framework import serializers
@@ -12,6 +15,20 @@ from rest_framework import serializers
 class SalonServiceDetailCategorySerializer(serializers.Serializer):
     id = serializers.CharField(help_text='The Services tab\'s chip: a category UUID, or "other".')
     label = serializers.CharField()
+
+
+class SalonServiceDetailGroupSerializer(serializers.Serializer):
+    id = serializers.CharField(
+        help_text='The Services tab group\'s id (service_groups[].id): a category UUID, or "other".'
+    )
+    name = serializers.CharField()
+
+
+class SalonServiceDetailIncludedItemSerializer(serializers.Serializer):
+    title = serializers.CharField(help_text="An included name, with no colon at its end.")
+    description = serializers.CharField(
+        allow_null=True, help_text="The salon's line for it. null: show the title alone."
+    )
 
 
 class SalonServiceDetailRowSerializer(serializers.Serializer):
@@ -67,13 +84,24 @@ class SalonServiceDetailResponseSerializer(serializers.Serializer):
     duration_min = serializers.IntegerField(help_text="Minutes.")
     duration_max = serializers.IntegerField(help_text="Minutes. Today always equal to duration_min.")
     category = SalonServiceDetailCategorySerializer()
+    group = SalonServiceDetailGroupSerializer(
+        allow_null=True,
+        help_text="The Services tab group the service sits in, after its category. Redesign switch.",
+    )
     rating = serializers.FloatField(allow_null=True, help_text="Always null for now: no per-service reviews yet.")
     review_count = serializers.IntegerField(help_text="Always 0 for now.")
     is_active = serializers.BooleanField(help_text="false: pulled from sale. Hide Book Appointment.")
     hero_url = serializers.CharField(allow_null=True, help_text="The first photo. null: use the salon's cover.")
     gallery = serializers.ListField(child=serializers.CharField(), help_text="At most 5; the hero is the first.")
     gallery_count = serializers.IntegerField(help_text="All the photos. \"+N\" is gallery_count - len(gallery).")
+    images = serializers.ListField(
+        child=serializers.CharField(),
+        help_text="Every photo, in order, up to 10. [] when none. Redesign switch.",
+    )
     included = serializers.ListField(child=serializers.CharField(), help_text="The stage names. [] hides the block.")
+    included_items = SalonServiceDetailIncludedItemSerializer(
+        many=True, help_text="included with a line each, in order. [] hides the block. Redesign switch."
+    )
     details = SalonServiceDetailRowSerializer(many=True)
     preparation = serializers.ListField(child=serializers.CharField(), help_text="[] hides the block.")
     products = SalonServiceDetailProductSerializer(many=True, help_text="Always [] for now.")
@@ -82,8 +110,9 @@ class SalonServiceDetailResponseSerializer(serializers.Serializer):
     )
 
 
-# What the server really answered for the seeded salon, with photos, stages
-# and care text added (see ExampleIsRealTests, which rebuilds it from rows).
+# What the server really answered for the seeded salon, with photos, stages,
+# stage lines and care text added, SERVICE_DETAIL_REDESIGN_V1 on (see
+# ExampleIsRealTests, which rebuilds it from rows).
 EXAMPLE = {
     "id": "66666666-6666-6666-6666-666666666660",
     "salon_id": "33333333-3333-3333-3333-333333333333",
@@ -95,6 +124,10 @@ EXAMPLE = {
     "category": {
         "id": "55555555-5555-5555-5555-555555555551",
         "label": "Haircut and Styling",
+    },
+    "group": {
+        "id": "55555555-5555-5555-5555-555555555552",
+        "name": "Precision Cuts",
     },
     "rating": None,
     "review_count": 0,
@@ -108,12 +141,43 @@ EXAMPLE = {
         "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/11111111-1111-1111-1111-111111111111/services/66666666-6666-6666-6666-666666666660/media/5.jpg",
     ],
     "gallery_count": 7,
+    "images": [
+        "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/11111111-1111-1111-1111-111111111111/services/66666666-6666-6666-6666-666666666660/media/1.jpg",
+        "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/11111111-1111-1111-1111-111111111111/services/66666666-6666-6666-6666-666666666660/media/2.jpg",
+        "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/11111111-1111-1111-1111-111111111111/services/66666666-6666-6666-6666-666666666660/media/3.jpg",
+        "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/11111111-1111-1111-1111-111111111111/services/66666666-6666-6666-6666-666666666660/media/4.jpg",
+        "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/11111111-1111-1111-1111-111111111111/services/66666666-6666-6666-6666-666666666660/media/5.jpg",
+        "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/11111111-1111-1111-1111-111111111111/services/66666666-6666-6666-6666-666666666660/media/6.jpg",
+        "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/11111111-1111-1111-1111-111111111111/storefronts/33333333-3333-3333-3333-333333333333/gallery/fade-side.jpg",
+    ],
     "included": [
         "Consultation",
         "Wash",
         "Scalp massage",
         "Hair cut",
         "Styling",
+    ],
+    "included_items": [
+        {
+            "title": "Consultation",
+            "description": "Tailored style analysis based on face shape and hair type.",
+        },
+        {
+            "title": "Wash",
+            "description": "A deep cleanse with a gentle shampoo.",
+        },
+        {
+            "title": "Scalp massage",
+            "description": "A relaxing massage to wake up the scalp.",
+        },
+        {
+            "title": "Hair cut",
+            "description": "A classic cut with clippers and scissors.",
+        },
+        {
+            "title": "Styling",
+            "description": None,
+        },
     ],
     "details": [
         {

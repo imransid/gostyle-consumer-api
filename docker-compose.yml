@@ -147,6 +147,8 @@ services:
       SERVICE_IMAGES_V1: ${SERVICE_IMAGES_V1:-False}
       # The photo on each bundle of the Packages tab: image_url.
       PACKAGE_IMAGE_V1: ${PACKAGE_IMAGE_V1:-False}
+      # Service Details redesign: group, images, included_items.
+      SERVICE_DETAIL_REDESIGN_V1: ${SERVICE_DETAIL_REDESIGN_V1:-False}
 
       # Sessions' location from the IP (docs/DEVICE_SESSIONS_SERVER.md).
       # Empty: location stays null.

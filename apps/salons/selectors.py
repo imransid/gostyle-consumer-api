@@ -1723,10 +1723,12 @@ def service_stage_rows(service_ids):
 def service_stages(service_id):
     """
     One service's stages, in stage order, read ONCE for the Service Detail
-    screen: `name_en` for the "What's Included" chips (S4), and the same
-    `service_id`, `skill_id` and `min_level` as `service_stage_rows`, so the
-    rows can go straight to `stylist_rows(stages=...)` for the experts (S5)
-    without a second stage query.
+    screen: `name_en` for the "What's Included" chips (S4) and `description`
+    for each one's line (`included_items`, SERVICE_DETAIL_REDESIGN_V1), and
+    the same `service_id`, `skill_id` and `min_level` as
+    `service_stage_rows`, so the rows can go straight to
+    `stylist_rows(stages=...)` for the experts (S5) without a second stage
+    query.
 
     Stage order is `sort_order`, as the platform lists them (its gRPC fills
     `included_steps` in that order); oldest, then id, break a tie.
@@ -1734,7 +1736,7 @@ def service_stages(service_id):
     return list(
         ServiceStage.objects.filter(service_id=service_id)
         .order_by("sort_order", "created_at", "id")
-        .values("service_id", "skill_id", "min_level", "name_en")
+        .values("service_id", "skill_id", "min_level", "name_en", "description")
     )
 
 

@@ -76,6 +76,22 @@ def category_chip(categories, category_id):
     return {"id": str(chip["id"]), "label": chip["name_en"], "icon": chip.get("icon")}
 
 
+def menu_group(categories, category_id):
+    """
+    `{id, name}` of the Services tab group a service sits in: its own
+    category (the child, under its parent's chip), else the "Other" group
+    (no category, or a deleted one). `service_groups` builds the tab's
+    groups with it and Service Detail's `group` is it, so one service has
+    the same group id and name on both.
+
+    `categories` as for `category_chip`.
+    """
+    cat = categories.get(category_id)
+    if cat is None:
+        return {"id": OTHER_CHIP["id"], "name": OTHER_CHIP["label"]}
+    return {"id": str(cat["id"]), "name": cat["name_en"]}
+
+
 def service_row(svc, images=None):
     """
     One service as a row of the Services tab. The Expert Profile's
@@ -141,15 +157,15 @@ def service_groups(services, categories, images=None):
         # A service with no category, or one pointing at a deleted row, still
         # has to appear: dropping it would silently hide a bookable service
         # from the menu.
-        cat = categories.get(cat_id)
+        group = menu_group(categories, cat_id)
 
         chip = category_chip(categories, cat_id)
         chips[chip["id"]] = chip
 
         groups.append({
-            "id": str(cat["id"]) if cat else OTHER_CHIP["id"],
+            "id": group["id"],
             "category_id": chip["id"],
-            "name": cat["name_en"] if cat else OTHER_CHIP["label"],
+            "name": group["name"],
             "services": [
                 service_row(s, None if images is None else images.get(s.id, []))
                 for s in svcs
