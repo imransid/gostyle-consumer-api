@@ -20,6 +20,8 @@ and example checked against what the view really answers.
 
 S7: the branch price, booking-api's rule, wherever a service price is shown.
 
+The redesign (SERVICE_DETAIL_REDESIGN_V1): group, images and included_items.
+
 The selectors are mocked; no database.
 """
 
@@ -34,19 +36,21 @@ from unittest import mock
 
 from django.conf import settings
 from django.db.models import IntegerField, OuterRef, Q, Value
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 from django.urls import resolve, reverse
 from drf_spectacular.generators import SchemaGenerator
 from rest_framework.test import APIRequestFactory
 
-from apps.salons import group_views, menu, selectors, skills
+from apps.salons import group_views, menu, selectors, service_images, skills
 from apps.salons.service_detail import (
     GALLERY_MAX,
+    IMAGES_MAX,
     content,
     core_fields,
     details,
     duration_text,
     included,
+    included_items,
     photos,
     preparation,
 )
@@ -411,6 +415,7 @@ class CoreFieldsTests(Seams, SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         return response.json()
 
+    @override_settings(SERVICE_DETAIL_REDESIGN_V1=False)
     def test_the_whole_body(self):
         self.assertEqual(self.get(service_row()), {
             "id": str(SERVICE),
@@ -680,9 +685,9 @@ class PhotoFieldsTests(Seams, SimpleTestCase):
 # S4: included, details, preparation
 # ---------------------------------------------------------------------------
 
-def stage(name, skill=None, level=1):
+def stage(name, skill=None, level=1, description=None):
     return {"service_id": SERVICE, "skill_id": skill or uuid.uuid4(),
-            "min_level": level, "name_en": name}
+            "min_level": level, "name_en": name, "description": description}
 
 
 class IncludedTests(SimpleTestCase):
@@ -828,7 +833,7 @@ class ServiceStagesTests(SimpleTestCase):
             "sort_order", "created_at", "id",
         )
         stage_model.objects.filter.return_value.order_by.return_value.values.assert_called_once_with(
-            "service_id", "skill_id", "min_level", "name_en",
+            "service_id", "skill_id", "min_level", "name_en", "description",
         )
 
     def test_the_rows_fit_the_expert_filter_as_they_are(self):
@@ -1010,10 +1015,13 @@ class EmptyForNowTests(Seams, SimpleTestCase):
 
 def example_rows():
     """The rows EXAMPLE was answered from (the seeded salon, plus photos,
-    stages and care text), so a test can ask the view again."""
+    stages, stage lines and care text), so a test can ask the view again.
+    As in the seed, the service is filed under "Precision Cuts", a child of
+    "Haircut and Styling"."""
     host = "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/" + str(TENANT)
     service_id = uuid.UUID(EXAMPLE["id"])
-    category = uuid.UUID(EXAMPLE["category"]["id"])
+    parent = uuid.UUID(EXAMPLE["category"]["id"])
+    category = uuid.UUID(EXAMPLE["group"]["id"])
     row = service_row(
         id=service_id,
         name="The Gentleman's Cut",
@@ -1026,21 +1034,33 @@ def example_rows():
         pre_care_instructions="- Arrive with clean, dry hair.",
         post_care_instructions="1. Ask your stylist which products suit your hair.",
     )
-    categories = {category: {"id": category, "name_en": "Haircut and Styling",
-                             "slug": None, "icon": None, "parent_id": None, "sort_order": 0}}
+    categories = {
+        parent: {"id": parent, "name_en": "Haircut and Styling",
+                 "slug": None, "icon": None, "parent_id": None, "sort_order": 0},
+        category: {"id": category, "name_en": "Precision Cuts",
+                   "slug": None, "icon": None, "parent_id": parent, "sort_order": 1},
+    }
     own = [f"{host}/services/{service_id}/media/{n}.jpg" for n in range(1, 7)]
     linked = [f"{host}/storefronts/{SALON}/gallery/fade-side.jpg"]
-    stages = [stage(name) for name in ("The Gentleman's Cut", "Consultation", "Wash",
-                                       "Scalp massage", "Hair cut", "Styling")]
+    stages = [stage(name, description=line) for name, line in (
+        ("The Gentleman's Cut", "Shown nowhere: the stage is named like the service."),
+        ("Consultation", "Tailored style analysis based on face shape and hair type."),
+        ("Wash", "A deep cleanse with a gentle shampoo."),
+        ("Scalp massage", "A relaxing massage to wake up the scalp."),
+        ("Hair cut", "A classic cut with clippers and scissors."),
+        ("Styling", None),
+    )]
     return dict(service=row, categories=categories, photos=(own, linked),
                 stages=stages, experts=EXAMPLE["experts"])
 
 
+@override_settings(SERVICE_DETAIL_REDESIGN_V1=True)
 class ExampleIsRealTests(Seams, SimpleTestCase):
     """
     EXAMPLE (the OpenAPI example and docs/SERVICE_DETAIL_API.md's) was taken
-    from the running server. Asked again from the same rows, the view must
-    answer it exactly, or the documents have drifted from the code.
+    from the running server, the redesign switch on. Asked again from the
+    same rows, the view must answer it exactly, or the documents have
+    drifted from the code.
     """
 
     def test_the_view_answers_the_example(self):
@@ -1050,8 +1070,9 @@ class ExampleIsRealTests(Seams, SimpleTestCase):
         self.assertEqual(response.json(), EXAMPLE)
 
 
+@override_settings(SERVICE_DETAIL_REDESIGN_V1=True)
 class OpenApiTests(Seams, SimpleTestCase):
-    """The route's OpenAPI entry describes what the view answers."""
+    """The route's OpenAPI entry describes what the view answers (switch on)."""
 
     @classmethod
     def setUpClass(cls):
@@ -1077,6 +1098,8 @@ class OpenApiTests(Seams, SimpleTestCase):
 
     def test_the_nested_shapes_have_exactly_the_example_s_fields(self):
         for name, sample in (("SalonServiceDetailCategory", EXAMPLE["category"]),
+                             ("SalonServiceDetailGroup", EXAMPLE["group"]),
+                             ("SalonServiceDetailIncludedItem", EXAMPLE["included_items"][0]),
                              ("SalonServiceDetailRow", EXAMPLE["details"][0]),
                              ("SalonServiceDetailExpert", EXAMPLE["experts"][0])):
             with self.subTest(name=name):
@@ -1214,3 +1237,252 @@ class SamePriceEverywhereTests(SimpleTestCase):
                 detail = core_fields(salon, row, CATEGORIES)["price"]
                 group = group_views._catalogue({"s": {"name": row.name, "price_minor": base, **extra}})
                 self.assertEqual((tab, detail, group["s"]["price"]), (shown, shown, shown))
+
+
+# ---------------------------------------------------------------------------
+# The redesign (SERVICE_DETAIL_REDESIGN_V1): group, images, included_items
+# ---------------------------------------------------------------------------
+
+REDESIGN_KEYS = ("group", "images", "included_items")
+
+
+class RedesignSwitchTests(Seams, SimpleTestCase):
+    """Off, the answer is exactly as before; on, three keys more, nothing else."""
+
+    def example(self):
+        rows = example_rows()
+        return self.call(url(service=rows["service"].id), **rows).json()
+
+    @override_settings(SERVICE_DETAIL_REDESIGN_V1=False)
+    def test_off_none_of_the_three_keys(self):
+        body = self.call(stages=[stage("Cut", description="A line.")]).json()
+        for key in REDESIGN_KEYS:
+            with self.subTest(key=key):
+                self.assertNotIn(key, body)
+
+    @override_settings(SERVICE_DETAIL_REDESIGN_V1=False)
+    def test_off_is_the_on_answer_without_them_in_the_same_order(self):
+        expected = {k: v for k, v in EXAMPLE.items() if k not in REDESIGN_KEYS}
+        body = self.example()
+        self.assertEqual(body, expected)
+        self.assertEqual(list(body), list(expected))
+
+    @override_settings(SERVICE_DETAIL_REDESIGN_V1=True)
+    def test_on_the_old_fields_are_unchanged(self):
+        with override_settings(SERVICE_DETAIL_REDESIGN_V1=False):
+            before = self.example()
+        after = self.example()
+        self.assertEqual({k: v for k, v in after.items() if k not in REDESIGN_KEYS}, before)
+
+    @override_settings(SERVICE_DETAIL_REDESIGN_V1=True)
+    def test_on_each_key_sits_after_the_field_it_builds_on(self):
+        keys = list(self.call(stages=[stage("Cut")]).json())
+        self.assertEqual(keys[keys.index("category") + 1], "group")
+        self.assertEqual(keys[keys.index("gallery_count") + 1], "images")
+        self.assertEqual(keys[keys.index("included") + 1], "included_items")
+
+    @override_settings(SERVICE_DETAIL_REDESIGN_V1=True)
+    def test_on_no_extra_read(self):
+        # The three keys come from the rows the screen read anyway.
+        self.call(stages=[stage("Cut")])
+        self.categories_lookup.assert_called_once_with(TENANT)
+        self.photos_lookup.assert_called_once()
+        self.stages_lookup.assert_called_once_with(SERVICE)
+
+
+@override_settings(SERVICE_DETAIL_REDESIGN_V1=True)
+class GroupTests(Seams, SimpleTestCase):
+    """group: the Services tab group the service sits in, after its category."""
+
+    def group(self, category_id):
+        return self.call(service=service_row(category_0_id=category_id)).json()["group"]
+
+    def test_a_child_category_is_the_group_under_its_parent_chip(self):
+        body = self.call(service=service_row(category_0_id=FADES)).json()
+        self.assertEqual(body["category"], {"id": str(PARENT), "label": "Haircut & Styling"})
+        self.assertEqual(body["group"], {"id": str(FADES), "name": "Fades"})
+
+    def test_the_same_id_and_name_as_the_tab_s_group(self):
+        for category_id in (FADES, PARENT, BEARD, ORPHAN, None, GONE):
+            with self.subTest(category_id=category_id):
+                row = service_row(category_0_id=category_id)
+                [tab] = ServicesTabTests().get([row]).data["service_groups"]
+                self.assertEqual(self.group(category_id), {"id": tab["id"], "name": tab["name"]})
+
+    def test_a_top_level_category_is_its_own_group(self):
+        # As on the tab: a flat category is both the chip and the group.
+        self.assertEqual(self.group(PARENT), {"id": str(PARENT), "name": "Haircut & Styling"})
+        self.assertEqual(self.group(BEARD), {"id": str(BEARD), "name": "Beard"})
+
+    def test_a_category_whose_parent_was_deleted_is_its_own_group(self):
+        self.assertEqual(self.group(ORPHAN), {"id": str(ORPHAN), "name": "Orphan"})
+
+    def test_no_category_or_a_deleted_one_is_the_other_group(self):
+        for category_id in (None, GONE):
+            with self.subTest(category_id=category_id):
+                self.assertEqual(self.group(category_id), {"id": "other", "name": "Other"})
+
+    def test_a_pulled_service_keeps_its_group(self):
+        body = self.call(service=service_row(status="ARCHIVED")).json()
+        self.assertIs(body["is_active"], False)
+        self.assertEqual(body["group"], {"id": str(FADES), "name": "Fades"})
+
+    def test_menu_group_is_what_the_tab_builds_its_groups_with(self):
+        self.assertEqual(menu.menu_group(CATEGORIES, FADES), {"id": str(FADES), "name": "Fades"})
+        self.assertEqual(menu.menu_group(CATEGORIES, None), {"id": "other", "name": "Other"})
+        self.assertEqual(menu.menu_group(CATEGORIES, GONE), {"id": "other", "name": "Other"})
+
+
+class ImagesTests(SimpleTestCase):
+    """images: every photo, in order, up to 10."""
+
+    def images(self, own, linked):
+        return photos(own, linked, redesign=True)["images"]
+
+    def test_no_photos_is_an_empty_list(self):
+        self.assertEqual(self.images([], []), [])
+
+    def test_not_sent_without_the_redesign(self):
+        self.assertNotIn("images", photos([photo(1)], []))
+
+    def test_own_photos_first_then_linked_with_no_cap_of_five(self):
+        own = [photo(n) for n in range(4)]
+        linked = [photo(n, "linked") for n in range(3)]
+        out = photos(own, linked, redesign=True)
+        self.assertEqual(out["images"], own + linked)
+        self.assertEqual(len(out["gallery"]), GALLERY_MAX)
+        self.assertEqual(out["gallery_count"], 7)
+
+    def test_at_most_ten(self):
+        own = [photo(n) for n in range(4)]
+        linked = [photo(n, "linked") for n in range(13)]
+        out = photos(own, linked, redesign=True)
+        self.assertEqual(IMAGES_MAX, 10)
+        self.assertEqual(out["images"], own + linked[:6])
+        self.assertEqual(out["gallery_count"], 17)
+
+    def test_exactly_ten_is_the_whole_list(self):
+        own = [photo(n) for n in range(10)]
+        self.assertEqual(self.images(own, []), own)
+
+    def test_the_first_is_the_hero(self):
+        out = photos([photo(1), photo(2)], [photo(3, "linked")], redesign=True)
+        self.assertEqual(out["images"][0], out["hero_url"])
+
+    def test_repeats_and_blanks_are_left_out(self):
+        self.assertEqual(
+            self.images([photo(1), "", photo(1)], [None, photo(1), photo(2, "linked")]),
+            [photo(1), photo(2, "linked")],
+        )
+
+    def test_the_services_tab_list_is_the_start_of_this_one(self):
+        # "The same list as the service's images on GET /salon/:id/services":
+        # the tab sends the first service_images.IMAGES of these.
+        own = [photo(n) for n in range(3)]
+        linked = [photo(n, "linked") for n in range(5)]
+        tab = service_images.merge(own, linked)
+        self.assertEqual(tab, self.images(own, linked)[:service_images.IMAGES])
+
+
+@override_settings(SERVICE_DETAIL_REDESIGN_V1=True)
+class ImagesFieldTests(Seams, SimpleTestCase):
+    """images in the answer, through the URL."""
+
+    def test_eleven_photos_send_ten(self):
+        own = [photo(n) for n in range(6)]
+        linked = [photo(n, "linked") for n in range(5)]
+        body = self.call(photos=(own, linked)).json()
+        self.assertEqual(body["images"], own + linked[:4])
+        self.assertEqual(body["gallery"], own[:5])
+        self.assertEqual(body["gallery_count"], 11)
+
+    def test_no_photos(self):
+        body = self.call(photos=([], [])).json()
+        self.assertEqual((body["images"], body["hero_url"]), ([], None))
+
+
+class IncludedItemsTests(SimpleTestCase):
+    """included_items: each included name with the salon's line for it."""
+
+    def test_the_included_names_in_order_with_their_lines(self):
+        stages = [stage("Consultation", description="Style analysis for your face shape."),
+                  stage("Hair cut", description="A classic cut.")]
+        self.assertEqual(included_items(stages), [
+            {"title": "Consultation", "description": "Style analysis for your face shape."},
+            {"title": "Hair cut", "description": "A classic cut."},
+        ])
+
+    def test_no_line_is_null(self):
+        for line in (None, "", "   ", "\n\t"):
+            with self.subTest(line=line):
+                self.assertEqual(included_items([stage("Wash", description=line)]),
+                                 [{"title": "Wash", "description": None}])
+
+    def test_the_line_s_spacing_is_tidied(self):
+        stages = [stage("Wash", description="  A deep\n cleanse,\tthen  a rinse. ")]
+        self.assertEqual(included_items(stages)[0]["description"], "A deep cleanse, then a rinse.")
+
+    def test_a_colon_at_the_end_of_a_title_is_dropped(self):
+        stages = [stage("Personal Consultation:"), stage("Wash :"), stage("Cut::")]
+        self.assertEqual([i["title"] for i in included_items(stages)],
+                         ["Personal Consultation", "Wash", "Cut"])
+
+    def test_a_colon_inside_a_title_stays(self):
+        self.assertEqual(included_items([stage("Step 1: Wash")])[0]["title"], "Step 1: Wash")
+
+    def test_included_keeps_the_name_as_before(self):
+        self.assertEqual(included([stage("Personal Consultation:")]), ["Personal Consultation:"])
+
+    def test_a_name_that_is_only_a_colon_gives_no_item(self):
+        self.assertEqual(included_items([stage(":"), stage("Wash")]),
+                         [{"title": "Wash", "description": None}])
+
+    def test_the_same_stages_as_included(self):
+        # Blank, repeated and named-like-the-service stages are left out the
+        # same way, so the titles are the included names.
+        stages = [stage(""), stage("Wash", description="First."), stage(" wash "),
+                  stage("Signature Fade", description="The title again."),
+                  stage("Cut", description="Second.")]
+        items = included_items(stages, "Signature Fade")
+        self.assertEqual([i["title"] for i in items], included(stages, "Signature Fade"))
+        self.assertEqual(items, [{"title": "Wash", "description": "First."},
+                                 {"title": "Cut", "description": "Second."}])
+
+    def test_no_stages(self):
+        self.assertEqual(included_items([]), [])
+
+    def test_not_sent_without_the_redesign(self):
+        self.assertNotIn("included_items", content(service_row(), [stage("Wash")]))
+
+
+@override_settings(SERVICE_DETAIL_REDESIGN_V1=True)
+class IncludedItemsFieldTests(Seams, SimpleTestCase):
+    """included_items in the answer, through the URL."""
+
+    def test_the_field(self):
+        stages = [stage("Wash", description="A deep cleanse."), stage("Cut")]
+        body = self.call(stages=stages).json()
+        self.assertEqual(body["included"], ["Wash", "Cut"])
+        self.assertEqual(body["included_items"], [
+            {"title": "Wash", "description": "A deep cleanse."},
+            {"title": "Cut", "description": None},
+        ])
+
+    def test_no_stages_hides_the_block(self):
+        self.assertEqual(self.call(stages=[]).json()["included_items"], [])
+
+
+REDESIGN_DOC = settings.BASE_DIR / "docs" / "SERVICE_DETAIL_REDESIGN_API.md"
+
+
+@unittest.skipUnless(REDESIGN_DOC.exists(), "docs/ is not in the Docker image")
+class RedesignDocTests(SimpleTestCase):
+    """docs/SERVICE_DETAIL_REDESIGN_API.md's example is part of EXAMPLE."""
+
+    def test_the_example_is_the_real_answer_s_fields(self):
+        text = REDESIGN_DOC.read_text(encoding="utf-8")
+        [block] = [json.loads(b) for b in re.findall(r"```json\n(.*?)\n```", text, re.S)]
+        self.assertEqual(block, {key: EXAMPLE[key] for key in block})
+        for key in REDESIGN_KEYS:
+            with self.subTest(key=key):
+                self.assertIn(key, block)

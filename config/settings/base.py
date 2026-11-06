@@ -568,6 +568,13 @@ SERVICE_IMAGES_V1 = env.bool("SERVICE_IMAGES_V1", default=False)
 # photo is read.
 PACKAGE_IMAGE_V1 = env.bool("PACKAGE_IMAGE_V1", default=False)
 
+# The Service Details redesign (docs/SERVICE_DETAIL_REDESIGN_API.md): three
+# new keys on GET /salon/{id}/service/{id}: `group` (the Services tab's group
+# the service sits in, after `category`), `images` (every photo, up to 10,
+# after `gallery_count`) and `included_items` (each stage's name and its
+# line, after `included`). OFF, the answer is exactly as before.
+SERVICE_DETAIL_REDESIGN_V1 = env.bool("SERVICE_DETAIL_REDESIGN_V1", default=False)
+
 # Account deletion's day 30 (docs/ACCOUNT_DELETION_FE.md): the notification
 # worker purges, every hour, the accounts whose date has passed, after
 # cancelling their bookings still to come as the customer's own cancel

@@ -5,14 +5,22 @@ Pure: rows in, dicts out, no queryset. The view (service_detail_views.py)
 reads; this writes the contract's fields (docs/service-detail-fe-contract.md
 §2). Built step by step (docs/SERVICE_DETAIL_AUDIT.md, section 7): the core
 fields in S2; photos, content, experts and the rest in S3 to S6.
+
+The redesign (SERVICE_DETAIL_REDESIGN_V1, docs/SERVICE_DETAIL_REDESIGN_API.md)
+adds three keys, each next to the field it builds on: `group` after
+`category`, `images` after `gallery_count`, `included_items` after
+`included`. The view passes `redesign`; False gives the answer as before.
 """
 
 import re
 
-from .menu import category_chip, is_on_menu, service_price
+from .menu import category_chip, is_on_menu, menu_group, service_price
 
 # The app shows four thumbs and a fifth behind "+N" (contract §3).
 GALLERY_MAX = 5
+
+# The redesign's scrolling strip: "send every photo, up to 10".
+IMAGES_MAX = 10
 
 # service.audience (the platform's four values) as the "Suitable for" row.
 # Rafa, Q9. Any other value gets no row.
@@ -26,16 +34,20 @@ SUITABLE_FOR = {"MALE": "Men", "FEMALE": "Women", "UNISEX": "Everyone", "KIDS": 
 _TYPED_BULLET = re.compile(r"^(?:[-*\u2022]|\d{1,3}[.)])(?:\s+|$)")
 
 
-def core_fields(salon, service, categories):
+def core_fields(salon, service, categories, redesign=False):
     """
     id, salon_id, name, description, price, duration_min, duration_max,
     category and is_active: the same figures the Services tab shows. Plus
     rating and review_count, empty until per-service reviews exist.
 
+    `redesign`: `group` too, right after `category`: the Services tab group
+    the service sits in (`menu.menu_group`, the tab's own rule), so its id
+    is that group's `service_groups[].id` and its name the group's name.
+
     `categories` is `selectors.salon_categories` for the salon's tenant.
     """
     chip = category_chip(categories, service.category_0_id)
-    return {
+    body = {
         "id": str(service.id),
         "salon_id": str(salon.id),
         "name": service.name,
@@ -50,6 +62,12 @@ def core_fields(salon, service, categories):
         # The tab's chip, without its icon: the contract's { id, label }.
         # No category (or a deleted one) is the tab's "other", never null.
         "category": {"id": chip["id"], "label": chip["label"]},
+    }
+    if redesign:
+        # The path's second step. Never null: every service sits in a tab
+        # group, one with no category (or a deleted one) in "Other".
+        body["group"] = menu_group(categories, service.category_0_id)
+    body.update({
         # No data yet: reviews belong to a salon (storefront_review) and
         # nothing links one to a service. null is the contract's "nobody has
         # rated it", 0 its "No reviews yet".
@@ -57,10 +75,11 @@ def core_fields(salon, service, categories):
         "review_count": 0,
         # The tab's three rules. False still answers 200: the app hides Book.
         "is_active": is_on_menu(service),
-    }
+    })
+    return body
 
 
-def photos(own, linked):
+def photos(own, linked, redesign=False):
     """
     hero_url, gallery and gallery_count, from the two lists
     `selectors.service_photo_urls` reads.
@@ -71,6 +90,10 @@ def photos(own, linked):
     so is a blank one. The hero is the first photo and stays in the gallery;
     the gallery is the first GALLERY_MAX, and gallery_count counts them all,
     so the app's "+N" is gallery_count - len(gallery).
+
+    `redesign`: `images` too, after gallery_count: the same photos in the
+    same order, the first IMAGES_MAX. The Services tab's `images` is the
+    same rule (service_images.merge), so its list is the start of this one.
     """
     urls, seen = [], set()
     for url in [*own, *linked]:
@@ -78,27 +101,34 @@ def photos(own, linked):
             seen.add(url)
             urls.append(url)
 
-    return {
+    body = {
         "hero_url": urls[0] if urls else None,
         "gallery": urls[:GALLERY_MAX],
         "gallery_count": len(urls),
     }
+    if redesign:
+        body["images"] = urls[:IMAGES_MAX]
+    return body
 
 
-def content(service, stages):
+def content(service, stages, redesign=False):
     """
     included, details and preparation: what the visit includes, the Key
     Details rows and the Preparation & Aftercare bullets.
 
-    `stages` is `selectors.service_stages` (stage order, with `name_en`).
+    `redesign`: `included_items` too, right after `included`.
+
+    `stages` is `selectors.service_stages` (stage order, with `name_en` and
+    `description`).
     """
-    return {
-        "included": included(stages, service.name),
-        "details": details(service),
-        "preparation": preparation(
-            service.pre_care_instructions, service.post_care_instructions
-        ),
-    }
+    body = {"included": included(stages, service.name)}
+    if redesign:
+        body["included_items"] = included_items(stages, service.name)
+    body["details"] = details(service)
+    body["preparation"] = preparation(
+        service.pre_care_instructions, service.post_care_instructions
+    )
+    return body
 
 
 def included(stages, service_name=None):
@@ -111,14 +141,39 @@ def included(stages, service_name=None):
     left out too (Rafa, S4): a one-stage service is often built that way, and
     the chip would only repeat the title above it. [] hides the block.
     """
-    names, seen = [], {_name_key(service_name)}
+    return [name for name, _ in _included_stages(stages, service_name)]
+
+
+def included_items(stages, service_name=None):
+    """
+    The redesign's "What's Included?" list: `{title, description}` for each
+    item `included` shows, in the same order.
+
+    `title` is the `included` name, with a colon at its end dropped: the app
+    adds its own ("Title: description"). `description` is the stage's own
+    text as the salon wrote it on the platform (`service_stage.description`),
+    spacing tidied, or null when it wrote none (the app then shows the title
+    alone). [] hides the block.
+    """
+    items = []
+    for name, stage in _included_stages(stages, service_name):
+        title = name.rstrip(": ")
+        if title:
+            line = " ".join((stage.get("description") or "").split())
+            items.append({"title": title, "description": line or None})
+    return items
+
+
+def _included_stages(stages, service_name):
+    """`(tidied name, stage)` for each stage `included` keeps, in stage order."""
+    kept, seen = [], {_name_key(service_name)}
     for stage in stages:
         name = " ".join((stage.get("name_en") or "").split())
         key = _name_key(name)
         if name and key not in seen:
             seen.add(key)
-            names.append(name)
-    return names
+            kept.append((name, stage))
+    return kept
 
 
 def _name_key(name):

@@ -13,6 +13,12 @@ The screen a customer opens from a salon's Services tab: the hero, the price
 and duration, the gallery, what the visit includes, how to prepare, the
 products, and the experts who can do it. **One call draws the whole screen.**
 
+**Redesign, 2026-11-06.** The redesigned screen (Figma 3908:16357,
+3908:17110) gets three more keys: `group`, `images` and `included_items`.
+They are behind the switch `SERVICE_DETAIL_REDESIGN_V1`; off, they are not
+sent and the answer is exactly as before. The example below is with the
+switch on. `SERVICE_DETAIL_REDESIGN_API.md` answers that brief in full.
+
 ---
 
 ## What differs from your draft
@@ -84,8 +90,10 @@ Reused, unchanged:
 
 ## 2. Response: `200 OK`
 
-The seeded salon's "The Gentleman's Cut", with six service photos, one gallery
-photo tagged with the service, the salon's stages and some care text:
+The seeded salon's "The Gentleman's Cut" (filed under "Precision Cuts", a group
+of "Haircut and Styling"), with six service photos, one gallery photo tagged
+with the service, the salon's stages with a line on most of them, and some care
+text. The redesign switch is on:
 
 ```json
 {
@@ -100,6 +108,10 @@ photo tagged with the service, the salon's stages and some care text:
     "id": "55555555-5555-5555-5555-555555555551",
     "label": "Haircut and Styling"
   },
+  "group": {
+    "id": "55555555-5555-5555-5555-555555555552",
+    "name": "Precision Cuts"
+  },
   "rating": null,
   "review_count": 0,
   "is_active": true,
@@ -112,12 +124,43 @@ photo tagged with the service, the salon's stages and some care text:
     "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/11111111-1111-1111-1111-111111111111/services/66666666-6666-6666-6666-666666666660/media/5.jpg"
   ],
   "gallery_count": 7,
+  "images": [
+    "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/11111111-1111-1111-1111-111111111111/services/66666666-6666-6666-6666-666666666660/media/1.jpg",
+    "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/11111111-1111-1111-1111-111111111111/services/66666666-6666-6666-6666-666666666660/media/2.jpg",
+    "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/11111111-1111-1111-1111-111111111111/services/66666666-6666-6666-6666-666666666660/media/3.jpg",
+    "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/11111111-1111-1111-1111-111111111111/services/66666666-6666-6666-6666-666666666660/media/4.jpg",
+    "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/11111111-1111-1111-1111-111111111111/services/66666666-6666-6666-6666-666666666660/media/5.jpg",
+    "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/11111111-1111-1111-1111-111111111111/services/66666666-6666-6666-6666-666666666660/media/6.jpg",
+    "https://gostyle-media.s3.me-central-1.amazonaws.com/tenants/11111111-1111-1111-1111-111111111111/storefronts/33333333-3333-3333-3333-333333333333/gallery/fade-side.jpg"
+  ],
   "included": [
     "Consultation",
     "Wash",
     "Scalp massage",
     "Hair cut",
     "Styling"
+  ],
+  "included_items": [
+    {
+      "title": "Consultation",
+      "description": "Tailored style analysis based on face shape and hair type."
+    },
+    {
+      "title": "Wash",
+      "description": "A deep cleanse with a gentle shampoo."
+    },
+    {
+      "title": "Scalp massage",
+      "description": "A relaxing massage to wake up the scalp."
+    },
+    {
+      "title": "Hair cut",
+      "description": "A classic cut with clippers and scissors."
+    },
+    {
+      "title": "Styling",
+      "description": null
+    }
   ],
   "details": [
     {
@@ -178,9 +221,10 @@ photo tagged with the service, the salon's stages and some care text:
 }
 ```
 
-Seven photos: the first five are in `gallery`, so the app shows "+2". The
-salon named one stage like the service itself ("The Gentleman's Cut"), so it is
-not in `included`: it would only repeat the title.
+Seven photos: the first five are in `gallery`, so the app shows "+2", and all
+seven are in `images`. The salon named one stage like the service itself ("The
+Gentleman's Cut"), so it is not in `included` or `included_items`: it would
+only repeat the title. "Styling" has no line, so its `description` is `null`.
 
 ### Fields
 
@@ -194,13 +238,16 @@ not in `included`: it would only repeat the title.
 | `duration_min`  | number          | Minutes. |
 | `duration_max`  | number          | Minutes. Today always equal to `duration_min`. |
 | `category`      | object          | `{ id, label }`: the Services tab's chip (the parent category when there is one). `id` is a UUID, or `"other"`. Never `null`. |
+| `group`         | object \| null | Redesign switch. `{ id, name }`: the Services tab group the service sits in (`service_groups[].id` and `.name`). A flat category is its own group; no category is `{ "id": "other", "name": "Other" }`. Today never `null`. |
 | `rating`        | null            | Always `null` for now (§6). |
 | `review_count`  | number          | Always `0` for now (§6). Show "No reviews yet". |
 | `is_active`     | boolean         | `false`: the service is pulled from sale (hidden, archived, deleted, or online booking off). Hide Book Appointment. |
 | `hero_url`      | string \| null | The first photo. `null`: no photo, use the salon's cover. |
 | `gallery`       | string[]        | At most 5, in display order. The hero is the first. |
 | `gallery_count` | number          | All the photos. "+N" is `gallery_count - gallery.length`; no "+N" when it is 5 or fewer. |
+| `images`        | string[]        | Redesign switch. Every photo, in the same order, up to 10. `images[0]` is `hero_url`. `[]` when there are none. |
 | `included`      | string[]        | The service's stage names, in order. `[]` hides the block. |
+| `included_items` | array          | Redesign switch. `{ title, description }` for each `included` name, in the same order. `title` has no colon at its end; `description` is the salon's line for the stage, or `null`. `[]` hides the block. |
 | `details`       | array           | The Key Details rows, in order (below). |
 | `preparation`   | string[]        | Preparation & Aftercare bullets. `[]` hides the block. |
 | `products`      | array           | Always `[]` for now (§6), which hides the block. |

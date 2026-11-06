@@ -18,6 +18,7 @@ EVERY 404 IS OURS. The ids come in as strings and are checked here
 view: Django answers it with its own HTML page, not our JSON envelope.
 """
 
+from django.conf import settings
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import (
     OpenApiExample,
@@ -115,13 +116,18 @@ class SalonServiceDetailView(APIView):
         if service is None:
             raise NotFound(NO_SERVICE)
 
-        categories = salon_categories(salon.tenant_id)
-        body = core_fields(salon, service, categories)
-        body.update(photos(*service_photo_urls(salon, service.id)))
+        # SERVICE_DETAIL_REDESIGN_V1: group, images and included_items, from
+        # the rows read below anyway (no extra query).
+        redesign = settings.SERVICE_DETAIL_REDESIGN_V1
 
-        # Read once: the names here, the skills and levels for the experts.
+        categories = salon_categories(salon.tenant_id)
+        body = core_fields(salon, service, categories, redesign)
+        body.update(photos(*service_photo_urls(salon, service.id), redesign))
+
+        # Read once: the names (and lines) here, the skills and levels for
+        # the experts.
         stages = service_stages(service.id)
-        body.update(content(service, stages))
+        body.update(content(service, stages, redesign))
         body["products"] = products()
 
         # Who can do it: the Expert step's own list (GET /salon/<id>/stylists
