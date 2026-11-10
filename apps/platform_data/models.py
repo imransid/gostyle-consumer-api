@@ -3440,6 +3440,73 @@ class StorefrontStory(models.Model):
         db_table = 'storefront_story'
 
 
+# The platform's v2 stories (the business console's composer), which the
+# customer story feed reads. "V2" in the class name only: StoreFrontStory
+# would clash with StorefrontStory above, Django compares model names
+# without case. The enum columns are TextField, as inspectdb writes them.
+class StoreFrontStoryV2(models.Model):
+    id = models.UUIDField(primary_key=True)
+    tenant_id = models.UUIDField(db_column='tenantId')
+    storefront_id = models.UUIDField(db_column='storefrontId')
+    caption = models.TextField()
+    layout = models.TextField()
+    treatment = models.TextField()
+    count_down_timer = models.BooleanField(db_column='countDownTimer')
+    price_tag = models.BooleanField(db_column='priceTag')
+    service_tag = models.BooleanField(db_column='serviceTag')
+    keep_after_it_expr = models.BooleanField(db_column='keepAfterItExpr')
+    who_can_see = models.TextField(db_column='whoCanSee')
+    format = models.TextField()
+    status = models.TextField()
+    scheduled_at = models.DateTimeField(db_column='scheduledAt', blank=True, null=True)
+    expires_at = models.DateTimeField(db_column='expiresAt', blank=True, null=True)
+    created_at = models.DateTimeField(db_column='createdAt')
+    updated_at = models.DateTimeField(db_column='updatedAt')
+    destination = models.TextField(blank=True, null=True)
+    caption_x = models.FloatField(db_column='captionX', blank=True, null=True)
+    caption_y = models.FloatField(db_column='captionY', blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'StoreFrontStory'
+
+
+class StoryPhoto(models.Model):
+    id = models.UUIDField(primary_key=True)
+    story_id = models.UUIDField(db_column='storyId')
+    photo_url = models.TextField(db_column='photoUrl')
+    created_at = models.DateTimeField(db_column='createdAt')
+    updated_at = models.DateTimeField(db_column='updatedAt')
+    position = models.IntegerField()
+
+    class Meta:
+        managed = False
+        db_table = 'StoryPhoto'
+        unique_together = (('story_id', 'position'),)
+
+
+class StoryAction(models.Model):
+    id = models.UUIDField(primary_key=True)
+    story_id = models.UUIDField(db_column='storyId', unique=True)
+    action_button = models.TextField(db_column='actionButton')
+    created_at = models.DateTimeField(db_column='createdAt')
+    updated_at = models.DateTimeField(db_column='updatedAt')
+
+    class Meta:
+        managed = False
+        db_table = 'StoryAction'
+
+
+class StoryService(models.Model):
+    pk = models.CompositePrimaryKey('story_id', 'service_id')
+    story_id = models.UUIDField(db_column='storyId')
+    service_id = models.UUIDField(db_column='serviceId')
+
+    class Meta:
+        managed = False
+        db_table = 'StoryService'
+
+
 class StorefrontVersion(models.Model):
     id = models.UUIDField(primary_key=True)
     tenant_id = models.UUIDField()

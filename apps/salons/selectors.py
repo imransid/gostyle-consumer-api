@@ -21,7 +21,13 @@ from apps.platform_data.models import (
 )
 
 from django.db.models.fields.json import KeyTextTransform, KeyTransform
-from apps.platform_data.models import StorefrontStory, StorefrontVersion
+from apps.platform_data.models import (
+    StoreFrontStoryV2,
+    StoryAction,
+    StoryPhoto,
+    StoryService,
+    StorefrontVersion,
+)
 
 from django.db.models import Value, BooleanField
 from apps.accounts.models import Favourite, FavouriteStylist, SalonFollow
@@ -43,7 +49,7 @@ from apps.platform_data.models import (
     Tenant,
 )
 
-from django.db.models import F, IntegerField, Sum, DateTimeField
+from django.db.models import F, IntegerField, Sum, DateTimeField, UUIDField
 from apps.platform_data.models import (
     ServicePackage,
     ServicePackageBranchAvailability,
@@ -1147,7 +1153,7 @@ def service_photo_urls(salon, service_id):
 def salon_profile(storefront_id, user=None):
 
     qs = (
-        discoverable_salons()
+        discoverable_salons(user)
         .annotate(
             currency=Subquery(
                 Tenant.objects.filter(id=OuterRef("tenant_id")).values(
@@ -1354,7 +1360,11 @@ def logo_url_subquery():
     )
 
 
-def discoverable_salons():
+def discoverable_salons(account=None):
+    """
+    `account`: who is looking, for has_story (stories_visible_to). None, or a
+    guest, sees only the stories meant for everyone.
+    """
     published_reviews = StorefrontReview.objects.filter(
         storefront_id=OuterRef("pk"),
         state="PUBLISHED",
@@ -1428,19 +1438,11 @@ def discoverable_salons():
                     expires_at__gt=Now(),
                 )
             ),
-            # Gated on the STORY's own lifecycle only — not deleted, not
-            # expired — and deliberately not on the moderation status of the
-            # media it points at. That check belongs to the endpoint that
-            # actually serves story content, which has to apply it row by row
-            # anyway; duplicating it here is how the two drift and how a ring
-            # starts appearing over an empty story. See the handoff doc: the
-            # content endpoint does not exist yet.
+            # The SAME rule as the story ring (salon_stories): a story this
+            # caller may see right now. If the two ever disagree, a ring
+            # appears over an empty story.
             has_story=Exists(
-                StorefrontStory.objects.filter(
-                    storefront_id=OuterRef("pk"),
-                    deleted_at__isnull=True,
-                    expires_at__gt=Now(),
-                )
+                stories_visible_to(account).filter(storefront_id=OuterRef("pk"))
             ),
             deposit_mode=Subquery(
                 StorefrontPolicy.objects.filter(
@@ -1676,35 +1678,66 @@ def map_venue_queryset(
     return qs
 
 
-def salon_stories(storefront_id):
+def stories_visible_to(account=None):
     """
-    Active stories for one salon.
+    The v2 stories (public."StoreFrontStory") this caller may see right now:
+    LIVE and not expired, then by whoCanSee:
 
-    Same lifecycle rule as the has_story flag on the card: not deleted, not
-    expired. If the two ever disagree, a ring appears over nothing.
+      EVERYONE_NEARBY  everyone, signed in or not
+      FOLLOWERS_ONLY   only an account that follows the salon (salon_follow)
+      STYLE_MEMBER     no one: nothing defines a style member yet (Rafa,
+                       2026-11-10). Never treated as followers-only.
 
-    Now() rather than a Python timestamp, so expiry is judged by Postgres at
-    execution time and not at the moment the queryset was built.
+    A guest (or account None) sees EVERYONE_NEARBY only. All of it is SQL,
+    so it runs inside whatever query uses it. Now() rather than a Python
+    timestamp: expiry is judged by Postgres when the query runs.
+    """
+    visible = Q(who_can_see="EVERYONE_NEARBY")
+    if account is not None and account.is_authenticated:
+        visible |= Q(who_can_see="FOLLOWERS_ONLY") & Exists(
+            SalonFollow.objects.filter(
+                account=account, storefront_id=OuterRef("storefront_id")
+            )
+        )
+    return StoreFrontStoryV2.objects.filter(
+        visible, status="LIVE", expires_at__gt=Now()
+    )
 
-    media_id is a bare UUID with no URL on the row, so the image comes from a
-    subquery into StorefrontMedia. NOT filtered on moderation status: nothing
-    on the platform sets APPROVED yet, so checking it here would return an
-    empty list for every salon. That gap is a platform ticket, and the check
-    belongs there once approval actually happens.
+
+def salon_stories(storefront_id, account=None):
+    """
+    The stories of one salon this caller may see, newest first.
+
+    The SAME rule as the has_story flag on the card (stories_visible_to). If
+    the two ever disagree, a ring appears over nothing.
+
+    One query: the frames (StoryPhoto, by position), the button (StoryAction)
+    and the linked services (StoryService) are subqueries of it.
     """
     return (
-        StorefrontStory.objects.filter(
-            storefront_id=storefront_id,
-            deleted_at__isnull=True,
-            expires_at__gt=Now(),
-        )
+        stories_visible_to(account)
+        .filter(storefront_id=storefront_id)
         .annotate(
-            media_url=Subquery(
-                StorefrontMedia.objects.filter(id=OuterRef("media_id")).values("url")[:1],
+            frame_urls=Subquery(
+                StoryPhoto.objects.filter(story_id=OuterRef("pk"))
+                .values("story_id")
+                .annotate(urls=ArrayAgg("photo_url", ordering="position"))
+                .values("urls")[:1],
+                output_field=ArrayField(TextField()),
+            ),
+            action_button=Subquery(
+                StoryAction.objects.filter(story_id=OuterRef("pk")).values("action_button")[:1],
                 output_field=TextField(),
             ),
+            service_ids=Subquery(
+                StoryService.objects.filter(story_id=OuterRef("pk"))
+                .values("story_id")
+                .annotate(ids=ArrayAgg("service_id"))
+                .values("ids")[:1],
+                output_field=ArrayField(UUIDField()),
+            ),
         )
-        .order_by("sort_order", "-created_at")
+        .order_by("-created_at")
     )
 
 def salon_service_ids(storefront, service_ids, branch_id=None):

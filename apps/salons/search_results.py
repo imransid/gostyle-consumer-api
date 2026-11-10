@@ -321,16 +321,17 @@ def words_where(terms, categories):
     return where
 
 
-def salon_queryset(query, *, with_text=True, categories=None):
+def salon_queryset(query, *, with_text=True, categories=None, account=None):
     """
     The salons the SQL can narrow down, card fields on, not ordered:
     (queryset, the picked category ids the drawer knows, or None).
 
     `with_text` False leaves `q` out: the Services tab matches the text on
     each service, not on the salon. `categories` is public_categories(),
-    read only when the text needs it.
+    read only when the text needs it. `account`: who is looking, for the
+    card's has_story (discoverable_salons).
     """
-    qs = with_published_card_fields(discoverable_salons())
+    qs = with_published_card_fields(discoverable_salons(account))
 
     if query.has_position:
         # A salon with no pin has no distance (as /discover with a position).
@@ -440,12 +441,13 @@ def salon_ordering(query):
     return (F("avg_rating").desc(nulls_last=True), "-review_count", "id")
 
 
-def salons(query, now=None):
+def salons(query, now=None, account=None):
     """
     GET /search/salons' list, ordered, not paged: a queryset of card rows.
-    `now` is aware (default: now). Raises AvailabilityUnavailable.
+    `now` is aware (default: now). `account`: who is looking, for has_story.
+    Raises AvailabilityUnavailable.
     """
-    qs, picked = salon_queryset(query)
+    qs, picked = salon_queryset(query, account=account)
     if needs_python(query):
         kept = keep(list(qs), query, picked, now or timezone.now())
         qs = qs.filter(pk__in=[row.pk for row in kept])
