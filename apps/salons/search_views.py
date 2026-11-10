@@ -147,7 +147,9 @@ class SearchSalonsView(_SearchView):
     def get(self, request):
         query = self.query(request)
         try:
-            qs = search_results.salons(query, now=datetime.now(dt_timezone.utc))
+            qs = search_results.salons(
+                query, now=datetime.now(dt_timezone.utc), account=request.user
+            )
         except map_availability.AvailabilityUnavailable as exc:
             logger.error("search availability: %s", exc)
             raise MapAvailabilityDown() from exc

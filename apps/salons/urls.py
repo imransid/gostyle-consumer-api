@@ -31,6 +31,7 @@ from .views import (
     ServiceDetailsView,
     SalonStoriesView,
     SalonStylistsView,
+    StoryViewedView,
     StylistListView,
     ServiceListView,
     BookingDetailView,
@@ -95,6 +96,8 @@ urlpatterns = [
     ),
     path("salon/<uuid:salon_id>/products", SalonProductsView.as_view(), name="salon-products"),
     path("salon/<uuid:salon_id>/stories", SalonStoriesView.as_view(), name="salon-stories"),
+    # The app reports a story was watched; passed to gostyle-api. Always 204.
+    path("story/<uuid:story_id>/view", StoryViewedView.as_view(), name="story-view"),
     path("discover/story", DiscoverStoryListView.as_view(), name="discover-story"),
     path("favourite", FavouriteListView.as_view(), name="favourite-list"),
     path("services", ServiceListView.as_view(), name="services"),

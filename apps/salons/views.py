@@ -57,8 +57,10 @@ from .booking_api import (
 )
 
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from apps.accounts import sessions
 from apps.accounts.models import Favourite, FavouriteStylist
 
+from . import gostyle_api
 from .customer_sync import NoUsablePhone, resolve_customer
 
 from . import packages as package_rules
@@ -230,7 +232,7 @@ class SalonDiscoveryListView(ListAPIView):
         # for every time field, because branch.opening_hours is no longer read
         # here: that column is the salon-build value and not what the manager
         # published.
-        qs = with_published_card_fields(discoverable_salons())
+        qs = with_published_card_fields(discoverable_salons(self.request.user))
         params = self._parsed()
 
         if params["latitude"] is not None:
@@ -371,7 +373,7 @@ class SalonDiscoveryDetailView(RetrieveAPIView):
     lookup_field = "pk"
 
     def get_queryset(self):
-        return with_published_card_fields(discoverable_salons())
+        return with_published_card_fields(discoverable_salons(self.request.user))
 
 
 def salon_profile_data(salon, snapshot=None):
@@ -425,6 +427,13 @@ class SalonProfileView(APIView):
         data = salon_profile_data(salon)
         data["is_following"] = is_following(request.user, salon.id)
         data["followers_count"] = followers_count(salon.id)
+
+        # Opened from the story tray: the app sends X-Story-Id. Reported to
+        # gostyle-api; never fails this request (gostyle_api.py).
+        story_id = _story_id(request)
+        caller = _story_caller(request)
+        if story_id and caller["session_id"]:
+            gostyle_api.record_profile_visit(story_id, **caller)
         return Response(data)
 
 
@@ -1092,18 +1101,16 @@ class SalonStoriesView(APIView):
     What the story ring opens. Public, because the card already tells every
     caller whether a salon has one.
 
-    Lifecycle only: not deleted, not expired — the SAME rule as the has_story
-    flag on the card. If the two ever diverge, a ring appears over an empty
-    viewer, which is the one failure mode worth designing against here.
+    Reads the platform's v2 stories (public."StoreFrontStory"): LIVE, not
+    expired, and only those this caller may see by whoCanSee
+    (stories_visible_to), the SAME rule as the has_story flag on the card.
+    If the two ever diverge, a ring appears over an empty viewer, which is
+    the one failure mode worth designing against here.
 
-    Deliberately NOT filtered on media moderation. Nothing on the platform
-    sets APPROVED yet, so the check would empty every ring on the app. That
-    gap is a platform ticket and the fix belongs there, not as a second
-    opinion in this file.
-
-    A story whose media row is missing is skipped rather than sent with a
-    null url: the app would otherwise render a blank frame the customer
-    cannot dismiss.
+    The old keys stay as they were (media_url is the first frame, link_url
+    the button's destination); `frames`, `cta` and `service_ids` are new.
+    A story with no frame is skipped rather than sent with a null url: the
+    app would otherwise render a blank frame the customer cannot dismiss.
     """
 
     permission_classes = [AllowAny]
@@ -1128,14 +1135,21 @@ class SalonStoriesView(APIView):
         stories = [
             {
                 "id": str(s.id),
-                "media_url": s.media_url,
-                "caption": s.caption_en,
-                "link_url": s.link_url,
-                "publish_time": s.created_at.replace(tzinfo=dt_timezone.utc).isoformat(),
+                "media_url": s.frame_urls[0],
+                "frames": s.frame_urls,
+                "caption": s.caption,
+                "link_url": s.destination,
+                "cta": (
+                    {"button": s.action_button, "destination": s.destination}
+                    if s.action_button else None
+                ),
+                "service_ids": [str(i) for i in s.service_ids or []],
+                # A scheduled story went up at scheduledAt, not when it was written.
+                "publish_time": (s.scheduled_at or s.created_at).replace(tzinfo=dt_timezone.utc).isoformat(),
                 "expires_at": s.expires_at.replace(tzinfo=dt_timezone.utc).isoformat(),
             }
-            for s in salon_stories(salon.id)
-            if s.media_url
+            for s in salon_stories(salon.id, request.user)
+            if s.frame_urls
         ]
 
         return Response({
@@ -1143,6 +1157,70 @@ class SalonStoriesView(APIView):
             "logo_url": salon.logo_url,
             "stories": stories,
         })
+
+
+def _story_id(request):
+    """The X-Story-Id header as a uuid string: this request came from a story. None: it did not."""
+    try:
+        return str(uuid.UUID(request.META.get("HTTP_X_STORY_ID", "")))
+    except ValueError:
+        return None
+
+
+def _story_caller(request):
+    """
+    Who is watching, for gostyle_api's story calls.
+
+    session_id ties a view to the booking or profile visit that follows it:
+    the account id when signed in, else the app's install id (X-Device-Id,
+    the header the device sessions already read). None: tracking is skipped.
+    The address and user agent are the customer's, passed on (gostyle_api.py).
+    """
+    if request.user.is_authenticated:
+        session_id = str(request.user.pk)
+    else:
+        session_id = sessions.read_device(request).get("device_id")
+    return {
+        "session_id": session_id,
+        "ip": sessions.client_ip(request),
+        "user_agent": request.META.get("HTTP_USER_AGENT") or None,
+    }
+
+
+def _booked_service(request):
+    """The booking's service id when it books exactly one (services[0].id), else None."""
+    try:
+        services = json.loads(request.body).get("services")
+        if isinstance(services, list) and len(services) == 1:
+            return str(uuid.UUID(str(services[0].get("id"))))
+    except (ValueError, AttributeError, TypeError):
+        pass
+    return None
+
+
+class StoryViewedView(APIView):
+    """
+    POST /api/v1/story/<uuid>/view  {"max_frame": <int, 0-based>}
+
+    The app reports a story was watched, with the furthest frame reached.
+    Passed to gostyle-api; a retry is safe there (it only raises maxFrame).
+
+    ALWAYS 204. This is tracking: no max_frame, no session (a guest with no
+    X-Device-Id) or a gostyle-api that is down all mean the view is simply
+    not recorded, never an error the app has to handle.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, story_id):
+        max_frame = request.data.get("max_frame") if isinstance(request.data, dict) else None
+        caller = _story_caller(request)
+        if (
+            isinstance(max_frame, int) and not isinstance(max_frame, bool) and max_frame >= 0
+            and caller["session_id"]
+        ):
+            gostyle_api.record_view(str(story_id), max_frame=max_frame, **caller)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class MapAvailabilityDown(APIException):
@@ -1403,7 +1481,7 @@ class DiscoverStoryListView(ListAPIView):
 
     def get_queryset(self):
         return (
-            with_published_card_fields(discoverable_salons())
+            with_published_card_fields(discoverable_salons(self.request.user))
             .filter(has_story=True)
             .order_by("id")
         )
@@ -2696,6 +2774,20 @@ class BookingCreateView(APIView):
             )
         except BookingApiUnavailable as exc:
             raise BookingApiDown() from exc
+
+        # Booked from a story: the app sends X-Story-Id (a header, because
+        # booking-api refuses any unknown body field). Reported AFTER
+        # booking-api said yes, with its real booking id. The booking is
+        # already made over there and gostyle_api never raises, so a failed
+        # report cannot touch it.
+        story_id = _story_id(request)
+        if story_id and 200 <= upstream_status < 300 and isinstance(body, dict) and body.get("id"):
+            gostyle_api.record_booking(
+                story_id,
+                booking_id=str(body["id"]),
+                service_id=_booked_service(request),
+                **_story_caller(request),
+            )
 
         # Returned, not raised, so api_exception_handler never sees it and the
         # body reaches the app in booking-api's own shape.

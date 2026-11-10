@@ -224,6 +224,14 @@ PUSH_API_URL = env("PUSH_API_URL", default="http://push-app:3351")
 PUSH_API_KEY = env("PUSH_API_KEY", default="")
 PUSH_API_TIMEOUT = env.int("PUSH_API_TIMEOUT", default=3)
 
+# gostyle-api (the platform), for the story engagement calls
+# (apps/salons/gostyle_api.py). The default is the Swarm service name: stack
+# "gostyle", service "api", on gostyle-net. Short timeout: these calls are
+# tracking and run inside the customer's request, so a slow platform may add
+# at most this much to it, and a failure is dropped.
+GOSTYLE_API_URL = env("GOSTYLE_API_URL", default="http://gostyle_api:3849")
+GOSTYLE_API_TIMEOUT = env.int("GOSTYLE_API_TIMEOUT", default=2)
+
 # The key internal services present to ConsumerDirectory on the gRPC server
 # (metadata x-internal-key). booking-api sends the same value, under the same
 # name, when it looks up a customer's email for a reminder. EMPTY REFUSES
