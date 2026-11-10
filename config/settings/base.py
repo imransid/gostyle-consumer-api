@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     "apps.review_data",
     "apps.push_data",
     "apps.notifications",
+    "apps.reviews",
 ]
 
 MIDDLEWARE = [
@@ -581,6 +582,14 @@ PACKAGE_IMAGE_V1 = env.bool("PACKAGE_IMAGE_V1", default=False)
 # after `gallery_count`) and `included_items` (each stage's name and its
 # line, after `included`). OFF, the answer is exactly as before.
 SERVICE_DETAIL_REDESIGN_V1 = env.bool("SERVICE_DETAIL_REDESIGN_V1", default=False)
+
+# Rate your visit (docs/rate-your-visit-fe-contract.md): GET and POST
+# /booking/{id}/review, `is_rated` and `can_rate` on every booking of
+# GET /bookings and GET /booking/{id}, and the app's reviews counted in the
+# salon's and the stylists' rating and review_count. Needs BOOKING_DB_NAME:
+# the visit is read from booking-api's database. OFF, the two routes are a
+# 404 and every other answer is exactly as before.
+RATE_VISIT_V1 = env.bool("RATE_VISIT_V1", default=False)
 
 # Account deletion's day 30 (docs/ACCOUNT_DELETION_FE.md): the notification
 # worker purges, every hour, the accounts whose date has passed, after

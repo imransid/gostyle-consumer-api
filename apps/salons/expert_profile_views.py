@@ -35,6 +35,8 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.reviews.ratings import stylist_ratings
+
 from . import menu, service_images
 from .expert_profile import core_fields, media, salon_block, service_groups
 from .expert_profile_serializers import EXAMPLE, SalonExpertProfileResponseSerializer
@@ -133,7 +135,8 @@ class SalonExpertProfileView(APIView):
         snapshot = read_snapshot(salon)
 
         day_off = days_off_for(salon, [stylist.id], snapshot).get(stylist.id)
-        body = core_fields(salon, _stylist_row(stylist, day_off=day_off))
+        rating = stylist_ratings([stylist.id]).get(stylist.id)
+        body = core_fields(salon, _stylist_row(stylist, day_off=day_off, rating=rating))
 
         # The caller's own heart on this stylist: read with their token when
         # they sent one, false for a guest (the contract's section 3).
