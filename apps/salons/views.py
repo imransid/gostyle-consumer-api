@@ -59,6 +59,8 @@ from .booking_api import (
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from apps.accounts import sessions
 from apps.accounts.models import Favourite, FavouriteStylist
+from apps.reviews import flags as rating_flags
+from apps.reviews.ratings import stylist_ratings
 
 from . import gostyle_api
 from .customer_sync import NoUsablePhone, resolve_customer
@@ -488,16 +490,22 @@ def stylist_rows(salon, service_ids=None, stages=None):
 
     # Each one's steady day off, from the roster: one read for the whole list.
     off = days_off_for(salon, [s.id for s in staff])
+    # Their app reviews (RATE_VISIT_V1), also one read. Off, nobody has any.
+    ratings = stylist_ratings([s.id for s in staff])
 
     rows = [
-        _stylist_row(s, coverage[s.id] if service_ids else None, off.get(s.id))
+        _stylist_row(
+            s,
+            coverage[s.id] if service_ids else None,
+            off.get(s.id),
+            rating=ratings.get(s.id),
+        )
         for s in staff
     ]
 
     # Rating first, then name, so the list does not reshuffle between
-    # refreshes. Sorted here rather than in SQL because rating is not a column
-    # yet (see _stylist_row) and NULLS LAST would have to be spelled out for it
-    # the moment it becomes one.
+    # refreshes. Sorted here rather than in SQL because the rating is read
+    # from our own totals table, not from the platform's staff row.
     rows.sort(key=_stylist_order)
     return rows
 
@@ -535,7 +543,9 @@ def days_off_for(salon, staff_ids, snapshot=None):
     )
 
 
-def _stylist_row(s, covered=None, day_off=None):
+def _stylist_row(s, covered=None, day_off=None, rating=None):
+    """`rating`: (rating, review_count) from the app's reviews, None while nobody has rated them."""
+    rating, review_count = rating or (None, None)
     row = {
         "id": str(s.id),
         "tenant_id": str(s.tenant_id),
@@ -551,8 +561,8 @@ def _stylist_row(s, covered=None, day_off=None):
         "title": s.position or None,
         "role": s.job_title or None,
         "avatar_url": s.avatar_url,
-        "rating": None,
-        "review_count": None,
+        "rating": rating,
+        "review_count": review_count,
         "years_experience": None,
         # Worked out from the roster (days_off_for), null when it cannot be
         # told. Display text: whether a day can be booked is the Time step's
@@ -569,9 +579,9 @@ def _stylist_row(s, covered=None, day_off=None):
 
 
 def _stylist_order(row):
-    # Rating descending with nulls last, then name. Every rating is null today,
-    # so this is name order in practice; it stops being so the day reviews
-    # learn which stylist they belong to.
+    # Rating descending with nulls last, then name. Ratings come from the
+    # app's reviews (Rate your visit); with RATE_VISIT_V1 off every rating is
+    # null, so this is name order.
     rating = row.get("rating")
     return (0 if rating is not None else 1, -(rating or 0), row.get("name") or "")
 
@@ -3202,6 +3212,15 @@ class BookingDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, booking_id):
+        response = self._read(request, booking_id)
+        # Rate your visit (RATE_VISIT_V1): is_rated and can_rate on the
+        # booking, a party's or a routine's too, and on each member of a
+        # party's read. Only on a 200.
+        if settings.RATE_VISIT_V1 and response.status_code == 200 and isinstance(response.data, dict):
+            rating_flags.add_to_booking(request.user.id, response.data)
+        return response
+
+    def _read(self, request, booking_id):
         # THE ID AND THE TOKEN, NOTHING ELSE. A booking already knows which
         # salon and tenant it belongs to, so asking the caller to say it
         # again was asking for a fact they had no way to know from a booking
@@ -3967,6 +3986,11 @@ class BookingListView(APIView):
             # Everything else comes from _check_in_fields, as on the read.
             row["can_check_in"] = _can_check_in(row, now)
             row.update(_check_in_fields(row, now))
+
+        # Rate your visit (RATE_VISIT_V1): is_rated and can_rate on every row,
+        # Recurring included, with one read for the whole page.
+        if settings.RATE_VISIT_V1:
+            rating_flags.add_to_rows(request.user.id, results)
 
         count = body.get("count") or 0
         return {

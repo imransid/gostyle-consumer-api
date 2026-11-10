@@ -31,6 +31,7 @@ from apps.platform_data.models import (
 
 from django.db.models import Value, BooleanField
 from apps.accounts.models import Favourite, FavouriteStylist, SalonFollow
+from apps.reviews.models import SalonRating
 
 
 from apps.platform_data.models import (
@@ -80,7 +81,7 @@ from .skills import (
 from . import verified as verified_rule
 from .geo import EARTH_RADIUS_KM, bounding_box, radius_box
 from .models import SalonCountry
-from .serializers import CATEGORY_ALIASES
+from .serializers import CATEGORY_ALIASES, card_category
 from .timezones import DEFAULT_TIMEZONE
 
 
@@ -568,6 +569,44 @@ def stylist_for_salon(storefront, stylist_id):
     whose login account is gone.
     """
     return salon_stylists(storefront).filter(id=stylist_id).first()
+
+
+def stylist_cards(staff_ids):
+    """
+    staff id -> {"name", "avatar_url"} for these stylists, for Rate your visit.
+
+    A review names who did the work, so unlike salon_stylists this keeps a
+    stylist who has left since. The name and the photo come from their login
+    account, as on every other screen. An id with no staff record or no
+    login account is left out.
+    """
+    if not staff_ids:
+        return {}
+    user = UserAccount.objects.filter(id=OuterRef("user_id"), tenant_id=OuterRef("tenant_id"))
+    rows = (
+        StaffProfile.objects.filter(id__in=staff_ids)
+        .filter(Exists(user))
+        .annotate(
+            first_name=Subquery(user.values("first_name")[:1], output_field=TextField()),
+            last_name=Subquery(user.values("last_name")[:1], output_field=TextField()),
+            avatar_file_id=Subquery(user.values("avatar_file_item_id")[:1]),
+        )
+        .annotate(
+            avatar_url=Subquery(
+                FileItem.objects.filter(id=OuterRef("avatar_file_id")).values("url")[:1],
+                output_field=TextField(),
+            ),
+        )
+        .values("id", "first_name", "last_name", "avatar_url")
+    )
+    return {
+        row["id"]: {
+            # Joined as the Stylists tab joins it (views._stylist_row).
+            "name": " ".join(filter(None, [row["first_name"], row["last_name"]])) or None,
+            "avatar_url": row["avatar_url"],
+        }
+        for row in rows
+    }
 
 
 def stylist_media_rows(storefront, staff_id):
@@ -1150,6 +1189,18 @@ def service_photo_urls(salon, service_id):
     )
     return list(own), list(linked)
 
+
+def salon_category(storefront_id):
+    """The salon's type as its card says it: "gents", "ladies", "unisex" or None."""
+    tenant = Storefront.objects.filter(id=storefront_id).values("tenant_id")[:1]
+    gender = (
+        PlatformSalon.objects.filter(tenant_id=Subquery(tenant))
+        .values_list("gender", flat=True)
+        .first()
+    )
+    return card_category(gender)
+
+
 def salon_profile(storefront_id, user=None):
 
     qs = (
@@ -1360,16 +1411,64 @@ def logo_url_subquery():
     )
 
 
+def salon_rating_fields():
+    """
+    `avg_rating` and `review_count` for the salon of the outer storefront
+    query: its published storefront reviews and, with RATE_VISIT_V1, the
+    app's own reviews too (Rate your visit, kept as totals in SalonRating).
+
+    One place for the card, the profile, search and the map, so the salon
+    has one rating everywhere. Off, these are exactly the expressions every
+    one of them used before.
+
+    review_count is COALESCED TO ZERO, and avg_rating deliberately is NOT.
+    The two nulls mean different things. "No customer has reviewed this salon
+    yet" is a fact we know, and it is the number 0; "this salon's average
+    score" is a question with no answer at all until someone reviews it, and
+    answering it with 0.0 would print a one-star-looking card for a salon
+    nobody has judged.
+    """
+    published = StorefrontReview.objects.filter(
+        storefront_id=OuterRef("pk"),
+        state="PUBLISHED",
+    ).values("storefront_id")
+    published_count = Coalesce(
+        Subquery(published.annotate(c=Count("id")).values("c")[:1]),
+        Value(0),
+        output_field=IntegerField(),
+    )
+
+    if not settings.RATE_VISIT_V1:
+        return {
+            "avg_rating": Subquery(published.annotate(avg=Avg("rating")).values("avg")[:1]),
+            "review_count": published_count,
+        }
+
+    app_totals = SalonRating.objects.filter(salon_id=OuterRef("pk"))
+    stars = ExpressionWrapper(
+        Coalesce(Subquery(published.annotate(s=Sum("rating")).values("s")[:1]), Value(0))
+        + Coalesce(Subquery(app_totals.values("rating_sum")[:1]), Value(0)),
+        output_field=IntegerField(),
+    )
+    count = ExpressionWrapper(
+        published_count + Coalesce(Subquery(app_totals.values("review_count")[:1]), Value(0)),
+        output_field=IntegerField(),
+    )
+    return {
+        # NULL when nobody has reviewed the salon, as before.
+        "avg_rating": ExpressionWrapper(
+            Cast(stars, FloatField()) / NullIf(count, Value(0)),
+            output_field=FloatField(),
+        ),
+        "review_count": count,
+    }
+
+
 def discoverable_salons(account=None):
     """
     `account`: who is looking, for has_story (stories_visible_to). None, or a
     guest, sees only the stories meant for everyone.
     """
-    published_reviews = StorefrontReview.objects.filter(
-        storefront_id=OuterRef("pk"),
-        state="PUBLISHED",
-    )
-
     branch = Branch.objects.filter(id=OuterRef("branch_id"))
 
     qs = (
@@ -1378,26 +1477,7 @@ def discoverable_salons(account=None):
             deleted_at__isnull=True
         )
         .annotate(
-            avg_rating=Subquery(
-                published_reviews.values("storefront_id")
-                .annotate(avg=Avg("rating"))
-                .values("avg")[:1]
-            ),
-            # COALESCED TO ZERO, and avg_rating deliberately is NOT. The two
-            # nulls mean different things. "No customer has reviewed this
-            # salon yet" is a fact we know, and it is the number 0; "this
-            # salon's average score" is a question with no answer at all until
-            # someone reviews it, and answering it with 0.0 would print a
-            # one-star-looking card for a salon nobody has judged.
-            review_count=Coalesce(
-                Subquery(
-                    published_reviews.values("storefront_id")
-                    .annotate(c=Count("id"))
-                    .values("c")[:1]
-                ),
-                Value(0),
-                output_field=IntegerField(),
-            ),
+            **salon_rating_fields(),
             branch_name=Subquery(
                 branch.values("name")[:1], output_field=TextField()
             ),
@@ -1605,19 +1685,12 @@ def map_venue_queryset(
     """
     box = bounding_box(latitude, longitude, latitude_delta, longitude_delta)
 
-    published_reviews = StorefrontReview.objects.filter(
-        storefront_id=OuterRef("pk"),
-        state="PUBLISHED",
-    )
-
     qs = (
         map_salons()
         .annotate(
-            avg_rating=Subquery(
-                published_reviews.values("storefront_id")
-                .annotate(avg=Avg("rating"))
-                .values("avg")[:1]
-            ),
+            # The card's own rating (salon_rating_fields), so a pin and the
+            # card one tap later show the same number.
+            avg_rating=salon_rating_fields()["avg_rating"],
             photo_url=Subquery(
                 StorefrontMedia.objects.filter(
                     storefront_id=OuterRef("pk"),

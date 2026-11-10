@@ -11,6 +11,8 @@ urlpatterns = [
     path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="docs"),
     path("api/v1/", include("apps.salons.urls")),
     path("api/v1/", include("apps.uploads.urls")),
+    # Rate your visit: booking/<id>/review (RATE_VISIT_V1).
+    path("api/v1/", include("apps.reviews.urls")),
     # After apps.accounts, whose notifications/preferences must match first.
     path("api/v1/", include("apps.notifications.urls")),
 ]

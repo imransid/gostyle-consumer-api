@@ -42,12 +42,12 @@ def core_fields(salon, row):
         # block.
         "bio": None,
         "avatar_url": row["avatar_url"],
-        # Reviews belong to a salon (storefront_review) and nothing links one
-        # to a stylist. null is the contract's "nobody has rated them", 0 its
-        # "No reviews yet". The list row says null for the count; here the
-        # contract types it a number (Rafa, Q14).
-        "rating": None,
-        "review_count": 0,
+        # The list row's own, from the app's reviews (Rate your visit). null
+        # is the contract's "nobody has rated them", 0 its "No reviews yet".
+        # The list row says null for the count; here the contract types it a
+        # number (Rafa, Q14).
+        "rating": row["rating"],
+        "review_count": row["review_count"] or 0,
         # The list row's own value: null until the platform has the column.
         "years_experience": row["years_experience"],
         # Nothing prices a stylist: the platform has a price tier for a SALON

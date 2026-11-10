@@ -198,9 +198,11 @@ FLOW = (
     ),
     (
         "11. My bookings",
-        "The three tabs.",
+        "The three tabs, and rating a visit once it is done (RATE_VISIT_V1).",
         (
             ("GET", "/api/v1/bookings", "Upcoming, Recurring or Archive"),
+            ("GET", "/api/v1/booking/{booking_id}/review", "Rate your visit: the form"),
+            ("POST", "/api/v1/booking/{booking_id}/review", "Rate your visit: send the review"),
         ),
     ),
     (
