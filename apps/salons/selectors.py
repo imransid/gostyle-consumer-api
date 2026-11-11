@@ -22,12 +22,18 @@ from apps.platform_data.models import (
 
 from django.db.models.fields.json import KeyTextTransform, KeyTransform
 from apps.platform_data.models import (
+    MusicTrack,
     StoreFrontStoryV2,
     StoryAction,
+    StoryComposer,
+    StoryMusic,
     StoryPhoto,
     StoryService,
     StorefrontVersion,
 )
+from django.contrib.postgres.aggregates import JSONBAgg
+from django.db.models import JSONField
+from django.db.models.functions import JSONObject
 
 from django.db.models import Value, BooleanField
 from apps.accounts.models import Favourite, FavouriteStylist, SalonFollow
@@ -1785,7 +1791,10 @@ def salon_stories(storefront_id, account=None):
     the two ever disagree, a ring appears over nothing.
 
     One query: the frames (StoryPhoto, by position), the button (StoryAction)
-    and the linked services (StoryService) are subqueries of it.
+    and the linked services (StoryService) are subqueries of it. So are the
+    full rows the app gets as they are: every photo, the action, the music
+    (with its library track) and the composer settings. Their timestamps come
+    back inside JSON, as text without a zone; the view labels them UTC.
     """
     return (
         stories_visible_to(account)
@@ -1808,6 +1817,55 @@ def salon_stories(storefront_id, account=None):
                 .annotate(ids=ArrayAgg("service_id"))
                 .values("ids")[:1],
                 output_field=ArrayField(UUIDField()),
+            ),
+            photos=Subquery(
+                StoryPhoto.objects.filter(story_id=OuterRef("pk"))
+                .values("story_id")
+                .annotate(rows=JSONBAgg(
+                    JSONObject(
+                        id="id", photo_url="photo_url", position="position",
+                        created_at="created_at", updated_at="updated_at",
+                    ),
+                    ordering="position",
+                ))
+                .values("rows")[:1],
+                output_field=JSONField(),
+            ),
+            action=Subquery(
+                StoryAction.objects.filter(story_id=OuterRef("pk"))
+                .values(row=JSONObject(
+                    id="id", action_button="action_button",
+                    created_at="created_at", updated_at="updated_at",
+                ))[:1],
+                output_field=JSONField(),
+            ),
+            music=Subquery(
+                StoryMusic.objects.filter(story_id=OuterRef("pk"))
+                .values(row=JSONObject(
+                    id="id", track_id="track_id", music_url="music_url",
+                    music_name="music_name", starts_at="starts_at", volume="volume",
+                    fade_in_and_out="fade_in_and_out", show_track_name="show_track_name",
+                    created_at="created_at", updated_at="updated_at",
+                    track=Subquery(
+                        MusicTrack.objects.filter(id=OuterRef("track_id"))
+                        .values(row=JSONObject(
+                            id="id", title="title", artist="artist", mood="mood",
+                            bpm="bpm", duration_sec="duration_sec", url="url",
+                            created_at="created_at", updated_at="updated_at",
+                        ))[:1],
+                        output_field=JSONField(),
+                    ),
+                ))[:1],
+                output_field=JSONField(),
+            ),
+            composer=Subquery(
+                StoryComposer.objects.filter(story_id=OuterRef("pk"))
+                .values(row=JSONObject(
+                    id="id", timing="timing", schedule_date="schedule_date",
+                    schedule_time="schedule_time", stays_up_for="stays_up_for",
+                    created_at="created_at", updated_at="updated_at",
+                ))[:1],
+                output_field=JSONField(),
             ),
         )
         .order_by("-created_at")

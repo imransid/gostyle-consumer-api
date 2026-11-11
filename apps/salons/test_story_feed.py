@@ -37,6 +37,13 @@ SALON = uuid.UUID("33333333-3333-3333-3333-333333333333")
 BOOKING = "9495b6b0-3b06-48d1-b8d4-b6a7ed83eb9b"
 SERVICE = "98b7f9fd-b680-4a27-b6cf-01c1f0bf6c2d"
 APP_AGENT = "GoStyleApp/2.3 (iPhone; iOS 18)"
+TENANT = "f2a9882b-c822-4107-b650-29af2e303c24"
+PHOTO_1 = "0e5f6f39-1d1c-4b8e-9d6a-2f0f6a8b1c01"
+PHOTO_2 = "0e5f6f39-1d1c-4b8e-9d6a-2f0f6a8b1c02"
+ACTION = "125f8633-10a7-427d-ad3d-20794877eb50"
+MUSIC = "4b1e9a77-8f0c-4c51-9a35-6d1f0a2b3c4d"
+TRACK = "a7c3d2e1-5b4f-4e6a-8c9d-0f1e2d3c4b5a"
+COMPOSER = "c1e0744f-3836-4e46-81e6-3ad83030708e"
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +51,10 @@ APP_AGENT = "GoStyleApp/2.3 (iPhone; iOS 18)"
 # ---------------------------------------------------------------------------
 
 class VisibilityRuleTests(SimpleTestCase):
+    # Django writes the JSON sub-rows of salon_stories by Postgres version
+    # (JSON_OBJECT on 16+, JSONB_BUILD_OBJECT before), so printing that SQL
+    # asks the server its version. No rows are read.
+    databases = {"default"}
     account = ConsumerAccount(id=uuid.UUID("fbfb2ae7-aea3-4d9c-a787-e2f6a2b15979"))
 
     def sql(self, account):
@@ -87,6 +98,16 @@ class VisibilityRuleTests(SimpleTestCase):
         self.assertIn('ARRAY_AGG(U0."serviceId")', sql)
         self.assertIn("salon_follow", sql)
 
+    def test_the_full_sub_rows_ride_in_the_same_query(self):
+        sql = str(selectors.salon_stories(SALON, self.account).query)
+        self.assertIn("JSONB_AGG(", sql)
+        self.assertIn('ORDER BY U0."position"', sql)
+        for table in ('"StoryPhoto"', '"StoryAction"', '"StoryMusic"', '"MusicTrack"', '"StoryComposer"'):
+            with self.subTest(table=table):
+                self.assertIn(f"FROM {table}", sql)
+        # The library track is the one this music row points at.
+        self.assertRegex(sql, r'FROM "MusicTrack" (\w+) WHERE \1\."id" = \(\w+\."trackId"\)')
+
 
 # ---------------------------------------------------------------------------
 # GET /salon/<id>/stories
@@ -103,6 +124,45 @@ def story_row(**over):
         scheduled_at=None,
         created_at=datetime(2026, 11, 10, 0, 34, 23),
         expires_at=datetime(2026, 11, 11, 0, 34, 23),
+        tenant_id=uuid.UUID(TENANT),
+        storefront_id=SALON,
+        layout="BOTTOM",
+        treatment="DARK_BOX",
+        caption_x=0.5,
+        caption_y=0.8,
+        count_down_timer=True,
+        price_tag=False,
+        service_tag=True,
+        keep_after_it_expr=False,
+        who_can_see="EVERYONE_NEARBY",
+        format="BEFORE_AND_AFTER",
+        status="LIVE",
+        updated_at=datetime(2026, 11, 10, 0, 40),
+        # The JSON sub-rows come back from Postgres with times as zoneless text.
+        photos=[
+            {"id": PHOTO_1, "photo_url": "https://cdn/before.jpg", "position": 0,
+             "created_at": "2026-11-10T00:34:23.5", "updated_at": "2026-11-10T00:34:23.5"},
+            {"id": PHOTO_2, "photo_url": "https://cdn/after.jpg", "position": 1,
+             "created_at": "2026-11-10T00:34:24", "updated_at": "2026-11-10T00:34:24"},
+        ],
+        action={"id": ACTION, "action_button": "BOOK_SERVICE",
+                "created_at": "2026-11-10T00:34:23", "updated_at": "2026-11-10T00:34:23"},
+        music={
+            "id": MUSIC, "track_id": TRACK, "music_url": "https://cdn/golden.mp3",
+            "music_name": "Golden Hour", "starts_at": 3, "volume": 70,
+            "fade_in_and_out": True, "show_track_name": True,
+            "created_at": "2026-11-10T00:34:23", "updated_at": "2026-11-10T00:34:23",
+            "track": {
+                "id": TRACK, "title": "Golden Hour", "artist": "Noor Collective",
+                "mood": "WARM", "bpm": 96, "duration_sec": 8, "url": "https://cdn/golden.mp3",
+                "created_at": "2026-11-01T08:00:00", "updated_at": "2026-11-01T08:00:00",
+            },
+        },
+        composer={
+            "id": COMPOSER, "timing": "SCHEDULED", "schedule_date": "2026-11-12T00:00:00",
+            "schedule_time": "2026-11-12T09:30:00", "stays_up_for": 24,
+            "created_at": "2026-11-10T00:34:23", "updated_at": "2026-11-10T00:34:23",
+        },
     )
     row.update(over)
     return SimpleNamespace(**row)
@@ -133,7 +193,70 @@ class SalonStoriesViewTests(SimpleTestCase):
             "service_ids": [SERVICE],
             "publish_time": "2026-11-10T00:34:23+00:00",
             "expires_at": "2026-11-11T00:34:23+00:00",
+            "tenant_id": TENANT,
+            "storefront_id": str(SALON),
+            "destination": "gostyle.app/book/modern-fade",
+            "layout": "BOTTOM",
+            "treatment": "DARK_BOX",
+            "caption_x": 0.5,
+            "caption_y": 0.8,
+            "count_down_timer": True,
+            "price_tag": False,
+            "service_tag": True,
+            "keep_after_it_expr": False,
+            "who_can_see": "EVERYONE_NEARBY",
+            "format": "BEFORE_AND_AFTER",
+            "status": "LIVE",
+            "scheduled_at": None,
+            "created_at": "2026-11-10T00:34:23+00:00",
+            "updated_at": "2026-11-10T00:40:00+00:00",
+            "photos": [
+                {"id": PHOTO_1, "photo_url": "https://cdn/before.jpg", "position": 0,
+                 "created_at": "2026-11-10T00:34:23.500000+00:00",
+                 "updated_at": "2026-11-10T00:34:23.500000+00:00"},
+                {"id": PHOTO_2, "photo_url": "https://cdn/after.jpg", "position": 1,
+                 "created_at": "2026-11-10T00:34:24+00:00", "updated_at": "2026-11-10T00:34:24+00:00"},
+            ],
+            "action": {"id": ACTION, "action_button": "BOOK_SERVICE",
+                       "created_at": "2026-11-10T00:34:23+00:00",
+                       "updated_at": "2026-11-10T00:34:23+00:00"},
+            "music": {
+                "id": MUSIC, "track_id": TRACK, "music_url": "https://cdn/golden.mp3",
+                "music_name": "Golden Hour", "starts_at": 3, "volume": 70,
+                "fade_in_and_out": True, "show_track_name": True,
+                "created_at": "2026-11-10T00:34:23+00:00", "updated_at": "2026-11-10T00:34:23+00:00",
+                "track": {
+                    "id": TRACK, "title": "Golden Hour", "artist": "Noor Collective",
+                    "mood": "WARM", "bpm": 96, "duration_sec": 8, "url": "https://cdn/golden.mp3",
+                    "created_at": "2026-11-01T08:00:00+00:00", "updated_at": "2026-11-01T08:00:00+00:00",
+                },
+            },
+            "composer": {
+                "id": COMPOSER, "timing": "SCHEDULED",
+                "schedule_date": "2026-11-12T00:00:00+00:00",
+                "schedule_time": "2026-11-12T09:30:00+00:00", "stays_up_for": 24,
+                "created_at": "2026-11-10T00:34:23+00:00", "updated_at": "2026-11-10T00:34:23+00:00",
+            },
         }])
+
+    def test_own_audio_has_no_library_track(self):
+        music = dict(story_row().music, track_id=None, track=None, music_url="https://cdn/own.mp3")
+        response, _ = self.get([story_row(music=music)])
+        self.assertIsNone(response.data["stories"][0]["music"]["track"])
+        self.assertEqual(response.data["stories"][0]["music"]["music_url"], "https://cdn/own.mp3")
+
+    def test_missing_sub_rows_are_null_or_empty(self):
+        response, _ = self.get([story_row(music=None, composer=None, action=None, photos=None,
+                                          action_button=None)])
+        story = response.data["stories"][0]
+        self.assertIsNone(story["music"])
+        self.assertIsNone(story["composer"])
+        self.assertIsNone(story["action"])
+        self.assertEqual(story["photos"], [])
+
+    def test_a_scheduled_story_shows_its_scheduled_time(self):
+        response, _ = self.get([story_row(scheduled_at=datetime(2026, 11, 10, 6, 0))])
+        self.assertEqual(response.data["stories"][0]["scheduled_at"], "2026-11-10T06:00:00+00:00")
 
     def test_a_scheduled_story_was_published_when_it_went_up(self):
         row = story_row(scheduled_at=datetime(2026, 11, 10, 6, 0))

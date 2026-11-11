@@ -1157,6 +1157,28 @@ class SalonStoriesView(APIView):
                 # A scheduled story went up at scheduledAt, not when it was written.
                 "publish_time": (s.scheduled_at or s.created_at).replace(tzinfo=dt_timezone.utc).isoformat(),
                 "expires_at": s.expires_at.replace(tzinfo=dt_timezone.utc).isoformat(),
+                # Everything else the platform stores for the story, as stored.
+                "tenant_id": str(s.tenant_id),
+                "storefront_id": str(s.storefront_id),
+                "destination": s.destination,
+                "layout": s.layout,
+                "treatment": s.treatment,
+                "caption_x": s.caption_x,
+                "caption_y": s.caption_y,
+                "count_down_timer": s.count_down_timer,
+                "price_tag": s.price_tag,
+                "service_tag": s.service_tag,
+                "keep_after_it_expr": s.keep_after_it_expr,
+                "who_can_see": s.who_can_see,
+                "format": s.format,
+                "status": s.status,
+                "scheduled_at": _story_utc(s.scheduled_at),
+                "created_at": _story_utc(s.created_at),
+                "updated_at": _story_utc(s.updated_at),
+                "photos": [_story_row_utc(p) for p in s.photos or []],
+                "action": _story_row_utc(s.action),
+                "music": _story_music(s.music),
+                "composer": _story_row_utc(s.composer),
             }
             for s in salon_stories(salon.id, request.user)
             if s.frame_urls
@@ -1167,6 +1189,36 @@ class SalonStoriesView(APIView):
             "logo_url": salon.logo_url,
             "stories": stories,
         })
+
+
+# The story tables keep their times without a zone, and they are UTC (see
+# SalonStoriesView). Inside the JSON sub-rows they arrive as text.
+_STORY_TIME_KEYS = ("created_at", "updated_at", "schedule_date", "schedule_time")
+
+
+def _story_utc(value):
+    """A story time (datetime, or the text Postgres puts in JSON) as UTC ISO text. None stays None."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
+    return value.replace(tzinfo=dt_timezone.utc).isoformat()
+
+
+def _story_row_utc(row):
+    """One story sub-row (photo, action, composer) with its times labelled UTC. None stays None."""
+    if row is None:
+        return None
+    return {k: _story_utc(v) if k in _STORY_TIME_KEYS else v for k, v in row.items()}
+
+
+def _story_music(row):
+    """The story's music row and, when it came from the library, its track. None: no music."""
+    if row is None:
+        return None
+    music = _story_row_utc(row)
+    music["track"] = _story_row_utc(row.get("track"))
+    return music
 
 
 def _story_id(request):
