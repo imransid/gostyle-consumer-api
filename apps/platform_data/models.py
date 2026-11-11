@@ -3507,6 +3507,58 @@ class StoryService(models.Model):
         db_table = 'StoryService'
 
 
+# The story's sound (one per story) and the music library it can pick from.
+# track_id null: the owner uploaded their own audio (music_url only).
+class MusicTrack(models.Model):
+    id = models.UUIDField(primary_key=True)
+    title = models.TextField()
+    artist = models.TextField()
+    mood = models.TextField()
+    bpm = models.IntegerField()
+    duration_sec = models.IntegerField(db_column='durationSec')
+    url = models.TextField()
+    created_at = models.DateTimeField(db_column='createdAt')
+    updated_at = models.DateTimeField(db_column='updatedAt')
+
+    class Meta:
+        managed = False
+        db_table = 'MusicTrack'
+
+
+class StoryMusic(models.Model):
+    id = models.UUIDField(primary_key=True)
+    story_id = models.UUIDField(db_column='storyId', unique=True)
+    track_id = models.UUIDField(db_column='trackId', blank=True, null=True)
+    music_url = models.TextField(db_column='musicUrl')
+    music_name = models.TextField(db_column='musicName')
+    starts_at = models.IntegerField(db_column='startsAt')
+    volume = models.IntegerField()
+    fade_in_and_out = models.BooleanField(db_column='fadeInAndOut')
+    show_track_name = models.BooleanField(db_column='showTrackName')
+    created_at = models.DateTimeField(db_column='createdAt')
+    updated_at = models.DateTimeField(db_column='updatedAt')
+
+    class Meta:
+        managed = False
+        db_table = 'StoryMusic'
+
+
+# The composer's publish settings (one per story).
+class StoryComposer(models.Model):
+    id = models.UUIDField(primary_key=True)
+    story_id = models.UUIDField(db_column='storyId', unique=True)
+    timing = models.TextField()
+    schedule_date = models.DateTimeField(db_column='scheduleDate', blank=True, null=True)
+    schedule_time = models.DateTimeField(db_column='scheduleTime', blank=True, null=True)
+    stays_up_for = models.IntegerField(db_column='staysUpFor')
+    created_at = models.DateTimeField(db_column='createdAt')
+    updated_at = models.DateTimeField(db_column='updatedAt')
+
+    class Meta:
+        managed = False
+        db_table = 'StoryComposer'
+
+
 class StorefrontVersion(models.Model):
     id = models.UUIDField(primary_key=True)
     tenant_id = models.UUIDField()
