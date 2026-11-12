@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     "apps.notifications",
     "apps.reviews",
     "apps.gallery",
+    "apps.geofence",
 ]
 
 MIDDLEWARE = [
@@ -598,6 +599,16 @@ RATE_VISIT_V1 = env.bool("RATE_VISIT_V1", default=False)
 # answer is exactly as before.
 MY_GALLERY_V1 = env.bool("MY_GALLERY_V1", default=False)
 
+# Service area alerts (docs/SERVICE_AREA_ALERTS_FE.md): POST /me/location
+# measures the app's reading against the rings the salon set in Build ->
+# Service Area, for the customer's confirmed visits, and alerts once per ring
+# per salon per day (visit.nearby, visit.almost_there, visit.arrived) through
+# the Notification Center. GET /me/geofences lists the rings for the phone to
+# watch. Needs BOOKING_DB_NAME. Read by the API only; the worker sends the
+# alerts as it sends every other. OFF, the two routes are a 404 and nothing
+# else changes.
+SERVICE_AREA_ALERTS_V1 = env.bool("SERVICE_AREA_ALERTS_V1", default=False)
+
 # Account deletion's day 30 (docs/ACCOUNT_DELETION_FE.md): the notification
 # worker purges, every hour, the accounts whose date has passed, after
 # cancelling their bookings still to come as the customer's own cancel
@@ -647,6 +658,10 @@ REST_FRAMEWORK = {
         # GET /search/suggest, per address: generous, as one customer types a
         # few calls a second, and one carrier address can be many phones.
         "search_suggest": env("SEARCH_SUGGEST_RATE", default="120/min"),
+        # POST /me/location, per account (SERVICE_AREA_ALERTS_V1). The app
+        # sends a reading when the phone says a ring was crossed, or every
+        # few minutes while open: a reading every 3 s is not that.
+        "location": env("LOCATION_PING_RATE", default="20/min"),
     },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PAGINATION_CLASS": "config.pagination.ClientPageNumberPagination",

@@ -169,6 +169,12 @@ FLOW = (
                 "/api/v1/booking/group/{group_id}/check-in",
                 "My party's check-in, member by member (GROUP_CHECK_IN_V1)",
             ),
+            (
+                "GET",
+                "/api/v1/me/geofences",
+                "The salon rings to watch on the way to my visit (SERVICE_AREA_ALERTS_V1)",
+            ),
+            ("POST", "/api/v1/me/location", "Send my location: near, almost there, arrived alerts"),
         ),
     ),
     (

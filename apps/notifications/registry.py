@@ -65,6 +65,20 @@ KINDS = {
         Category.ORDERS, (PUSH,), None, push_type="check_in_request.expired"
     ),
     "booking.reminder": Kind(Category.UPDATES, (PUSH, EMAIL), "appointment_reminder"),
+    # Service area alerts (apps/geofence): the customer, on the way to a
+    # confirmed visit, crossing a ring the salon set in Build -> Service
+    # Area. Reminders of the visit, so the reminders switch silences them.
+    # Push only, and no use ten minutes late: an email saying "you are near"
+    # would arrive after the customer has walked in.
+    "visit.nearby": Kind(
+        Category.UPDATES, (PUSH,), "appointment_reminder", deliver_within=timedelta(minutes=10)
+    ),
+    "visit.almost_there": Kind(
+        Category.UPDATES, (PUSH,), "appointment_reminder", deliver_within=timedelta(minutes=10)
+    ),
+    "visit.arrived": Kind(
+        Category.UPDATES, (PUSH,), "appointment_reminder", deliver_within=timedelta(minutes=10)
+    ),
     # Money.
     "payment.completed": Kind(Category.PAYMENTS, (PUSH, EMAIL), None),
     "payment.refunded": Kind(Category.PAYMENTS, (PUSH, EMAIL), None),

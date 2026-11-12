@@ -15,6 +15,8 @@ urlpatterns = [
     path("api/v1/", include("apps.reviews.urls")),
     # My Gallery & Moments: me/gallery (MY_GALLERY_V1).
     path("api/v1/", include("apps.gallery.urls")),
+    # Service area alerts: me/location, me/geofences (SERVICE_AREA_ALERTS_V1).
+    path("api/v1/", include("apps.geofence.urls")),
     # After apps.accounts, whose notifications/preferences must match first.
     path("api/v1/", include("apps.notifications.urls")),
 ]
