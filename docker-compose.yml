@@ -149,6 +149,8 @@ services:
       PACKAGE_IMAGE_V1: ${PACKAGE_IMAGE_V1:-False}
       # Service Details redesign: group, images, included_items.
       SERVICE_DETAIL_REDESIGN_V1: ${SERVICE_DETAIL_REDESIGN_V1:-False}
+      # My Gallery & Moments: GET, POST /me/gallery, DELETE /me/gallery/{id}.
+      MY_GALLERY_V1: ${MY_GALLERY_V1:-False}
 
       # Sessions' location from the IP (docs/DEVICE_SESSIONS_SERVER.md).
       # Empty: location stays null.

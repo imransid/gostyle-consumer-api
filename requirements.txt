@@ -56,3 +56,8 @@ sendgrid==6.12.5
 python-http-client==3.3.7
 werkzeug==3.1.9
 MarkupSafe==3.0.4
+
+# My Gallery (apps/gallery/images.py): a photo's size and its 480 px grid copy.
+# Pillow reads JPEG, PNG, WebP, GIF and AVIF; pillow-heif adds HEIC (iPhone).
+Pillow==12.3.0
+pillow-heif==1.8.1
