@@ -167,7 +167,51 @@ def _check_in(params):
     return Words(title, body, data)
 
 
+def _visit(params):
+    """A service area alert's common parts (apps/geofence): the booking's,
+    plus the ring crossed and whether "I am here" is open right now."""
+    code, _at, _when_text, data, card = _booking(params)
+    start_at = params.get("start_at") or ""
+    if not start_at:
+        raise CannotWrite("start_at is required for a service area alert")
+    can_check_in = params.get("can_check_in") == "true"
+    data.update({"zone": params.get("zone"), "canCheckIn": "true" if can_check_in else "false"})
+    name = card["name"] if card and card.get("name") else None
+    return code, name, start_at, can_check_in, data, card
+
+
+def _nearby(params):
+    code, name, start_at, _can_check_in, data, card = _visit(params)
+    return Words(
+        f"You're near {name}" if name else "You're near the salon",
+        f"Your booking {code} is {_soon(start_at, card)}.",
+        data,
+    )
+
+
+def _almost_there(params):
+    code, name, start_at, can_check_in, data, card = _visit(params)
+    where = name or "the salon"
+    if can_check_in:
+        body = f"You're a short walk from {where}. Tap to check in when you walk in."
+    else:
+        body = f"You're a short walk from {where}. Your booking {code} is {_soon(start_at, card)}."
+    return Words("Almost there", body, data)
+
+
+def _arrived(params):
+    code, name, _start_at, can_check_in, data, _card = _visit(params)
+    return Words(
+        f"Welcome to {name}" if name else "You've arrived",
+        "Tap to check in so the desk knows you're here." if can_check_in else f"Show booking {code} at the desk.",
+        data,
+    )
+
+
 _WRITERS = {
+    "visit.nearby": _nearby,
+    "visit.almost_there": _almost_there,
+    "visit.arrived": _arrived,
     "check_in.approved": _check_in,
     "check_in.rejected": _check_in,
     "check_in.expired": _check_in,
