@@ -224,6 +224,8 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
         # The Google account linked to it: its id there and its address.
         # Gone, the same Google account makes a new account next time.
         self.social_identities.all().delete()
+        # Service area alerts: which salons they walked up to, and how close.
+        self.geofence_states.all().delete()
         # My Gallery: the references and their photos (the files in storage
         # go once this commits). Moments stay: they are a review's photos.
         # Imported here, as services is above: the gallery app loads after this one.
