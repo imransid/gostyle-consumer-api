@@ -190,13 +190,14 @@ def _nearby(params):
 
 
 def _almost_there(params):
-    code, name, start_at, can_check_in, data, card = _visit(params)
-    where = name or "the salon"
-    if can_check_in:
-        body = f"You're a short walk from {where}. Tap to check in when you walk in."
-    else:
-        body = f"You're a short walk from {where}. Your booking {code} is {_soon(start_at, card)}."
-    return Words("Almost there", body, data)
+    # The admin form calls this ring "prep starts": the salon gets ready. The
+    # check-in prompt is the arrival ring's ("I'm here"), not this one's.
+    code, name, start_at, _can_check_in, data, card = _visit(params)
+    return Words(
+        "Almost there",
+        f"You're a short walk from {name or 'the salon'}. Your booking {code} is {_soon(start_at, card)}.",
+        data,
+    )
 
 
 def _arrived(params):

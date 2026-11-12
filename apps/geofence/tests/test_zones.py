@@ -72,6 +72,35 @@ class ParseServiceAreaTests(SimpleTestCase):
         self.assertEqual(area.home_radius_m, 15_000)
         self.assertEqual(area.problems, ())
 
+    def test_what_the_admin_form_really_saves(self):
+        # hq-master-admin-frontend-next wizard-step-payload.ts: the whole
+        # `geo` state plus primaryRadiusM, with the form's defaults.
+        payload = {
+            "primaryRadius": 800,
+            "autoTrigger": 200,
+            "arrivalRadius": 50,
+            "peakMultiplier": 1.5,
+            "etaModel": "traffic",
+            "offZoneBehavior": "warn",
+            "homeVisits": "Yes",
+            "homeRadiusKm": 15,
+            "homeSurcharge": 50,
+            "minBookingValue": 200,
+            "travelBuffer": 30,
+            "paymentAtHome": "card",
+            "areasServed": ["Marina", "JBR"],
+            "primaryRadiusM": 800,
+        }
+        area = zones.parse_service_area(payload)
+        self.assertEqual(area.rings_m, (("arrival", 50.0), ("auto_trigger", 200.0), ("primary", 800.0)))
+        self.assertEqual(area.home_radius_m, 15_000)
+        self.assertEqual(area.problems, ())
+
+    def test_an_emptied_box_is_saved_as_zero_and_means_off(self):
+        area = zones.parse_service_area({"primaryRadius": 800, "primaryRadiusM": 800, "autoTrigger": 0, "arrivalRadius": 0})
+        self.assertEqual(area.rings_m, (("primary", 800.0),))
+        self.assertEqual(area.problems, ())
+
     def test_the_v2_metre_keys(self):
         area = zones.parse_service_area({"primaryRadiusM": 800, "autoTriggerM": 200, "arrivalRadiusM": 50})
         self.assertEqual(area.radius_m("primary"), 800)

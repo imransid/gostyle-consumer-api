@@ -5,9 +5,14 @@ The platform's Build wizard (step `service-area`, Build -> Service Area) keeps
 four distances. Three of them are rings a customer on the way to a visit
 walks through, innermost first:
 
-    arrival       Arrival Radius               e.g. 50 m
-    auto_trigger  Auto-Trigger Distance        e.g. 200 m
-    primary       Primary Appointment Radius   e.g. 800 m
+    arrival       Arrival Radius               e.g. 50 m   (form: "I'm here")
+    auto_trigger  Auto-Trigger Distance        e.g. 200 m  (form: "prep starts")
+    primary       Primary Appointment Radius   e.g. 800 m  (form: "meters from pin")
+
+The keys are the admin form's own (hq-master-admin-frontend-next,
+wizard-step-payload.ts): it saves its whole `geo` state, so primaryRadius,
+autoTrigger, arrivalRadius and homeRadiusKm, plus primaryRadiusM for the API.
+The form's defaults are exactly 800 / 200 / 50 / 15 km.
 
 The fourth, the Home-visit Radius (e.g. 15 km), is how far the salon travels
 to a customer's home. Nobody walks through it on the way in, so it is read
@@ -156,6 +161,10 @@ def parse_service_area(payload):
         if key is None:
             continue
         value_m = number(raw)
+        if value_m == 0:
+            # The admin form saves an emptied box as 0
+            # (step-service-area.tsx: parseInt(...) || 0): the ring is off.
+            continue
         if value_m is None:
             problems.append(f"{key}={raw!r} is not a number")
         elif not MIN_RADIUS_M <= value_m <= MAX_RADIUS_M:
