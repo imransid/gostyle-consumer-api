@@ -13,6 +13,8 @@ urlpatterns = [
     path("api/v1/", include("apps.uploads.urls")),
     # Rate your visit: booking/<id>/review (RATE_VISIT_V1).
     path("api/v1/", include("apps.reviews.urls")),
+    # My Gallery & Moments: me/gallery (MY_GALLERY_V1).
+    path("api/v1/", include("apps.gallery.urls")),
     # After apps.accounts, whose notifications/preferences must match first.
     path("api/v1/", include("apps.notifications.urls")),
 ]

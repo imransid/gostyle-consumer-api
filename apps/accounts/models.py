@@ -224,6 +224,12 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
         # The Google account linked to it: its id there and its address.
         # Gone, the same Google account makes a new account next time.
         self.social_identities.all().delete()
+        # My Gallery: the references and their photos (the files in storage
+        # go once this commits). Moments stay: they are a review's photos.
+        # Imported here, as services is above: the gallery app loads after this one.
+        from apps.gallery.service import delete_gallery
+
+        delete_gallery(self)
         if old_contacts:
             OtpCode.objects.filter(
                 destination__in=old_contacts, consumed_at__isnull=True

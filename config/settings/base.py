@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     "apps.push_data",
     "apps.notifications",
     "apps.reviews",
+    "apps.gallery",
 ]
 
 MIDDLEWARE = [
@@ -590,6 +591,12 @@ SERVICE_DETAIL_REDESIGN_V1 = env.bool("SERVICE_DETAIL_REDESIGN_V1", default=Fals
 # the visit is read from booking-api's database. OFF, the two routes are a
 # 404 and every other answer is exactly as before.
 RATE_VISIT_V1 = env.bool("RATE_VISIT_V1", default=False)
+
+# My Gallery & Moments (docs/my-gallery-fe-contract.md): GET and POST
+# /me/gallery, DELETE /me/gallery/{id}. Moments are the photos on the
+# customer's own reviews. OFF, the three routes are a 404 and every other
+# answer is exactly as before.
+MY_GALLERY_V1 = env.bool("MY_GALLERY_V1", default=False)
 
 # Account deletion's day 30 (docs/ACCOUNT_DELETION_FE.md): the notification
 # worker purges, every hour, the accounts whose date has passed, after

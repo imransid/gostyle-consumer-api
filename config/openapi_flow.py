@@ -77,6 +77,9 @@ FLOW = (
             ("DELETE", "/api/v1/me/security/authenticator", "Remove the authenticator app"),
             ("GET", "/api/v1/me/privacy", "My privacy settings (PRIVACY_SETTINGS_V1)"),
             ("PATCH", "/api/v1/me/privacy", "Show my name to salons, show my photo in Moments"),
+            ("GET", "/api/v1/me/gallery", "My gallery: one page (MY_GALLERY_V1)"),
+            ("POST", "/api/v1/me/gallery", "My gallery: add an uploaded photo as a reference"),
+            ("DELETE", "/api/v1/me/gallery/{item_id}", "My gallery: remove a reference"),
         ),
     ),
     (
