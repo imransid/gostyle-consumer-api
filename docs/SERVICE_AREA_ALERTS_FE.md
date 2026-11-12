@@ -12,16 +12,24 @@ The radii in Admin Panel -> Build -> Service Area were saved, but nothing used t
 
 So no code ran and nothing was logged. This guide is the new contract. **The app must send its location**; the server decides everything else.
 
+Checked in the code (2026-11-12):
+
+- The admin form (hq-master-admin-frontend-next, `wizard-step-payload.ts`) saves `primaryRadius`, `autoTrigger`, `arrivalRadius`, `homeRadiusKm` and `primaryRadiusM`. The server reads exactly these.
+- The app (go-style-app) reads location only in the foreground, to centre the map (`src/hooks/useUserLocation.ts`). It never sends it to the server and has no geofencing. **This is the one app change needed** (section 5).
+- A tap on the new pushes already works in today's app: `openFromPush` opens the booking pass from `data.bookingId` (`src/push/taps.ts`), and every alert carries `bookingId`.
+
 ## 2. What the customer gets
 
 Only for a customer with a **confirmed visit** (`CONFIRMED_BY_SALON`) that **starts within 3 hours and has not ended**. Each ring is measured from the salon's map pin.
 
 | Ring (admin panel) | Example | Push `type` | Title / body |
 |---|---|---|---|
-| Primary Appointment Radius | 800 m | `visit.nearby` | "You're near Demo Salon & Spa" / "Your booking GS-1500 is today at 3:45 PM." Only before the start time. |
-| Auto-Trigger Distance | 200 m | `visit.almost_there` | "Almost there" / "You're a short walk from Demo Salon & Spa. Tap to check in when you walk in." (or the booking time when check-in is not open yet) |
-| Arrival Radius | 50 m | `visit.arrived` | "Welcome to Demo Salon & Spa" / "Tap to check in so the desk knows you're here." (or "Show booking GS-1500 at the desk.") |
+| Primary Appointment Radius ("meters from pin") | 800 m | `visit.nearby` | "You're near Demo Salon & Spa" / "Your booking GS-1500 is today at 3:45 PM." Only before the start time. |
+| Auto-Trigger Distance ("prep starts") | 200 m | `visit.almost_there` | "Almost there" / "You're a short walk from Demo Salon & Spa. Your booking GS-1500 is today at 3:45 PM." |
+| Arrival Radius ("I'm here") | 50 m | `visit.arrived` | "Welcome to Demo Salon & Spa" / "Tap to check in so the desk knows you're here." (or "Show booking GS-1500 at the desk." when check-in is not open) |
 | Home-visit Radius | 15 km | none | Travel range for home visits. It is not an alert ring. |
+
+A ring saved as 0 (an emptied box in the admin form) is off.
 
 Rules:
 
@@ -116,6 +124,35 @@ The rings of the customer's confirmed visits in the next 24 hours, for the phone
 
 Permissions: background geofencing needs iOS "Always" location and Android `ACCESS_BACKGROUND_LOCATION`. With "While using" only, step 1 and step 3 still work, but alerts come only while the app is open.
 
+In go-style-app terms (Expo 57, `expo-location` is already installed):
+
+```ts
+// 1. Foreground: in useUserLocation's fetchPosition (or on AppState "active"),
+//    once the position is read and the customer is signed in:
+post("/me/location", {
+  latitude: pos.coords.latitude,
+  longitude: pos.coords.longitude,
+  accuracy_m: pos.coords.accuracy ?? undefined,
+  recorded_at: new Date(pos.timestamp).toISOString(),
+});
+
+// 2. Background: add expo-task-manager, then
+TaskManager.defineTask("gostyle-rings", async ({ data, error }) => {
+  if (error || data?.eventType !== Location.GeofencingEventType.Enter) return;
+  const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+  await post("/me/location", { latitude: pos.coords.latitude, longitude: pos.coords.longitude,
+    accuracy_m: pos.coords.accuracy ?? undefined, recorded_at: new Date(pos.timestamp).toISOString() });
+});
+const { regions } = await get("/me/geofences");
+await Location.startGeofencingAsync("gostyle-rings", regions.map((r) => ({
+  identifier: r.id, latitude: r.latitude, longitude: r.longitude, radius: r.radius_m,
+  notifyOnEnter: true, notifyOnExit: false,
+})));
+// With no regions: Location.stopGeofencingAsync("gostyle-rings").
+```
+
+`app.json`: the `expo-location` plugin needs `isIosBackgroundLocationEnabled: true` and a `locationAlwaysAndWhenInUsePermission` text. Android needs `ACCESS_BACKGROUND_LOCATION`, and iOS needs `"location"` in `UIBackgroundModes`. Nothing is needed for the tap (section 1).
+
 ## 6. The push
 
 The `data` keys (all strings), as for the other Notification Center pushes:
@@ -130,7 +167,7 @@ The `data` keys (all strings), as for the other Notification Center pushes:
 | `zone` | `primary`, `auto_trigger` or `arrival` |
 | `canCheckIn` | `"true"` when "I am here" is open now (same rule as `can_check_in` on GET /bookings) |
 
-On tap, open the booking (`GET /booking/{bookingId}`). When `canCheckIn` is `"true"`, the screen's check-in button is live.
+On tap, open the booking. Today's app already does this from `bookingId` (booking pass). When `canCheckIn` is `"true"`, the screen's check-in button is live.
 
 An older app build that does not know these types still shows the push (FCM `notification` block). It just opens the app's default screen.
 
