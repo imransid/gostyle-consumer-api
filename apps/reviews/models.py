@@ -46,6 +46,10 @@ class Review(models.Model):
     salon_tags = models.JSONField(default=list, blank=True)
     comment = models.TextField(null=True, blank=True)
     submitted_at = models.DateTimeField(default=timezone.now)
+    # How many customers marked it helpful (docs/salon-reviews-fe-contract.md,
+    # section 3): one per ReviewHelpful row, changed in the same transaction
+    # as the mark, so "top" can sort on it.
+    helpful_count = models.PositiveIntegerField(default=0, db_default=0)
 
     class Meta:
         db_table = "review"
@@ -54,6 +58,12 @@ class Review(models.Model):
                 condition=Q(salon_stars__gte=1, salon_stars__lte=5),
                 name="review_salon_stars_1_to_5",
             ),
+        ]
+        # The sorts of GET /salon/{id}/reviews.
+        indexes = [
+            models.Index(fields=["salon_id", "helpful_count"], name="review_salon_helpful"),
+            models.Index(fields=["salon_id", "submitted_at"], name="review_salon_submitted"),
+            models.Index(fields=["salon_id", "salon_stars", "submitted_at"], name="review_salon_stars"),
         ]
 
     def __str__(self):
@@ -111,6 +121,30 @@ class ReviewPhoto(models.Model):
                 name="review_photo_position_once",
             ),
         ]
+
+
+class ReviewHelpful(models.Model):
+    """One customer's Helpful mark on one review. A customer counts once."""
+
+    review = models.ForeignKey(Review, on_delete=models.CASCADE, related_name="helpful_marks")
+    customer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="review_helpful_marks",
+    )
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = "review_helpful"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["review", "customer"],
+                name="review_helpful_once_per_customer",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.customer_id} found {self.review_id} helpful"
 
 
 class SalonRating(models.Model):
