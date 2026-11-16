@@ -232,6 +232,11 @@ class ConsumerAccount(AbstractBaseUser, PermissionsMixin):
         from apps.gallery.service import delete_gallery
 
         delete_gallery(self)
+        # Ratings & Reviews: their Helpful marks go, and each review they
+        # marked counts one less. Their own reviews stay, with no name.
+        from apps.reviews.salon_reviews import remove_marks
+
+        remove_marks(self)
         if old_contacts:
             OtpCode.objects.filter(
                 destination__in=old_contacts, consumed_at__isnull=True

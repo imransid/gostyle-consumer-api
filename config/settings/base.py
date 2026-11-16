@@ -599,6 +599,13 @@ RATE_VISIT_V1 = env.bool("RATE_VISIT_V1", default=False)
 # answer is exactly as before.
 MY_GALLERY_V1 = env.bool("MY_GALLERY_V1", default=False)
 
+# Salon Ratings & Reviews (docs/salon-reviews-fe-contract.md): GET
+# /salon/{id}/reviews (the Rate your visit reviews of a salon, with the
+# profile's rating, review_count and the per-star bars), and PUT and DELETE
+# /review/{id}/helpful. OFF, the three routes are a 404 and every other
+# answer is exactly as before.
+SALON_REVIEWS_V1 = env.bool("SALON_REVIEWS_V1", default=False)
+
 # Service area alerts (docs/SERVICE_AREA_ALERTS_FE.md): POST /me/location
 # measures the app's reading against the rings the salon set in Build ->
 # Service Area, for the customer's confirmed visits, and alerts once per ring
